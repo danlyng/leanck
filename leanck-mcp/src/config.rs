@@ -1,8 +1,7 @@
-use std::path::{Path, PathBuf};
+use leanck_core::workspace::WorkspaceRoot;
+use std::path::PathBuf;
 
 use clap::Parser;
-
-use crate::error::Result;
 
 #[derive(Debug, Clone, Parser)]
 #[command(
@@ -10,6 +9,8 @@ use crate::error::Result;
     about = "MCP server that forwards Lean tool calls to the leanckd daemon"
 )]
 pub struct CliArgs {
+    #[command(flatten)]
+    pub config: leanck_config::ConfigArgs,
     /// Workspace root the daemon serves. If omitted, the bridge
     /// walks up from the current directory looking for `lakefile.lean`,
     /// `lakefile.toml`, or `lean-toolchain`. If nothing matches, it falls
@@ -20,40 +21,35 @@ pub struct CliArgs {
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub workspace: PathBuf,
+    pub args: leanck_config::ConfigArgs,
+    pub settings: leanck_config::Settings,
+    pub workspace: WorkspaceRoot,
 }
 
 impl Config {
-    pub fn from_cli(args: CliArgs) -> Result<Self> {
-        let workspace = match args.workspace {
-            Some(p) => p,
-            None => detect_workspace()?,
-        };
+    /// Explicit defaults for embedded callers, without filesystem/environment discovery.
+    pub fn defaults(workspace: WorkspaceRoot) -> Self {
+        Self {
+            workspace,
+            args: leanck_config::ConfigArgs {
+                no_config: true,
+                ..Default::default()
+            },
+            settings: leanck_config::Settings::default(),
+        }
+    }
+    pub fn from_cli(args: CliArgs) -> anyhow::Result<Self> {
+        let root = match args.workspace {
+            Some(p) => WorkspaceRoot::from_path(p),
+            None => WorkspaceRoot::discover_current(),
+        }?;
+        let settings = args.config.load(root.as_path())?.settings;
         Ok(Self {
-            workspace: workspace.canonicalize().unwrap_or(workspace),
+            workspace: root,
+            args: args.config,
+            settings,
         })
     }
-}
-
-/// Walk up from the current directory until a Lake project marker is
-/// found, falling back to the current directory if none is.
-fn detect_workspace() -> Result<PathBuf> {
-    let cwd = std::env::current_dir()?;
-    Ok(find_project_root(&cwd).unwrap_or(cwd))
-}
-
-fn find_project_root(start: &Path) -> Option<PathBuf> {
-    let mut cur = Some(start);
-    while let Some(dir) = cur {
-        if dir.join("lakefile.lean").exists()
-            || dir.join("lakefile.toml").exists()
-            || dir.join("lean-toolchain").exists()
-        {
-            return Some(dir.to_path_buf());
-        }
-        cur = dir.parent();
-    }
-    None
 }
 
 #[cfg(test)]
@@ -72,7 +68,10 @@ mod tests {
         let args =
             CliArgs::try_parse_from(["leanck-mcp", "--workspace", workspace.to_str().unwrap()])
                 .unwrap();
-        assert_eq!(Config::from_cli(args).unwrap().workspace, workspace);
+        assert_eq!(
+            Config::from_cli(args).unwrap().workspace.as_path(),
+            workspace
+        );
         assert!(CliArgs::try_parse_from(["leanck-mcp", "--embedder", "voyage"]).is_err());
     }
 }

@@ -1,9 +1,12 @@
 use thiserror::Error;
 
 /// Daemon-internal error type. The socket layer maps these onto the structured
-/// [`crate::proto::WireError`] (`ErrorKind` + message) sent back to clients.
+/// [`leanck_core::error::WireError`] (`ErrorKind` + message) sent back to clients.
 #[derive(Debug, Error)]
 pub enum Error {
+    #[error(transparent)]
+    Document(#[from] leanck_core::document::DocumentError),
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -12,7 +15,11 @@ pub enum Error {
 
     /// The Lean server returned a JSON-RPC error response.
     #[error("lean server error {code}: {message}")]
-    Lsp { code: i64, message: String },
+    Lsp {
+        code: i64,
+        message: String,
+        data: Option<serde_json::Value>,
+    },
 
     /// A request exceeded its deadline.
     #[error("timed out waiting for elaboration")]
@@ -25,10 +32,6 @@ pub enum Error {
     /// The Lean server is not running / crashed / is being respawned.
     #[error("lean server unavailable: {0}")]
     ServerDown(String),
-
-    /// The Lean server stopped answering a health probe.
-    #[error("lean server unhealthy")]
-    ServerUnhealthy,
 
     /// Too many in-flight elaboration-blocking requests.
     #[error("server overloaded")]

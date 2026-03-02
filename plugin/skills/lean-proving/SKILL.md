@@ -115,15 +115,17 @@ MCP server; address them as `leanck:<tool>` in `Agent` invocations.
 
 | Tool | Purpose | Key arguments |
 |---|---|---|
-| `diagnostics` | Errors / warnings / info for a file or single declaration. Reach for this after every edit. | `file` (required, workspace-relative path or `file://` URI); optional `ident` to scope to one declaration; `severity` array of `error`/`warning`/`info`/`hint`/`all` (defaults to `["error"]`); `limit` (default 5) + `offset` for pagination; `verbose` (default false — compact text; true returns full JSON). `Goals accomplished!` diagnostics are always filtered out. |
+| `diagnostics` | Errors / warnings / info for a file or single declaration. Reach for this after every edit. | `file` (required, workspace-relative path or `file://` URI); optional `ident` to scope to one declaration; `severity` object: `{"mode":"all"}` or `{"mode":"only","severities":["error","warning"]}`; names are `error`/`warning`/`information`/`hint`; omission defaults to errors only, and an empty `severities` array selects none; `limit` (default 5) + `offset` for pagination; `verbose` (default false — compact text; true returns full JSON). `Goals accomplished!` diagnostics are always filtered out. |
 | `goal` | Lean's pretty-printed proof goal at a position. The ground-truth view of what you still have to prove. | `file`, 0-indexed `line` and `character`. |
 | `sorry` | Enumerate declarations with `sorry` under a file or directory path. The "what's left" list. Directories are scanned recursively for `.lean` files. | `path`. |
-| `loogle` | Search declarations by constant, name, expression, or conclusion. | Arrays `constant`, `substr`, `subexpr`, `conclusion`; optional `limit` (default 10). Tries local, self-hosted, then main Loogle. |
+| `loogle` | Search declarations by constant, name, expression, or conclusion. | Arrays `constant`, `substr`, `subexpr`, `conclusion`; optional `limit` (default 10). Tries local, then main Loogle. |
 | `build` | Run the project build. | Optional `warnings`, `strict`, and `json` booleans. |
-| `list` | Enumerate the declarations in a file (name, fully-qualified name, kind, range). | `file` (required); optional `kind` array of Lean keywords (`theorem`, `def`, `lemma`, `instance`, …) or LSP kinds (`namespace`, `class`, …) to filter. |
+| `list` | Enumerate the declarations in a file (name, fully-qualified name, kind, range). | `file` (required); optional typed `kind` array, e.g. `["theorem","def","enum_member","type_parameter"]`. Only canonical snake_case names are accepted; invalid names fail. Omission/`[]` selects all; selectors combine with OR; `def`/`definition` are synonyms. |
 | `health` | Check the Lean daemon, starting it if needed. | Optional `json` (default false); compact mode returns `ok` when healthy, JSON returns `{ok, lsp, issues}`. |
 | `restart_file` | Force a single-file elaborator restart when the file gets stuck (rare). | `file`. |
 | `set_workspace` | Switch subsequent tools to another Lake project. | `path` to a directory with `lakefile.lean`, `lakefile.toml`, or `lean-toolchain`; returns `{ok, workspace, socket_path}`. |
+
+For example, call `list` with `{"file":"Main.lean","kind":["theorem","def"]}`. Lexical Lean kinds take priority: `method` does not select a refined `theorem`; coarse LSP fallbacks apply only to unrefined entries. Structured list results now use tagged kinds (`{"source":"lean","kind":"theorem"}` or `{"source":"lsp","kind":"enum_member"}`), not strings; human display is unchanged. See [the full selector and migration reference](../../../leanck-mcp/README.md#declaration-kinds-and-migration). Protocol 3 clients require a matching daemon; upgrade together and explicitly shut down older daemons. Diagnostic severity semantics above are unchanged.
 
 Per-tool parameter docs are also embedded in the tool definitions in
 `leanck-mcp/src/mcp.rs`; the table above mirrors those at a higher level.

@@ -1,5 +1,3 @@
-use std::path::{Path, PathBuf};
-
 use leanck_loogle::LoogleQuery;
 use rmcp::{
     ErrorData, ServerHandler,
@@ -10,8 +8,13 @@ use rmcp::{
 use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
-use crate::daemon::DaemonCache;
-use crate::error::Error;
+use crate::workspace::WorkspaceSelection;
+use leanck_client::render::{HealthReport, format_health_human};
+use leanck_client::{CancellationToken, ClientError, RequestOptions, TransportPhase};
+use leanck_core::api::{
+    DiagnosticsParams, GoalParams, ListParams, RestartFileParams, SeverityFilter, SorryParams,
+};
+use leanck_core::error::ErrorKind;
 
 /// Wait for the elaborator to settle and return diagnostics for the file.
 /// If `ident` is supplied, the response is restricted to diagnostics
@@ -25,12 +28,13 @@ pub struct DiagnosticsInput {
     /// is returned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ident: Option<String>,
-    /// Severity filter. Each entry is one of `error`, `warning`, `info`,
-    /// `hint`, or `all`. Empty / omitted defaults to `error` only. Use
-    /// `["all"]` to disable severity filtering. Diagnostics with the
-    /// message `Goals accomplished!` are always excluded.
-    #[serde(default)]
-    pub severity: Vec<String>,
+    /// Typed severity filter: {"mode":"all"} or
+    /// {"mode":"only","severities":["error","warning","information","hint"]}.
+    /// Omission uses configured diagnostics.severity (built-in: error-only); an empty selection matches nothing.
+    /// Diagnostics with the message `Goals accomplished!` are always excluded.
+    #[serde(default, deserialize_with = "deserialize_severity")]
+    #[schemars(with = "SeverityFilter")]
+    pub severity: Option<SeverityFilter>,
     /// Pagination offset into the filtered diagnostic list. Default `0`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offset: Option<u32>,
@@ -43,47 +47,29 @@ pub struct DiagnosticsInput {
     /// If true, return the full JSON response from the daemon.
     /// Default `false` returns compact human-readable text.
     #[serde(default)]
-    pub verbose: bool,
-    /// Per-request deadline in milliseconds. Also stretches the elaboration
-    /// wait to this value. Defaults: 300s request, 120s elaboration wait.
+    pub verbose: Option<bool>,
+    /// Operation budget in milliseconds, including queueing. Cold startup has
+    /// a separate budget. Explicit values also override the elaboration cap.
+    /// Defaults: 300s operation, 120s elaboration wait.
     /// Raise it for slow Mathlib-heavy files.
     #[serde(default)]
     pub timeout_ms: Option<u64>,
 }
 
-/// Wire shape sent to the daemon; severity filters are comma-separated.
-#[derive(Debug, Serialize)]
-struct DiagnosticsQuery<'a> {
-    file: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    ident: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    severity: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    offset: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    limit: Option<u32>,
-}
-
-impl<'a> From<&'a DiagnosticsInput> for DiagnosticsQuery<'a> {
-    fn from(input: &'a DiagnosticsInput) -> Self {
-        let severity = if input.severity.is_empty() {
-            None
-        } else {
-            Some(input.severity.join(","))
-        };
+impl From<&DiagnosticsInput> for DiagnosticsParams {
+    fn from(input: &DiagnosticsInput) -> Self {
         Self {
-            file: &input.file,
-            ident: input.ident.as_deref(),
-            severity,
-            offset: input.offset,
-            limit: input.limit,
+            file: input.file.clone(),
+            ident: input.ident.clone(),
+            severity: input.severity.clone().unwrap_or_default(),
+            offset: input.offset.map(u64::from),
+            limit: input.limit.map(u64::from),
         }
     }
 }
 
 /// Look up the proof goal at a given file position.
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct GoalInput {
     /// File (workspace-relative path or `file://` URI).
     pub file: String,
@@ -91,27 +77,28 @@ pub struct GoalInput {
     pub line: u32,
     /// 0-indexed character column.
     pub character: u32,
-    /// Per-request deadline in milliseconds (also stretches the elaboration
-    /// wait). Defaults to the daemon's 30s goal-query timeout.
-    #[serde(default, skip_serializing)]
+    /// Operation budget in milliseconds, including queueing, after cold startup.
+    /// Defaults: 300s operation, 30s goal LSP call. An explicit value also
+    /// overrides the goal-call cap, bounded by the remaining operation budget.
+    #[serde(default)]
     pub timeout_ms: Option<u64>,
 }
 
 /// List sorry locations under a file or directory path.
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SorryInput {
     /// Workspace-relative path, absolute path, or `file://` URI. If this
     /// points to a directory, `.lean` files are scanned recursively.
-    #[serde(alias = "file")]
     pub path: String,
-    /// Per-request deadline in milliseconds (also stretches the brief
-    /// elaboration wait before the text-scan fallback).
-    #[serde(default, skip_serializing)]
+    /// Operation budget in milliseconds after cold startup. Defaults: 300s
+    /// operation, 5s elaboration gate before text fallback. An explicit value
+    /// overrides the brief gate, bounded by the remaining operation budget.
+    #[serde(default)]
     pub timeout_ms: Option<u64>,
 }
 
 /// List declarations in a file.
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ListInput {
     /// File to list (workspace-relative path or `file://` URI).
     pub file: String,
@@ -119,41 +106,82 @@ pub struct ListInput {
     /// LSP kind names (`namespace`, `class`, …) to restrict the result.
     /// Empty/omitted returns every declaration.
     #[serde(default)]
-    pub kind: Vec<String>,
-    /// Per-request deadline in milliseconds. Also stretches the elaboration
-    /// wait to this value. Defaults: 300s request, 120s elaboration wait.
-    #[serde(default, skip_serializing)]
+    pub kind: Vec<leanck_core::api::KindSelector>,
+    /// Operation budget in milliseconds, including queueing. Cold startup has
+    /// a separate budget. Explicit values also override the elaboration cap.
+    /// Defaults: 300s operation, 120s elaboration wait.
+    #[serde(default)]
     pub timeout_ms: Option<u64>,
 }
 
 /// Restart the Lean language server for a single file.
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct RestartFileInput {
     /// File whose elaborator should be restarted. Workspace-relative path
     /// or `file://` URI.
     pub file: String,
-    /// Per-request deadline in milliseconds (the restart itself plus the
-    /// dependency rebuild it triggers). Default 300s.
-    #[serde(default, skip_serializing)]
+    /// Operation budget in milliseconds after cold startup, including file-lock
+    /// waits and restart submission. Default 300s. Dependency elaboration runs
+    /// asynchronously; subsequent queries wait for it.
+    #[serde(default)]
     pub timeout_ms: Option<u64>,
+}
+
+impl From<&GoalInput> for GoalParams {
+    fn from(input: &GoalInput) -> Self {
+        Self {
+            file: input.file.clone(),
+            line: input.line,
+            character: input.character,
+        }
+    }
+}
+impl From<&SorryInput> for SorryParams {
+    fn from(input: &SorryInput) -> Self {
+        Self {
+            path: input.path.clone(),
+        }
+    }
+}
+impl From<&ListInput> for ListParams {
+    fn from(input: &ListInput) -> Self {
+        Self {
+            file: input.file.clone(),
+            kind: Some(input.kind.clone()),
+        }
+    }
+}
+impl From<&RestartFileInput> for RestartFileParams {
+    fn from(input: &RestartFileInput) -> Self {
+        Self {
+            file: input.file.clone(),
+        }
+    }
 }
 
 /// Run a full `lake build` of the current workspace and report the result.
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct BuildInput {
-    /// Also report build warnings, but only those from libraries/executables
-    /// declared in the project's own `lakefile.toml` (dependency warnings such
-    /// as Mathlib's are dropped). Default `false`.
+    /// Also report warnings emitted by Lake, including dependency and configuration warnings. Default `false`.
     #[serde(default)]
-    pub warnings: bool,
+    pub warnings: Option<bool>,
     /// If true, treat build warnings as failures and include them in the report.
     /// Default `false`.
     #[serde(default)]
-    pub strict: bool,
+    pub strict: Option<bool>,
     /// If true, return the full machine-readable JSON build report instead of
     /// compact text. Default `false`.
     #[serde(default)]
-    pub json: bool,
+    pub json: Option<bool>,
+    /// Targets forwarded to lake build; omission uses configured targets, [] builds the whole workspace.
+    #[serde(default)]
+    pub targets: Option<Vec<String>>,
+    /// Budget including coordination, in milliseconds. Default: 1,800,000 (30 minutes).
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+    /// Maximum captured bytes per stream. Default: 8 MiB; must be positive.
+    #[serde(default)]
+    pub max_output_bytes: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -161,7 +189,7 @@ pub struct HealthzInput {
     /// If true, return the full machine-readable JSON health payload.
     /// Default `false` returns compact text (`ok` when there are no issues).
     #[serde(default)]
-    pub json: bool,
+    pub json: Option<bool>,
 }
 
 /// Repoint the server at a different Lake project root.
@@ -190,7 +218,7 @@ pub struct LoogleInput {
     /// not already start with `|-` or `⊢`.
     #[serde(default)]
     pub conclusion: Vec<String>,
-    /// Max results to show. Default `10`.
+    /// Max results to show. Omission uses loogle.limit (built-in: 10).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
 }
@@ -208,56 +236,44 @@ impl From<&LoogleInput> for LoogleQuery {
 
 #[derive(Clone)]
 pub struct LeanckServer {
-    daemon: DaemonCache,
+    workspace: WorkspaceSelection,
+    config_args: leanck_config::ConfigArgs,
+    loogle: leanck_loogle::Client,
     #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
 }
 
 impl LeanckServer {
     pub fn new(config: &Config) -> Self {
+        let workspace = WorkspaceSelection::new(config.workspace.clone());
+        workspace.set_configured(config.workspace.clone(), config.settings.clone());
         Self {
-            daemon: DaemonCache::new(config.workspace.clone()),
+            workspace,
+            config_args: config.args.clone(),
+            loogle: leanck_loogle::Client::from_config(&config.settings.loogle),
             tool_router: Self::tool_router(),
         }
     }
 }
 
-/// Call a daemon method, retrying once after a refresh if the first attempt
-/// failed with a transport error (e.g. the daemon was idle-reaped and needs
-/// respawning). The optional fourth argument forwards a per-request deadline
-/// (ms) in the request envelope.
-macro_rules! forward {
-    ($self:ident, $params:ident, $method:ident) => {
-        forward!($self, $params, $method, None)
-    };
-    ($self:ident, $params:ident, $method:ident, $timeout_ms:expr) => {{
-        let timeout_ms: Option<u64> = $timeout_ms;
-        let up = $self
-            .daemon
-            .get()
-            .await
-            .map_err(to_mcp_error)?
-            .with_timeout_ms(timeout_ms);
-        let result = match up.$method(&$params).await {
-            Ok(v) => Ok(v),
-            Err(e) if DaemonCache::should_refresh(&e) => {
-                let up = $self
-                    .daemon
-                    .refresh()
-                    .await
-                    .map_err(to_mcp_error)?
-                    .with_timeout_ms(timeout_ms);
-                up.$method(&$params).await
-            }
-            Err(e) => Err(e),
-        };
-        let body = result.map_err(to_mcp_error)?;
-        Content::json(body)
-    }};
-}
-
 #[tool_router]
 impl LeanckServer {
+    #[tool(
+        description = "Inspect the current workspace's effective leanck configuration without starting Lean. File changes are loaded by set_workspace (including the current workspace); daemon settings take effect on its next startup.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn configuration(&self) -> Result<Content, ErrorData> {
+        let client = self.workspace.capture();
+        Content::json(
+            serde_json::json!({"workspace": client.workspace(), "settings": client.settings(), "warnings": client.settings().warnings()}),
+        )
+    }
+
     #[tool(
         description = "Get diagnostics for `file`. Optionally restrict to a single declaration with `ident`. Returns compact human-readable text; pass `verbose: true` for the full JSON response.",
         annotations(
@@ -270,35 +286,31 @@ impl LeanckServer {
     async fn diagnostics(
         &self,
         Parameters(p): Parameters<DiagnosticsInput>,
+        cancel: CancellationToken,
     ) -> Result<Content, ErrorData> {
-        let query = DiagnosticsQuery::from(&p);
-        let up = self
-            .daemon
-            .get()
+        let client = self.workspace.capture();
+        let mut query = DiagnosticsParams::from(&p);
+        if p.severity.is_none() {
+            query.severity = configured_severity(&client.settings().diagnostics);
+        }
+        query.limit = query.limit.or(Some(client.settings().diagnostics.limit));
+        let body = client
+            .diagnostics(
+                &query,
+                RequestOptions {
+                    timeout_ms: p.timeout_ms,
+                    cancellation: Some(cancel),
+                    ..Default::default()
+                },
+            )
             .await
-            .map_err(to_mcp_error)?
-            .with_timeout_ms(p.timeout_ms);
-        let result = match up.diagnostics(&query).await {
-            Ok(v) => Ok(v),
-            Err(e) if DaemonCache::should_refresh(&e) => {
-                let up = self
-                    .daemon
-                    .refresh()
-                    .await
-                    .map_err(to_mcp_error)?
-                    .with_timeout_ms(p.timeout_ms);
-                up.diagnostics(&query).await
-            }
-            Err(e) => Err(e),
-        };
-        let body = result.map_err(to_mcp_error)?;
-        if p.verbose {
+            .map_err(to_mcp_error)?;
+        if p.verbose.unwrap_or(client.settings().output.json) {
             Content::json(body)
         } else {
-            let workspace = self.daemon.workspace().await;
-            Ok(Content::text(leanckd::format::format_diagnostics_human(
-                &body, &p.file, &workspace,
-            )))
+            Ok(Content::text(
+                leanck_client::render::format_diagnostics_human(&body, &p.file),
+            ))
         }
     }
 
@@ -311,8 +323,24 @@ impl LeanckServer {
             open_world_hint = false
         )
     )]
-    async fn goal(&self, Parameters(p): Parameters<GoalInput>) -> Result<Content, ErrorData> {
-        forward!(self, p, goal, p.timeout_ms)
+    async fn goal(
+        &self,
+        Parameters(p): Parameters<GoalInput>,
+        cancel: CancellationToken,
+    ) -> Result<Content, ErrorData> {
+        let client = self.workspace.capture();
+        let body = client
+            .goal(
+                &GoalParams::from(&p),
+                RequestOptions {
+                    timeout_ms: p.timeout_ms,
+                    cancellation: Some(cancel),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(to_mcp_error)?;
+        Content::json(body)
     }
 
     #[tool(
@@ -324,8 +352,24 @@ impl LeanckServer {
             open_world_hint = false
         )
     )]
-    async fn sorry(&self, Parameters(p): Parameters<SorryInput>) -> Result<Content, ErrorData> {
-        forward!(self, p, sorries, p.timeout_ms)
+    async fn sorry(
+        &self,
+        Parameters(p): Parameters<SorryInput>,
+        cancel: CancellationToken,
+    ) -> Result<Content, ErrorData> {
+        let client = self.workspace.capture();
+        let body = client
+            .sorries(
+                &SorryParams::from(&p),
+                RequestOptions {
+                    timeout_ms: p.timeout_ms,
+                    cancellation: Some(cancel),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(to_mcp_error)?;
+        Content::json(body)
     }
 
     #[tool(
@@ -337,8 +381,24 @@ impl LeanckServer {
             open_world_hint = false
         )
     )]
-    async fn list(&self, Parameters(p): Parameters<ListInput>) -> Result<Content, ErrorData> {
-        forward!(self, p, list, p.timeout_ms)
+    async fn list(
+        &self,
+        Parameters(p): Parameters<ListInput>,
+        cancel: CancellationToken,
+    ) -> Result<Content, ErrorData> {
+        let client = self.workspace.capture();
+        let body = client
+            .list(
+                &ListParams::from(&p),
+                RequestOptions {
+                    timeout_ms: p.timeout_ms,
+                    cancellation: Some(cancel),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(to_mcp_error)?;
+        Content::json(body)
     }
 
     #[tool(
@@ -353,12 +413,25 @@ impl LeanckServer {
     async fn restart_file(
         &self,
         Parameters(p): Parameters<RestartFileInput>,
+        cancel: CancellationToken,
     ) -> Result<Content, ErrorData> {
-        forward!(self, p, restart_file, p.timeout_ms)
+        let client = self.workspace.capture();
+        let body = client
+            .restart_file(
+                &RestartFileParams::from(&p),
+                RequestOptions {
+                    timeout_ms: p.timeout_ms,
+                    cancellation: Some(cancel),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(to_mcp_error)?;
+        Content::json(body)
     }
 
     #[tool(
-        description = "Run a full `lake build` of the current workspace and report a compact pass/fail log: build success and, on failure, the failing modules with their error messages. Pass `warnings: true` to also include warnings from locally-declared targets (dependency warnings are excluded), `strict: true` to treat warnings as failures, or `json: true` for the full machine-readable report.",
+        description = "Run `lake build` in the current workspace and report a compact pass/fail log: build success and, on failure, the failing modules with their error messages. Pass `warnings: true` to also include warnings emitted by Lake, including dependency and configuration warnings, `strict: true` to treat warnings as failures, or `json: true` for the full machine-readable report. Optional `targets` scope the build; `timeout_ms` covers queueing and execution (default 30 minutes).",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -366,24 +439,46 @@ impl LeanckServer {
             open_world_hint = true
         )
     )]
-    async fn build(&self, Parameters(p): Parameters<BuildInput>) -> Result<Content, ErrorData> {
-        let workspace = self.daemon.workspace().await;
-        let report = leanckd::build::run(
-            &workspace,
-            leanckd::build::BuildOptions {
-                warnings: p.warnings,
-                strict: p.strict,
-                ..Default::default()
+    async fn build(
+        &self,
+        Parameters(p): Parameters<BuildInput>,
+        cancel: CancellationToken,
+    ) -> Result<Content, ErrorData> {
+        let client = self.workspace.capture();
+        let settings = &client.settings().build;
+        let warnings = p.warnings.unwrap_or(settings.warnings);
+        let strict = p.strict.unwrap_or(settings.strict);
+        let report = leanck_lake::build::run_with(
+            client.workspace(),
+            leanck_lake::build::BuildOptions {
+                warnings,
+                strict,
+                targets: p.targets.unwrap_or_else(|| settings.targets.clone()),
+            },
+            leanck_lake::ExecutionOptions {
+                timeout: p
+                    .timeout_ms
+                    .map(std::time::Duration::from_millis)
+                    .unwrap_or(std::time::Duration::from_millis(settings.timeout_ms)),
+                cancellation: Some(cancel),
+                max_output_bytes: p.max_output_bytes.unwrap_or(settings.max_output_bytes),
             },
         )
         .await
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        if p.json {
+        .map_err(|e| {
+            let data = Some(serde_json::json!({"kind":e.kind()}));
+            if matches!(e, leanck_lake::LakeError::InvalidOptions(_)) {
+                ErrorData::invalid_params(e.to_string(), data)
+            } else {
+                ErrorData::internal_error(e.to_string(), data)
+            }
+        })?;
+        if p.json.unwrap_or(client.settings().output.json) {
             Content::json(report)
         } else {
-            Ok(Content::text(leanckd::build::format_human(
+            Ok(Content::text(leanck_lake::build::format_human(
                 &report,
-                p.warnings || p.strict,
+                warnings || strict,
             )))
         }
     }
@@ -397,62 +492,25 @@ impl LeanckServer {
             open_world_hint = false
         )
     )]
-    async fn health(&self, Parameters(p): Parameters<HealthzInput>) -> Result<Content, ErrorData> {
-        let lsp_socket_path = self.daemon.discovery_path().await;
-        let lsp = match self.daemon.get().await {
-            Ok(up) => {
-                let result = match up.healthz().await {
-                    Ok(v) => Ok(v),
-                    Err(e) if DaemonCache::should_refresh(&e) => {
-                        let up = self.daemon.refresh().await;
-                        match up {
-                            Ok(up) => up.healthz().await,
-                            Err(e) => Err(e),
-                        }
-                    }
-                    Err(e) => Err(e),
-                };
-                match result {
-                    Ok(v) => normalize_lsp_health(v),
-                    Err(e) => serde_json::json!({
-                        "ok": false,
-                        "reason": e.to_string(),
-                    }),
-                }
-            }
-            Err(e) => serde_json::json!({
-                "ok": false,
-                "reason": e.to_string(),
-            }),
-        };
-        let lsp = with_lsp_socket_path(lsp, &lsp_socket_path);
-
-        let ok = lsp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
-        let mut body = serde_json::json!({
-            "ok": ok,
-            "lsp": lsp,
-        });
-        let issues = collect_health_issues(&body);
-        if let Some(obj) = body.as_object_mut() {
-            obj.insert(
-                "issues".to_string(),
-                serde_json::Value::Array(
-                    issues
-                        .iter()
-                        .map(|issue| {
-                            serde_json::json!({
-                                "level": issue.level,
-                                "message": issue.message,
-                            })
-                        })
-                        .collect(),
-                ),
-            );
-        }
-        if p.json {
-            Content::json(body)
+    async fn health(
+        &self,
+        Parameters(p): Parameters<HealthzInput>,
+        cancel: CancellationToken,
+    ) -> Result<Content, ErrorData> {
+        let client = self.workspace.capture();
+        let report = HealthReport::from_result(
+            client
+                .health(RequestOptions {
+                    cancellation: Some(cancel),
+                    ..Default::default()
+                })
+                .await,
+            &client.socket(),
+        );
+        if p.json.unwrap_or(client.settings().output.json) {
+            Content::json(report)
         } else {
-            Ok(Content::text(format_health_human(&body)))
+            Ok(Content::text(format_health_human(&report)))
         }
     }
 
@@ -466,20 +524,25 @@ impl LeanckServer {
         )
     )]
     async fn loogle(&self, Parameters(p): Parameters<LoogleInput>) -> Result<Content, ErrorData> {
+        let client = self.workspace.capture();
         let loogle_query = LoogleQuery::from(&p);
-        let has_multiple_terms = loogle_query.has_multiple_terms();
-        let query = loogle_query.build().ok_or_else(|| {
-            ErrorData::invalid_params(
-                "no Loogle query provided. Use `constant`, `substr`, `subexpr`, or `conclusion`.",
-                None,
+        let outcome = self
+            .loogle
+            .configured(&client.settings().loogle)
+            .search(
+                &loogle_query,
+                leanck_loogle::SearchOptions {
+                    limit: p.limit.unwrap_or(client.settings().loogle.limit),
+                },
             )
-        })?;
-        let limit = p.limit.unwrap_or(leanck_loogle::DEFAULT_LIMIT);
-        let mut result = leanck_loogle::search(&query, limit)
             .await
-            .map_err(|err| ErrorData::internal_error(err, None))?;
-        result.add_empty_multi_term_note(has_multiple_terms);
-        Ok(Content::text(leanck_loogle::format_human(&result)))
+            .map_err(|error| match error {
+                leanck_loogle::SearchError::EmptyQuery => {
+                    ErrorData::invalid_params(error.to_string(), None)
+                }
+                _ => ErrorData::internal_error(error.to_string(), None),
+            })?;
+        Ok(Content::text(leanck_loogle::format_human(&outcome)))
     }
 
     #[tool(
@@ -495,42 +558,19 @@ impl LeanckServer {
         &self,
         Parameters(p): Parameters<SetWorkspaceInput>,
     ) -> Result<Content, ErrorData> {
-        let raw = PathBuf::from(&p.path);
-        let candidate = raw.canonicalize().map_err(|e| {
-            ErrorData::invalid_params(
-                format!("could not canonicalize workspace path {:?}: {e}", p.path),
-                None,
-            )
-        })?;
-        if !candidate.is_dir() {
-            return Err(ErrorData::invalid_params(
-                format!(
-                    "workspace path {:?} is not a directory",
-                    candidate.display().to_string()
-                ),
-                None,
-            ));
-        }
-        let marker = [
-            candidate.join("lakefile.lean"),
-            candidate.join("lakefile.toml"),
-            candidate.join("lean-toolchain"),
-        ];
-        if !marker.iter().any(|m| m.exists()) {
-            return Err(ErrorData::invalid_params(
-                format!(
-                    "workspace path {:?} has no Lake project marker (lakefile.lean, lakefile.toml, lean-toolchain)",
-                    candidate.display().to_string()
-                ),
-                None,
-            ));
-        }
+        let candidate = leanck_core::workspace::WorkspaceRoot::validate_project(&p.path)
+            .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
 
-        self.daemon.set_workspace(candidate.clone()).await;
+        let settings = self
+            .config_args
+            .load(candidate.as_path())
+            .map_err(|e| ErrorData::invalid_params(format!("configuration: {e:#}"), None))?
+            .settings;
+        self.workspace.set_configured(candidate.clone(), settings);
         Content::json(serde_json::json!({
             "ok": true,
-            "workspace": candidate,
-            "socket_path": leanckd::paths::socket_path(&candidate),
+            "workspace": candidate.as_path(),
+            "socket_path": leanck_core::paths::socket_path(candidate.as_path()),
         }))
     }
 }
@@ -549,79 +589,49 @@ impl ServerHandler for LeanckServer {
     }
 }
 
-fn normalize_lsp_health(value: serde_json::Value) -> serde_json::Value {
-    match value {
-        serde_json::Value::Object(mut obj) => {
-            obj.entry("ok").or_insert(serde_json::Value::Bool(true));
-            serde_json::Value::Object(obj)
+fn to_mcp_error(error: ClientError) -> ErrorData {
+    let message = error.to_string();
+    match error {
+        ClientError::Workspace(_) => ErrorData::invalid_params(message, None),
+        ClientError::Daemon { kind, .. } => {
+            let data = Some(serde_json::json!({ "kind": kind }));
+            match kind {
+                ErrorKind::BadRequest | ErrorKind::NotFound => {
+                    ErrorData::invalid_params(message, data)
+                }
+                _ => ErrorData::internal_error(message, data),
+            }
         }
-        other => serde_json::json!({
-            "ok": true,
-            "response": other,
-        }),
-    }
-}
-
-fn with_lsp_socket_path(mut value: serde_json::Value, socket_path: &Path) -> serde_json::Value {
-    if let serde_json::Value::Object(obj) = &mut value {
-        obj.insert(
-            "socket_path".to_string(),
-            serde_json::Value::String(socket_path.display().to_string()),
-        );
-    }
-    value
-}
-
-fn to_mcp_error(err: Error) -> ErrorData {
-    let msg = err.to_string();
-    match err {
-        Error::Unresolved(_) | Error::InvalidPath(_) => ErrorData::invalid_params(msg, None),
-        _ => ErrorData::internal_error(msg, None),
-    }
-}
-
-#[derive(Debug)]
-struct HealthIssue {
-    level: &'static str,
-    message: String,
-}
-
-fn collect_health_issues(body: &serde_json::Value) -> Vec<HealthIssue> {
-    let mut issues = Vec::new();
-    let lsp = body.get("lsp").unwrap_or(&serde_json::Value::Null);
-    if lsp.get("ok").and_then(|v| v.as_bool()) != Some(true) {
-        let reason = lsp
-            .get("reason")
-            .and_then(|v| v.as_str())
-            .unwrap_or("not reachable");
-        issues.push(HealthIssue {
-            level: "error",
-            message: format!("lsp: {reason}"),
-        });
-    }
-
-    issues
-}
-
-fn format_health_human(body: &serde_json::Value) -> String {
-    let ok = body.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
-    let issues: Vec<String> = body
-        .get("issues")
-        .and_then(|v| v.as_array())
-        .into_iter()
-        .flatten()
-        .filter_map(|issue| {
-            let level = issue.get("level").and_then(|v| v.as_str())?;
-            let message = issue.get("message").and_then(|v| v.as_str())?;
-            Some(format!("{level}: {message}"))
-        })
-        .collect();
-    if ok && issues.is_empty() {
-        "ok".to_string()
-    } else if issues.is_empty() {
-        "error: health checks failed".to_string()
-    } else {
-        issues.join("\n")
+        ClientError::Cancelled { delivery_uncertain } => ErrorData::internal_error(
+            message,
+            Some(
+                serde_json::json!({"kind": "cancelled", "delivery_uncertain": delivery_uncertain}),
+            ),
+        ),
+        ClientError::Handshake(_) | ClientError::IncompatibleProtocol { .. } => {
+            ErrorData::internal_error(
+                message,
+                Some(serde_json::json!({"kind": "compatibility", "delivery_uncertain": false})),
+            )
+        }
+        ClientError::TransportTimeout { phase } => ErrorData::internal_error(
+            message,
+            Some(
+                serde_json::json!({"kind": "transport_timeout", "phase": phase.to_string(), "delivery_uncertain": phase != TransportPhase::Connect}),
+            ),
+        ),
+        ClientError::Protocol(_) => ErrorData::internal_error(
+            message,
+            Some(serde_json::json!({ "kind": "protocol_error", "delivery_uncertain": true })),
+        ),
+        ClientError::Transport { phase, .. } => ErrorData::internal_error(
+            message,
+            Some(serde_json::json!({
+                "phase": match phase { TransportPhase::Connect => "connect", TransportPhase::Write => "write", TransportPhase::Read => "read" },
+                "delivery_uncertain": phase != TransportPhase::Connect,
+            })),
+        ),
+        _ => ErrorData::internal_error(message, None),
     }
 }
 
@@ -631,9 +641,9 @@ mod tests {
 
     #[test]
     fn core_tool_surface() {
-        let server = LeanckServer::new(&Config {
-            workspace: std::env::temp_dir(),
-        });
+        let server = LeanckServer::new(&Config::defaults(
+            leanck_core::workspace::WorkspaceRoot::from_path(std::env::temp_dir()).unwrap(),
+        ));
         let mut names: Vec<_> = server
             .tool_router
             .list_all()
@@ -645,6 +655,7 @@ mod tests {
             names,
             [
                 "build",
+                "configuration",
                 "diagnostics",
                 "goal",
                 "health",
@@ -655,15 +666,6 @@ mod tests {
                 "sorry"
             ]
         );
-    }
-
-    #[test]
-    fn healthy_daemon_needs_no_registry() {
-        assert!(collect_health_issues(&serde_json::json!({"lsp": {"ok": true}})).is_empty());
-        let issues =
-            collect_health_issues(&serde_json::json!({"lsp": {"ok": false, "reason": "offline"}}));
-        assert_eq!(issues.len(), 1);
-        assert_eq!(issues[0].message, "lsp: offline");
     }
 
     #[tokio::test]
@@ -678,17 +680,17 @@ mod tests {
         ));
         std::fs::create_dir(&root).unwrap();
         let root = root.canonicalize().unwrap();
-        let original = std::env::temp_dir();
-        let server = LeanckServer::new(&Config {
-            workspace: original.clone(),
-        });
+        let original = std::env::temp_dir().canonicalize().unwrap();
+        let server = LeanckServer::new(&Config::defaults(
+            leanck_core::workspace::WorkspaceRoot::from_path(&original).unwrap(),
+        ));
         let input = || {
             Parameters(SetWorkspaceInput {
                 path: root.to_string_lossy().into_owned(),
             })
         };
         assert!(server.set_workspace(input()).await.is_err());
-        assert_eq!(server.daemon.workspace().await, original);
+        assert_eq!(server.workspace.capture().workspace(), original);
         for marker in ["lakefile.lean", "lakefile.toml", "lean-toolchain"] {
             std::fs::write(root.join(marker), "").unwrap();
             let response = server.set_workspace(input()).await.unwrap();
@@ -697,52 +699,41 @@ mod tests {
             assert_eq!(body["ok"], true);
             assert_eq!(body["workspace"], root.to_string_lossy().as_ref());
             assert!(body.get("registry").is_none());
-            assert_eq!(server.daemon.workspace().await, root);
+            assert_eq!(server.workspace.capture().workspace(), root);
             assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
             std::fs::remove_file(root.join(marker)).unwrap();
         }
         std::fs::remove_dir(&root).unwrap();
     }
+}
 
-    #[test]
-    fn health_format_is_minimal_when_clean() {
-        let body = serde_json::json!({
-            "ok": true,
-            "issues": [],
-        });
+#[cfg(test)]
+#[path = "../../test-support/fake_daemon.rs"]
+mod fake_daemon;
 
-        assert_eq!(format_health_human(&body), "ok");
-    }
+#[cfg(test)]
+#[path = "mcp_client_tests.rs"]
+mod client_tests;
 
-    #[test]
-    fn lsp_health_includes_socket_path_when_status_ok() {
-        let lsp = normalize_lsp_health(serde_json::json!({
-            "status": "ok",
-            "workspace": "/workspace",
-        }));
-        let lsp = with_lsp_socket_path(lsp, Path::new("/tmp/leanckd-test.sock"));
+fn deserialize_severity<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<SeverityFilter>, D::Error> {
+    SeverityFilter::deserialize(deserializer).map(Some)
+}
 
-        assert_eq!(lsp.get("ok").and_then(|v| v.as_bool()), Some(true));
-        assert_eq!(lsp.get("status").and_then(|v| v.as_str()), Some("ok"));
-        assert_eq!(
-            lsp.get("socket_path").and_then(|v| v.as_str()),
-            Some("/tmp/leanckd-test.sock")
-        );
-    }
-
-    #[test]
-    fn health_format_lists_issues() {
-        let body = serde_json::json!({
-            "ok": true,
-            "issues": [
-                { "level": "warning", "message": "lsp: daemon protocol mismatch" },
-                { "level": "warning", "message": "lsp: not reachable" }
-            ],
-        });
-
-        assert_eq!(
-            format_health_human(&body),
-            "warning: lsp: daemon protocol mismatch\nwarning: lsp: not reachable"
-        );
+fn configured_severity(settings: &leanck_config::Diagnostics) -> SeverityFilter {
+    use leanck_config::Severity as S;
+    use leanck_core::api::DiagnosticSeverity as D;
+    SeverityFilter::Only {
+        severities: settings
+            .severity
+            .iter()
+            .map(|v| match v {
+                S::Error => D::Error,
+                S::Warning => D::Warning,
+                S::Information => D::Information,
+                S::Hint => D::Hint,
+            })
+            .collect(),
     }
 }

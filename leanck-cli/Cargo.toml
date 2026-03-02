@@ -1,6 +1,6 @@
 [package]
 name = "leanck-cli"
-version = "0.3.0"
+version = "0.25.0"
 edition.workspace = true
 
 [[bin]]
@@ -13,9 +13,12 @@ clap.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-leanck-loogle = { version = "0.1.0", path = "../leanck-loogle" }
-leanck-normalize = { path = "../leanck-normalize" }
+leanck-loogle = { version = "0.4.0", path = "../leanck-loogle" }
+leanck-normalize = { version = "0.14.0", path = "../leanck-normalize", features = ["command"] }
 serde_json.workspace = true
 serde = { workspace = true, features = ["derive"] }
-leanckd = { version = "0.2.0", path = "../leanckd" }
 color-print = "0.3.7"
+leanck-core = { version = "0.10.0", path = "../leanck-core" }
+leanck-client = { version = "0.11.0", path = "../leanck-client" }
+leanck-lake = { version = "0.5.0", path = "../leanck-lake" }
+leanck-config = { version = "0.1.0", path = "../leanck-config" }

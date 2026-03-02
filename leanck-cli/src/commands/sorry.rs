@@ -1,8 +1,9 @@
-use std::path::PathBuf;
+use crate::args::LiveArgs;
 
-use leanckd::proto::SorryParams;
+use leanck_core::api::SorryParams;
 
-use crate::commands::lean::{connect, print_json, render_sorry};
+use crate::commands::output::print_json;
+use leanck_client::render::render_sorry;
 
 #[derive(clap::Args, Debug)]
 pub(crate) struct Args {
@@ -11,28 +12,17 @@ pub(crate) struct Args {
     #[arg(value_name = "PATH")]
     pub(crate) path: String,
 
-    /// Per-request timeout in seconds. Also stretches the daemon's
-    /// elaboration wait (defaults: 300s request, 120s elaboration wait).
-    #[arg(long, value_name = "SECS")]
-    pub(crate) timeout: Option<u64>,
-
-    /// Workspace root. Defaults to the auto-detected Lake project.
-    #[arg(long)]
-    pub(crate) workspace: Option<PathBuf>,
-
-    /// Print the raw daemon JSON instead of compact text.
-    #[arg(long, default_value_t = false)]
-    pub(crate) json: bool,
+    #[command(flatten)]
+    pub(crate) live: LiveArgs,
 }
 
 pub(crate) async fn run(args: Args) -> anyhow::Result<()> {
-    let (_workspace, client) = connect(args.workspace.clone(), args.timeout).await?;
-    let params = SorryParams { path: args.path.clone() };
-    let body = client
-        .sorries(&params)
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    if args.json {
+    let client = args.live.client()?;
+    let params = SorryParams {
+        path: args.path.clone(),
+    };
+    let body = client.sorries(&params, args.live.request_options()).await?;
+    if args.live.output.json {
         print_json(&body)?;
     } else {
         println!("{}", render_sorry(&body));

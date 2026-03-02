@@ -10,7 +10,7 @@ async fn main() -> anyhow::Result<()> {
     let args = CliArgs::parse();
     let config = Config::from_cli(args)?;
     tracing::info!(
-        workspace = %config.workspace.display(),
+        workspace = %config.workspace.as_path().display(),
         "starting leanck-mcp MCP server (stdio)"
     );
 

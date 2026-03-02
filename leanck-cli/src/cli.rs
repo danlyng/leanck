@@ -27,12 +27,16 @@ const AFTER_HELP: &str = color_print::cstr!(
     after_help = AFTER_HELP,
 )]
 pub(crate) struct Cli {
+    #[command(flatten)]
+    pub(crate) config: leanck_config::ConfigArgs,
     #[command(subcommand)]
     pub(crate) command: Cmd,
 }
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum Cmd {
+    /// Inspect, validate, or initialize leanck configuration.
+    Config(leanck_config::Command),
     // ── Live Lean state (same `leanckd` daemon the MCP server uses) ──────────
     /// Report diagnostics for a file.
     #[command(visible_alias = "d")]
@@ -47,15 +51,15 @@ pub(crate) enum Cmd {
     /// List declarations in a file.
     List(crate::commands::list::Args),
 
-    /// Rebuild the dependencies of a file.
-    #[command(name = "restart-file", alias = "restart_file")]
+    /// Restart the Lean file elaborator.
+    #[command(name = "restart-file")]
     RestartFile(crate::commands::restart_file::Args),
 
     /// Wraps `lake build` for compact output.
     Build(crate::commands::build::Args),
 
     /// Normalize Lean comment formatting and top-of-file frontmatter.
-    Normalize(leanck_normalize::Args),
+    Normalize(leanck_normalize::command::Args),
 
     /// Search Lean and Mathlib declarations through Loogle.
     Loogle(crate::commands::loogle::Args),
@@ -63,17 +67,6 @@ pub(crate) enum Cmd {
     /// Check the Lean workspace and daemon.
     #[command(visible_alias = "health")]
     Doctor(crate::commands::doctor::Args),
-}
-
-pub(crate) fn parse_positive_usize_cli(value: &str) -> Result<usize, String> {
-    let parsed = value
-        .parse::<usize>()
-        .map_err(|_| format!("`{value}` is not a valid positive integer"))?;
-    if parsed == 0 {
-        Err("value must be at least 1".to_string())
-    } else {
-        Ok(parsed)
-    }
 }
 
 #[cfg(test)]
@@ -109,23 +102,5 @@ mod tests {
         // Catches clap mis-declarations (duplicate flags, bad arg combos)
         // at test time rather than first invocation.
         Cli::command().debug_assert();
-    }
-
-    #[test]
-    fn parse_positive_usize_accepts_positive_values() {
-        assert_eq!(parse_positive_usize_cli("1"), Ok(1));
-        assert_eq!(parse_positive_usize_cli("42"), Ok(42));
-    }
-
-    #[test]
-    fn parse_positive_usize_rejects_zero() {
-        assert!(parse_positive_usize_cli("0").is_err());
-    }
-
-    #[test]
-    fn parse_positive_usize_rejects_non_numbers() {
-        assert!(parse_positive_usize_cli("abc").is_err());
-        assert!(parse_positive_usize_cli("-3").is_err());
-        assert!(parse_positive_usize_cli("").is_err());
     }
 }

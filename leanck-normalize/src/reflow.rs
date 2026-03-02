@@ -1,7 +1,10 @@
-use markdown_reflow::{EdgeWidths, Options as ReflowOptions, reflow};
+use markdown_reflow::{EdgeWidths, Options as ReflowOptions, ReflowWidth};
 
+use crate::Context;
 pub use crate::spelling::SpellingDirection;
 use crate::spelling::correct_spelling;
+use crate::{CommentKind, NormalizeError};
+use leanck_config::{DelimiterStyle, HeadingCase, NormalizeRules};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Options {
@@ -62,6 +65,7 @@ impl Stats {
 pub struct NormalizeResult {
     pub output: String,
     pub stats: Stats,
+    pub warnings: Vec<leanck_config::Warning>,
 }
 
 impl Default for Options {
@@ -74,14 +78,41 @@ impl Default for Options {
             comment_reflow: true,
             linkify_urls: false,
             spelling: Some(SpellingDirection::BritishToAmerican),
-            capitalize_after_colon: true,
+            capitalize_after_colon: false,
             collapse_blank_lines: true,
         }
     }
 }
 
-const PREFIX: &str = "/--";
-const PREFIX_DOC: &str = "/-!";
+impl Options {
+    pub(crate) fn configuration(
+        self,
+        width: usize,
+        rules: &NormalizeRules,
+    ) -> leanck_config::Normalize {
+        leanck_config::Normalize {
+            width,
+            rules: rules.clone(),
+            frontmatter: self.frontmatter.enabled,
+            header: self.frontmatter.header,
+            sort_imports: self.frontmatter.sort_imports,
+            attributes: self.attributes,
+            headings: self.headings,
+            comments: self.comments,
+            comment_reflow: self.comment_reflow,
+            linkify_urls: self.linkify_urls,
+            spelling: match self.spelling {
+                Some(SpellingDirection::BritishToAmerican) => leanck_config::Spelling::American,
+                Some(SpellingDirection::AmericanToBritish) => leanck_config::Spelling::British,
+                None => leanck_config::Spelling::Off,
+            },
+            capitalize_after_colon: self.capitalize_after_colon,
+            collapse_blank_lines: self.collapse_blank_lines,
+            ..Default::default()
+        }
+    }
+}
+
 const SUFFIX: &str = "-/";
 
 /// Overhead of the opening delimiter followed by a space: `/-- ` or `/-! `.
@@ -98,66 +129,125 @@ const OPENING_OVERHEAD: usize = 4;
 ///   rows are the exception: a delimiter never shares a line with a table
 ///   row, since that would break the column alignment.
 /// - Unmatched delimiters cause an error.
-pub fn normalize(source: &str, target_width: usize, options: Options) -> Result<String, String> {
-    normalize_with_stats(source, target_width, options).map(|result| result.output)
+#[cfg(test)]
+pub fn normalize(
+    source: &str,
+    target_width: usize,
+    options: Options,
+) -> Result<String, NormalizeError> {
+    normalize_with_stats(source, target_width, options, 2026).map(|result| result.output)
 }
 
 pub fn normalize_with_stats(
     source: &str,
     target_width: usize,
     options: Options,
-) -> Result<NormalizeResult, String> {
-    let mut stats = Stats::default();
-
-    let mut normalized = crate::frontmatter::normalize_with_options(
+    _copyright_year: i32,
+) -> Result<NormalizeResult, NormalizeError> {
+    crate::normalize_with_context(
         source,
-        crate::frontmatter::current_year(),
-        options.frontmatter,
-    );
-    if normalized != source {
+        target_width,
+        options,
+        &NormalizeRules::default(),
+        &Context::default(),
+    )
+}
+
+pub(crate) fn normalize_configured(
+    source: &str,
+    target_width: usize,
+    options: Options,
+    rules: &NormalizeRules,
+    context: &Context<'_>,
+    comment_layout: bool,
+) -> Result<NormalizeResult, NormalizeError> {
+    let mut stats = Stats::default();
+    let mut warnings = Vec::new();
+    if let Some(warning) =
+        crate::frontmatter::header_warning(source, options.frontmatter, &rules.frontmatter, context)
+    {
+        warnings.push(warning);
+    }
+    // Capture attribute diagnostics against the original segment's line numbers,
+    // before frontmatter insertion or reordering can shift their locations.
+    let attribute_normalized = if options.attributes {
+        let (output, moved, attribute_warnings) =
+            crate::attributes::configured(source, &rules.attributes, target_width);
+        stats.attributes_moved = moved;
+        warnings.extend(attribute_warnings);
+        output
+    } else {
+        source.to_owned()
+    };
+    let mut normalized =
+        crate::frontmatter::configured(&attribute_normalized, options.frontmatter, rules, context);
+    if normalized != attribute_normalized {
         stats.frontmatter_changes = 1;
     }
 
-    if options.attributes {
-        let (attribute_normalized, moved) = crate::attributes::normalize_with_count(&normalized);
-        normalized = attribute_normalized;
-        stats.attributes_moved = moved;
-    }
-
     if options.headings {
-        let (heading_normalized, converted) = convert_heading_banners(&normalized);
+        let (heading_normalized, converted) =
+            convert_heading_banners_configured(&normalized, &rules.headings);
         normalized = heading_normalized;
         stats.headings_converted = converted;
     }
     let mut lines: Vec<String> = normalized.lines().map(|s| s.to_string()).collect();
 
-    if options.comments {
-        let blocks = find_blocks(&normalized)?;
+    if options.comments
+        && (comment_layout
+            || options.headings
+            || options.spelling.is_some()
+            || options.comment_reflow
+            || options.capitalize_after_colon)
+    {
+        let blocks = find_blocks_with_context(&normalized, context.seen_module_doc)?;
         // Process from bottom to top so line indices above don't shift.
         for block in blocks.iter().rev() {
-            if reflow_block(&mut lines, block, target_width, options)? {
+            if reflow_block(
+                &mut lines,
+                block,
+                target_width,
+                options,
+                rules,
+                context,
+                comment_layout,
+            )? {
                 stats.comment_blocks_changed += 1;
             }
         }
     }
 
     if options.collapse_blank_lines {
-        stats.blank_lines_collapsed = collapse_blank_lines(&mut lines);
+        stats.blank_lines_collapsed = collapse_blank_lines_configured(
+            &mut lines,
+            usize::from(rules.whitespace.max_blank_lines),
+        );
     }
 
     let mut out = lines.join("\n");
-    if source.ends_with('\n') && !out.ends_with('\n') {
+    if !options.collapse_blank_lines {
+        // lines()/join() otherwise loses one terminal blank line even when the
+        // whitespace rule is disabled, including in partially reenabled regions.
+        let tail = &source[source.trim_end_matches(['\r', '\n']).len()..];
+        let newlines = tail.bytes().filter(|b| *b == b'\n').count();
+        out.truncate(out.trim_end_matches('\n').len());
+        out.extend(std::iter::repeat_n('\n', newlines));
+    } else if source.ends_with('\n') && !out.ends_with('\n') {
         out.push('\n');
     }
-    Ok(NormalizeResult { output: out, stats })
+    Ok(NormalizeResult {
+        output: out,
+        stats,
+        warnings,
+    })
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn reflow_comments(
     source: &str,
     target_width: usize,
     spelling: SpellingDirection,
-) -> Result<String, String> {
+) -> Result<String, NormalizeError> {
     let options = Options {
         spelling: Some(spelling),
         ..Options::default()
@@ -168,17 +258,68 @@ pub fn reflow_comments(
 /// Collapse runs of consecutive blank lines into a single blank line, anywhere
 /// in the file (inside comments or not). A line counts as blank when it is
 /// empty or whitespace-only; the kept line is emptied of its whitespace.
-fn collapse_blank_lines(lines: &mut Vec<String>) -> usize {
+fn collapse_blank_lines_configured(lines: &mut Vec<String>, max: usize) -> usize {
     let before = lines.len();
-    let mut prev_blank = false;
-    lines.retain_mut(|line| {
-        let blank = line.trim().is_empty();
-        let keep = !(blank && prev_blank);
-        prev_blank = blank;
-        if keep && blank {
-            line.clear();
+    let mut blanks = 0;
+    let mut fence: Option<(char, usize)> = None;
+    let source = lines.join("\n");
+    let mut literal_lines = crate::syntax::literal_lines(&source);
+    if let Ok(blocks) = find_blocks_with_context(&source, false) {
+        for block in blocks {
+            literal_lines.extend(
+                crate::prose::protected_lines(&extract_content(lines, &block))
+                    .into_iter()
+                    .map(|line| block.start_line + line),
+            );
         }
-        keep
+    }
+    let mut line_number = 0;
+    let mut math = false;
+    lines.retain_mut(|line| {
+        let number = line_number;
+        line_number += 1;
+        if literal_lines.contains(&number) {
+            blanks = 0;
+            return true;
+        }
+        let t = line.trim_start();
+        if t.trim() == "$$" {
+            math = !math;
+            blanks = 0;
+            return true;
+        }
+        if math {
+            blanks = 0;
+            return true;
+        }
+        let mark = t.chars().next().filter(|c| matches!(c, '`' | '~'));
+        let count = mark.map_or(0, |c| t.chars().take_while(|x| *x == c).count());
+        if count >= 3 {
+            if let Some((c, n)) = fence {
+                if Some(c) == mark && count >= n {
+                    fence = None;
+                }
+            } else {
+                fence = Some((mark.unwrap(), count));
+            }
+            blanks = 0;
+            return true;
+        }
+        if fence.is_some() {
+            return true;
+        }
+        let blank = line.trim().is_empty();
+        if !blank {
+            blanks = 0;
+            return true;
+        }
+        blanks += 1;
+        if blanks <= max {
+            line.clear();
+            true
+        } else {
+            false
+        }
     });
     before - lines.len()
 }
@@ -247,19 +388,39 @@ fn capitalize_after_colon(text: &str) -> String {
 /// `--` text lines, and a closing rule line. The title is title-cased, with
 /// small words (articles, short prepositions) and backtick code spans left
 /// alone. Banners inside block comments are not touched.
-fn convert_heading_banners(source: &str) -> (String, usize) {
+fn convert_heading_banners_configured(
+    source: &str,
+    rules: &leanck_config::HeadingRules,
+) -> (String, usize) {
     let lines: Vec<&str> = source.lines().collect();
     let mut out: Vec<String> = Vec::with_capacity(lines.len());
     let mut converted = 0usize;
+    let actual_comments: std::collections::HashSet<_> = crate::syntax::line_comments(source)
+        .into_iter()
+        .map(|r| source[..r.start].bytes().filter(|b| *b == b'\n').count())
+        .collect();
     let mut depth = 0usize;
     let mut i = 0;
 
     while i < lines.len() {
-        if depth == 0
+        if actual_comments.contains(&i)
             && let Some((title, end)) = parse_banner(&lines, i)
+            && (i..=end).all(|line| actual_comments.contains(&line))
         {
             let indent = leading_whitespace(lines[i]);
-            out.push(format!("{indent}{PREFIX_DOC} ## {title} {SUFFIX}"));
+            let title = rules.replacements.get(&title).cloned().unwrap_or(title);
+            let title = match rules.case {
+                HeadingCase::Off => title,
+                HeadingCase::Title => title_case_with_words(&title, &rules.small_words),
+                HeadingCase::Sentence => capitalize_segments_first(&title),
+            };
+            out.push(format!(
+                "{indent}{}",
+                rules
+                    .template
+                    .replace("{hashes}", &"#".repeat(usize::from(rules.level)))
+                    .replace("{title}", &title)
+            ));
             converted += 1;
             i = end + 1;
             continue;
@@ -345,20 +506,36 @@ fn parse_banner(lines: &[&str], start: usize) -> Option<(String, usize)> {
     if title.contains("/-") || title.contains(SUFFIX) {
         return None;
     }
-    Some((title_case(&title), i))
+    Some((title, i))
 }
 
 /// Small words left uncapitalized in the middle of a title.
-const SMALL_WORDS: &[&str] = &[
-    "a", "an", "and", "as", "at", "but", "by", "for", "from", "in", "into", "nor", "of", "off",
-    "on", "onto", "or", "over", "per", "so", "the", "to", "up", "via", "vs", "with", "yet",
-];
-
-/// Title-case `text`: capitalize the first letter of each word (and of each
-/// hyphen-separated segment), except small words in the middle of the title.
-/// Words touching backtick code spans are never altered, and existing
-/// capitalization is preserved (only lowercase first letters are raised).
-fn title_case(text: &str) -> String {
+fn capitalize_segments_first(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+fn title_case_with_words(text: &str, small_words: &[String]) -> String {
+    crate::prose::transform_with_offsets(text, |part, offset| {
+        let leading = &part[..part.len() - part.trim_start().len()];
+        let trailing = &part[part.trim_end().len()..];
+        if part.trim().is_empty() {
+            return part.to_owned();
+        }
+        format!(
+            "{leading}{}{trailing}",
+            title_case_plain(
+                part.trim(),
+                small_words,
+                text[..offset].trim().is_empty(),
+                text[offset + part.len()..].trim().is_empty()
+            )
+        )
+    })
+}
+fn title_case_plain(text: &str, small_words: &[String], at_start: bool, at_end: bool) -> String {
     let words: Vec<&str> = text.split_whitespace().collect();
     let last = words.len().saturating_sub(1);
     let mut in_code = false;
@@ -373,8 +550,8 @@ fn title_case(text: &str) -> String {
             out.push((*word).to_string());
             continue;
         }
-        let small = SMALL_WORDS.contains(&word.to_ascii_lowercase().as_str());
-        if small && i != 0 && i != last {
+        let small = small_words.iter().any(|s| s.eq_ignore_ascii_case(word));
+        if small && (i != 0 || !at_start) && (i != last || !at_end) {
             out.push((*word).to_string());
         } else {
             out.push(capitalize_segments(word));
@@ -430,65 +607,72 @@ struct Block {
 
 /// Scan `source` for Lean block comments.  Returns an error if any delimiter
 /// is unmatched.
-fn find_blocks(source: &str) -> Result<Vec<Block>, String> {
-    let lines: Vec<&str> = source.lines().collect();
+fn find_blocks_with_context(source: &str, mut seen: bool) -> Result<Vec<Block>, NormalizeError> {
+    let bytes = source.as_bytes();
     let mut blocks = Vec::new();
-    let mut seen_doc_comment = false;
-
-    // (start_line, start_after_byte, is_doc, start_delim_col)
-    let mut open: Option<(usize, usize, bool, usize)> = None;
-
-    for (li, line) in lines.iter().enumerate() {
-        let bytes = line.as_bytes();
-        let mut col = 0usize;
-        while col < line.len() {
-            if let Some((sl, sa, is_doc, sdc)) = open {
-                if bytes[col..].starts_with(SUFFIX.as_bytes()) {
-                    // A `## …` block is a section heading, never the module
-                    // docstring — it must not claim the module-doc slot.
-                    let module_doc = is_doc
-                        && !seen_doc_comment
-                        && !is_section_heading_block(&lines, sl, sa, li, col);
-                    if is_doc {
-                        seen_doc_comment = true;
-                    }
-                    blocks.push(Block {
-                        start_line: sl,
-                        start_after: sa,
-                        end_line: li,
-                        end_before: col,
-                        is_doc,
-                        module_doc,
-                        start_delim_col: sdc,
-                        end_delim_col: col,
-                    });
-                    open = None;
-                    col += SUFFIX.len();
-                } else {
-                    col += 1;
-                }
-            } else {
-                if bytes[col..].starts_with(PREFIX_DOC.as_bytes()) {
-                    open = Some((li, col + PREFIX_DOC.len(), true, col));
-                    col += PREFIX_DOC.len();
-                } else if bytes[col..].starts_with(PREFIX.as_bytes()) {
-                    open = Some((li, col + PREFIX.len(), false, col));
-                    col += PREFIX.len();
-                } else {
-                    col += 1;
-                }
+    let mut i = 0;
+    let lines: Vec<_> = source.lines().collect();
+    let position = |offset: usize| {
+        let before = &source[..offset];
+        (
+            before.bytes().filter(|c| *c == b'\n').count(),
+            before.rfind('\n').map_or(offset, |p| offset - p - 1),
+        )
+    };
+    while i < bytes.len() {
+        if bytes[i..].starts_with(b"--") {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
             }
+            continue;
         }
+        if let Some(end) = crate::syntax::literal_end(source, i) {
+            i = end;
+            continue;
+        }
+        if !bytes[i..].starts_with(b"/-") {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        let doc = bytes[i..].starts_with(b"/-!");
+        let recognized = doc || bytes[i..].starts_with(b"/--");
+        let after = i + if recognized { 3 } else { 2 };
+        let Some(end) = crate::syntax::block_end(source, start) else {
+            if recognized {
+                return Err(NormalizeError::UnmatchedOpeningDelimiter {
+                    kind: if doc {
+                        CommentKind::Doc
+                    } else {
+                        CommentKind::Block
+                    },
+                    line: position(start).0 + 1,
+                });
+            }
+            break;
+        };
+        i = end - 2;
+        if recognized {
+            let (sl, sc) = position(start);
+            let (el, ec) = position(i);
+            let module_doc = doc && !seen && !is_section_heading_block(&lines, sl, sc + 3, el, ec);
+            if doc {
+                seen = true;
+            }
+            blocks.push(Block {
+                start_line: sl,
+                start_after: sc + 3,
+                end_line: el,
+                end_before: ec,
+                is_doc: doc,
+                module_doc,
+                start_delim_col: sc,
+                end_delim_col: ec,
+            });
+        }
+        let _ = after;
+        i += 2;
     }
-
-    if let Some((sl, _, is_doc, _)) = open {
-        let tag = if is_doc { "/-!" } else { "/--" };
-        return Err(format!(
-            "unmatched opening delimiter '{tag}' at line {} (no closing '-/')",
-            sl + 1
-        ));
-    }
-
     Ok(blocks)
 }
 
@@ -501,6 +685,7 @@ fn is_section_heading_block(
     end_line: usize,
     end_before: usize,
 ) -> bool {
+    let mut content = Vec::new();
     for (offset, line) in lines[start_line..=end_line].iter().enumerate() {
         let li = start_line + offset;
         let start = if li == start_line { start_after } else { 0 };
@@ -509,12 +694,18 @@ fn is_section_heading_block(
         } else {
             line.len()
         };
-        let t = line[start..end].trim();
-        if !t.is_empty() {
-            return t.starts_with("##");
+        let text = line[start..end].trim();
+        if !text.is_empty() {
+            content.push(text);
         }
     }
-    false
+    let Some(first) = content.first() else {
+        return false;
+    };
+    let hashes = first.chars().take_while(|c| *c == '#').count();
+    hashes > 0
+        && first[hashes..].starts_with(char::is_whitespace)
+        && (hashes >= 2 || content.len() == 1)
 }
 
 // ---------------------------------------------------------------------------
@@ -526,19 +717,89 @@ fn reflow_block(
     block: &Block,
     target_width: usize,
     options: Options,
-) -> Result<bool, String> {
+    rules: &NormalizeRules,
+    context: &Context<'_>,
+    comment_layout: bool,
+) -> Result<bool, NormalizeError> {
     let before = lines[block.start_line..=block.end_line].join("\n");
     let prefix = if block.is_doc { "/-!" } else { "/--" };
 
-    let original_content = extract_content(lines, block);
+    // With layout and wrapping disabled, apply prose edits directly to the raw
+    // comment body so indentation, blank lines, and delimiter spacing stay exact.
+    let prose_only = !comment_layout && !options.comment_reflow;
+    let original_content = if prose_only {
+        extract_raw_content(lines, block)
+    } else {
+        extract_content(lines, block)
+    };
     let mut content = original_content.clone();
-    if let Some(spelling) = options.spelling {
-        content = correct_spelling(&content, spelling);
+    if options.headings {
+        content = crate::prose::heading_titles(&content, |title| {
+            let title = rules
+                .headings
+                .replacements
+                .get(title)
+                .map(String::as_str)
+                .unwrap_or(title);
+            match rules.headings.case {
+                HeadingCase::Off => title.to_owned(),
+                HeadingCase::Title => title_case_with_words(title, &rules.headings.small_words),
+                HeadingCase::Sentence => crate::prose::transform(title, capitalize_segments_first),
+            }
+        });
     }
-    if options.capitalize_after_colon {
-        content = capitalize_after_colon(&content);
+    content = crate::prose::transform(&content, |text| {
+        let mut text = text.to_owned();
+        if let Some(spelling) = options.spelling {
+            text = if let Some(dictionary) = context.dictionary {
+                dictionary.correct(&text)
+            } else {
+                correct_spelling(&text, spelling)
+            };
+        }
+        if options.capitalize_after_colon {
+            text = capitalize_after_colon(&text);
+        }
+        text
+    });
+    if !options.comment_reflow && options.linkify_urls {
+        content = crate::prose::reflow_protected(
+            &content,
+            ReflowOptions {
+                widths: EdgeWidths {
+                    middle: ReflowWidth::Disabled,
+                    ..Default::default()
+                },
+                linkify_urls: true,
+            },
+        )
+        .map_err(NormalizeError::Reflow)?
+        .trim_end_matches('\n')
+        .to_owned();
     }
-    if !options.comment_reflow && content == original_content {
+    if prose_only {
+        if content == original_content {
+            return Ok(false);
+        }
+        let opening = &lines[block.start_line][..block.start_after];
+        let closing = &lines[block.end_line][block.end_before..];
+        let replacement = format!("{opening}{content}{closing}");
+        lines.splice(
+            block.start_line..=block.end_line,
+            replacement.split('\n').map(str::to_owned),
+        );
+        return Ok(true);
+    }
+    let style = if !comment_layout {
+        DelimiterStyle::Off
+    } else if block.module_doc {
+        rules.comments.module
+    } else if block.is_doc {
+        rules.comments.section
+    } else {
+        rules.comments.declaration
+    };
+    if !options.comment_reflow && content == original_content && style == DelimiterStyle::Off {
         return Ok(false);
     }
     if content.trim().is_empty() {
@@ -547,24 +808,36 @@ fn reflow_block(
 
     let indent = leading_whitespace(&lines[block.start_line]).to_string();
     let indent_w = char_width(&indent);
+    let layout_width = if options.comment_reflow {
+        target_width
+    } else {
+        usize::MAX
+    };
 
-    if block.module_doc {
+    if style == DelimiterStyle::Separate
+        || (style == DelimiterStyle::Off
+            && lines[block.start_line][block.start_after..]
+                .trim()
+                .is_empty()
+            && lines[block.end_line][..block.end_before].trim().is_empty())
+    {
         // Module docstring ── delimiters always on their own lines.
         let reflowed;
         let content_ref = if options.comment_reflow {
             let effective_w = target_width.saturating_sub(indent_w).max(1);
-            reflowed = reflow(
+            reflowed = crate::prose::reflow_protected(
                 &content,
                 ReflowOptions {
                     widths: EdgeWidths {
-                        first: Some(effective_w),
-                        middle: Some(effective_w),
-                        last: Some(effective_w),
-                        single: Some(effective_w),
+                        first: ReflowWidth::Finite(effective_w),
+                        middle: ReflowWidth::Finite(effective_w),
+                        last: ReflowWidth::Finite(effective_w),
+                        single: ReflowWidth::Finite(effective_w),
                     },
                     linkify_urls: options.linkify_urls,
                 },
-            )?;
+            )
+            .map_err(NormalizeError::Reflow)?;
             reflowed.trim_end()
         } else {
             content.trim_end()
@@ -594,34 +867,39 @@ fn reflow_block(
             let middle_w = target_width.saturating_sub(continuation_w).max(1);
             let final_w = target_width.saturating_sub(closing_w).max(1);
             let single_w = target_width.saturating_sub(both_w).max(1);
-            reflowed = reflow(
+            reflowed = crate::prose::reflow_protected(
                 &content,
                 ReflowOptions {
                     widths: EdgeWidths {
-                        first: Some(first_w),
-                        middle: Some(middle_w),
-                        last: Some(final_w),
-                        single: Some(single_w),
+                        first: ReflowWidth::Finite(first_w),
+                        middle: ReflowWidth::Finite(middle_w),
+                        last: ReflowWidth::Finite(final_w),
+                        single: ReflowWidth::Finite(single_w),
                     },
                     linkify_urls: options.linkify_urls,
                 },
-            )?;
+            )
+            .map_err(NormalizeError::Reflow)?;
             reflowed.trim_end()
         } else {
             content.trim_end()
         };
         let lines_ref: Vec<&str> = content_ref.lines().collect();
 
+        if style == DelimiterStyle::Off {
+            expand_preserving(lines, block, &lines_ref, prefix, &indent);
+            return Ok(block_changed(lines, block.start_line, &before));
+        }
         // If the original was single-line and the content is still a single
         // line, try the true single-line format.
         if block.start_line == block.end_line
             && lines_ref.len() == 1
-            && try_single_line(lines, block, lines_ref[0], prefix, target_width)
+            && try_single_line(lines, block, lines_ref[0], prefix, layout_width)
         {
             return Ok(block_changed(lines, block.start_line, &before));
         }
 
-        expand_compact(lines, block, &lines_ref, prefix, &indent, target_width);
+        expand_compact(lines, block, &lines_ref, prefix, &indent, layout_width);
     }
 
     Ok(block_changed(lines, block.start_line, &before))
@@ -639,6 +917,10 @@ fn block_changed(lines: &[String], start: usize, before: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 fn extract_content(lines: &[String], block: &Block) -> String {
+    strip_common_indent(&extract_raw_content(lines, block))
+}
+
+fn extract_raw_content(lines: &[String], block: &Block) -> String {
     let mut parts: Vec<&str> = Vec::new();
 
     for li in block.start_line..=block.end_line {
@@ -656,8 +938,7 @@ fn extract_content(lines: &[String], block: &Block) -> String {
         parts.push(&line[start..end]);
     }
 
-    let joined = parts.join("\n");
-    strip_common_indent(&joined)
+    parts.join("\n")
 }
 
 fn strip_common_indent(s: &str) -> String {
@@ -853,6 +1134,45 @@ fn splice_vec(vec: &mut Vec<String>, start: usize, end: usize, replacement: &[St
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+fn expand_preserving(
+    lines: &mut Vec<String>,
+    block: &Block,
+    content: &[&str],
+    prefix: &str,
+    indent: &str,
+) {
+    let before = lines[block.start_line][..block.start_delim_col].to_owned();
+    let after = lines[block.end_line][block.end_delim_col + 2..].to_owned();
+    let open_separate = lines[block.start_line][block.start_after..]
+        .trim()
+        .is_empty();
+    let close_separate = lines[block.end_line][..block.end_before].trim().is_empty();
+    let mut content = content.to_vec();
+    while content.first().is_some_and(|s| s.trim().is_empty()) {
+        content.remove(0);
+    }
+    while content.last().is_some_and(|s| s.trim().is_empty()) {
+        content.pop();
+    }
+    let mut out = Vec::new();
+    if open_separate {
+        out.push(format!("{before}{prefix}"));
+    }
+    for (i, line) in content.iter().enumerate() {
+        if i == 0 && !open_separate {
+            out.push(format!("{before}{prefix} {}", line.trim_start()));
+        } else {
+            out.push(format!("{indent}{line}"));
+        }
+    }
+    if close_separate {
+        out.push(format!("{indent}-/{after}"));
+    } else if let Some(last) = out.last_mut() {
+        last.push_str(&format!(" -/{after}"));
+    }
+    lines.splice(block.start_line..=block.end_line, out);
+}
 
 #[cfg(test)]
 mod tests {
@@ -1093,14 +1413,17 @@ def x := 1
     }
 
     #[test]
-    fn capitalize_after_colon_in_reflowed_comment() {
-        let out = reflow_comments(
-            "/-- This is: not okay -/\n",
-            100,
-            SpellingDirection::BritishToAmerican,
-        )
-        .unwrap();
-        assert_eq!(out, "/-- This is: Not okay -/\n");
+    fn capitalize_after_colon_is_opt_in() {
+        let source = "/-- This is: not okay -/\n";
+        assert_eq!(normalize(source, 100, Options::default()).unwrap(), source);
+        let options = Options {
+            capitalize_after_colon: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            normalize(source, 100, options).unwrap(),
+            "/-- This is: Not okay -/\n"
+        );
     }
 
     #[test]
@@ -1523,7 +1846,7 @@ def x := 1
         let out = reflow_comments(src, 100, SpellingDirection::AmericanToBritish).unwrap();
         assert_eq!(
             out,
-            "/-- The expectation of the Gamma distribution with shape `shape` and rate `rate` is\n`shape / rate`. -/"
+            "/-- The expectation of the Gamma distribution with shape `shape` and rate `rate` is\n`shape / rate`. -/\n"
         );
     }
 }

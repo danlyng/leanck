@@ -2,26 +2,30 @@
 //! worktree and answers proof-state queries (diagnostics, goal, sorry, list,
 //! restart_file) over a Unix socket.
 //!
-//! It replaces the `leanck-lsp` VSCode extension + HTTP bridge: `leanck-mcp`
-//! connects to this daemon as a client and auto-spawns it. The behavior and
-//! JSON shapes are ported from `leanck-lsp`; the daemon scaffolding (socket,
-//! single-instance, idle reaper, supervision) is new.
+//! CLI and MCP reach this service through `leanck-client`, which owns discovery,
+//! startup, and transport policy. Shared identity and protocol data live in
+//! `leanck-core`; client-side rendering lives in `leanck-client`. Independent
+//! Lake build/cache utilities live in `leanck-lake`.
 
-pub mod build;
-pub mod cache;
-pub mod client;
-pub mod daemon;
-pub mod decls;
-pub mod error;
-pub mod folding;
-pub mod format;
-pub mod paths;
-pub mod proto;
-pub mod query;
-pub mod resolve;
-pub mod server;
-pub mod sorries;
-pub mod state;
-pub mod workspace;
+mod activity;
+mod daemon;
+mod declarations;
+mod decls;
+mod documents;
+mod error;
+mod folding;
+mod query;
+mod request;
+mod resolve;
+mod scan;
+mod server;
+mod sorries;
+mod state;
+mod workspace;
 
 pub use error::{Error, Result};
+
+pub use daemon::{run, run_with_settings};
+
+#[cfg(test)]
+mod live_smoke;

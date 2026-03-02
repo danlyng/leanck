@@ -12,6 +12,8 @@ use clap::Parser;
 struct Args {
     /// Worktree root (the Lake project directory).
     worktree: PathBuf,
+    #[command(flatten)]
+    config: leanck_config::ConfigArgs,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -24,15 +26,16 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     let args = Args::parse();
-    let worktree = args
-        .worktree
-        .canonicalize()
-        .unwrap_or_else(|_| args.worktree.clone());
+    let worktree =
+        leanck_core::workspace::WorkspaceRoot::from_path(&args.worktree)?.into_path_buf();
 
+    let settings = args.config.load(&worktree)?.settings;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
     runtime.block_on(async move {
-        leanckd::daemon::run(&worktree).await.map_err(anyhow::Error::from)
+        leanckd::run_with_settings(&worktree, settings)
+            .await
+            .map_err(anyhow::Error::from)
     })
 }

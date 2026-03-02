@@ -1,0 +1,17 @@
+{
+  "request": {"id":"contract","op":"diagnostics","timeout_ms":120000,"params":{"file":"TestProject/Basic.lean","limit":1,"offset":1,"severity":{"mode":"all"}}},
+  "success": {"id":"contract","ok":true,"result":{"restarted":true,"uri":"file:///contract/Basic.lean"}},
+  "null_success": {"id":"contract","ok":true,"result":null},
+  "error": {"id":"contract","ok":false,"error":{"kind":"bad_request","message":"bad request: unknown op: unsupported"}},
+  "malformed_responses": [{"id":"contract","ok":"yes"},{"ok":true,"result":{}},{"id":"contract","result":{}}],
+  "clean_diagnostics": {"uri":"file:///contract/Basic.lean","range":null,"symbol":null,"version":1,"total":0,"diagnostics":[],"source":"-- contract fixture\ntheorem contract_clean : True := by\n  trivial\n","notes":["ok"]},
+  "goal_null": null,
+  "goal_empty": {"goals":[]},
+  "sorry_file": {"uri":"file:///contract/Basic.lean","sorries":[]},
+  "sorry_directory": {"uri":"file:///contract","total":0,"files":[],"notes":["text-only directory scan; declaration diagnostics are not included"]},
+  "list": {"uri":"file:///contract/Basic.lean","symbols":[{"name":"hello_world","fullName":"hello_world","kind":{"source":"lean","kind":"theorem"},"range":{"start":{"line":12,"character":0},"end":{"line":20,"character":28}}}]},
+  "restart": {"uri":"file:///contract/Basic.lean","restarted":true},
+  "health": {"ok":true,"workspace":"/contract","protocol_version":4,"server":{"pid":123,"running":true},"idle_secs":0,"lifecycle":{"state":"ready","active_requests":0}},
+  "references": {"uri":"file:///contract/Basic.lean","symbol":"hello_world","locations":[]},
+  "build": {"success":false,"errors":["error: TestProject/Basic.lean:1:0: contract error"],"warnings":[]}
+}

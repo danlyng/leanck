@@ -1,8 +1,9 @@
-use std::path::PathBuf;
+use crate::args::LiveArgs;
 
-use leanckd::proto::RestartFileParams;
+use leanck_core::api::RestartFileParams;
 
-use crate::commands::lean::{connect, print_json, render_restart};
+use crate::commands::output::print_json;
+use leanck_client::render::render_restart;
 
 #[derive(clap::Args, Debug)]
 pub(crate) struct Args {
@@ -11,28 +12,19 @@ pub(crate) struct Args {
     /// warm server (`dependencyBuildMode = once`).
     pub(crate) file: String,
 
-    /// Per-request timeout in seconds. Also stretches the daemon's
-    /// elaboration wait (defaults: 300s request, 120s elaboration wait).
-    #[arg(long, value_name = "SECS")]
-    pub(crate) timeout: Option<u64>,
-
-    /// Workspace root. Defaults to the auto-detected Lake project.
-    #[arg(long)]
-    pub(crate) workspace: Option<PathBuf>,
-
-    /// Print the raw daemon JSON instead of compact text.
-    #[arg(long, default_value_t = false)]
-    pub(crate) json: bool,
+    #[command(flatten)]
+    pub(crate) live: LiveArgs,
 }
 
 pub(crate) async fn run(args: Args) -> anyhow::Result<()> {
-    let (_workspace, client) = connect(args.workspace.clone(), args.timeout).await?;
-    let params = RestartFileParams { file: args.file.clone() };
+    let client = args.live.client()?;
+    let params = RestartFileParams {
+        file: args.file.clone(),
+    };
     let body = client
-        .restart_file(&params)
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    if args.json {
+        .restart_file(&params, args.live.request_options())
+        .await?;
+    if args.live.output.json {
         print_json(&body)?;
     } else {
         println!("{}", render_restart(&body));

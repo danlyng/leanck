@@ -1,0 +1,504 @@
+//! Shared command adapter for file traversal, stdin/stdout, and Clap conversion.
+use std::fs;
+use std::io::{self, Read};
+use std::path::{Path, PathBuf};
+
+use crate::{DEFAULT_WIDTH, Options, SpellingDirection, Stats};
+
+/// Options shared by the `leanck normalize` subcommand and the standalone
+/// `leanck-normalize` binary.
+#[derive(Debug, clap::Args)]
+pub struct Args {
+    /// Print the editable built-in JSON dictionary to stdout, then exit.
+    #[arg(long, value_enum)]
+    pub export_dictionary: Option<DictionaryDirection>,
+    /// JSON dictionary files; repeat to replace configured files in this order.
+    #[arg(long = "dictionary", value_name = "FILE")]
+    pub dictionary: Vec<PathBuf>,
+    /// Report formatting changes without writing files; exit nonzero if changes are needed.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Exclude a glob relative to the directory being normalized; repeat to replace configured exclusions.
+    #[arg(long)]
+    pub exclude: Vec<String>,
+    /// Convert American spellings to British spellings instead of the default
+    /// British-to-American direction.
+    #[arg(long, alias = "american-to-british")]
+    pub british: bool,
+
+    /// Disable all frontmatter normalization.
+    #[arg(long)]
+    pub no_frontmatter: bool,
+
+    /// Disable attribution header insertion and formatting.
+    #[arg(long)]
+    pub no_header: bool,
+
+    /// Do not alphabetize imports.
+    #[arg(long)]
+    pub no_sort_imports: bool,
+
+    /// Leave declaration attribute placement unchanged.
+    #[arg(long)]
+    pub no_attributes: bool,
+
+    /// Convert banner comments and format Markdown heading titles (opt-in).
+    #[arg(long)]
+    pub headings: bool,
+
+    /// Disable all Lean block-comment transformations.
+    #[arg(long)]
+    pub no_comments: bool,
+
+    /// Do not reflow Lean block comments.
+    #[arg(long)]
+    pub no_comment_reflow: bool,
+
+    /// Turn plain URLs inside comments into markdown links (opt-in).
+    #[arg(long)]
+    pub linkify_urls: bool,
+
+    /// Do not normalize British/American spelling inside comments.
+    #[arg(long)]
+    pub no_spelling: bool,
+
+    /// Do not capitalize words after `: ` inside comments.
+    #[arg(long)]
+    pub no_capitalize_after_colon: bool,
+
+    /// Do not collapse consecutive blank lines.
+    #[arg(long)]
+    pub no_collapse_blank_lines: bool,
+
+    /// File to rewrite in place, or directory to normalize recursively.
+    /// Omit to read stdin and write the result to stdout.
+    #[arg(value_name = "PATH")]
+    pub path: Option<PathBuf>,
+
+    /// With a directory argument, normalize every regular file instead of
+    /// only `*.lean` files.
+    #[arg(long)]
+    pub all_files: bool,
+
+    /// With a directory argument, print a line for every updated file
+    /// instead of only the final summary.
+    #[arg(long)]
+    pub verbose: bool,
+
+    /// Target line width for comment reflow.
+    #[arg(short, long, default_value_t = DEFAULT_WIDTH)]
+    pub width: usize,
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum DictionaryDirection {
+    American,
+    British,
+}
+
+/// Run the normalizer. Reads from stdin (writing the result to stdout) when no
+/// path is given, otherwise rewrites the file or directory in place.
+pub fn run(args: Args) -> anyhow::Result<()> {
+    run_with_settings(args, &leanck_config::Normalize::default())
+}
+
+/// Execute already-resolved settings. The pure normalize API never loads configuration.
+pub fn run_with_settings(args: Args, settings: &leanck_config::Normalize) -> anyhow::Result<()> {
+    if let Some(direction) = args.export_dictionary {
+        print!(
+            "{}",
+            crate::builtin_json(match direction {
+                DictionaryDirection::American => SpellingDirection::BritishToAmerican,
+                DictionaryDirection::British => SpellingDirection::AmericanToBritish,
+            })
+        );
+        return Ok(());
+    }
+    anyhow::ensure!(args.width > 0, "--width must be greater than zero");
+    settings.rules.validate()?;
+    let options = options_from_args(&args, settings);
+    let paths: &[PathBuf] = if !options.comments || options.spelling.is_none() {
+        &[]
+    } else if args.dictionary.is_empty() {
+        &settings.rules.spelling.files
+    } else {
+        &args.dictionary
+    };
+    let mut words = std::collections::HashMap::new();
+    // Validate every resource before processing or rewriting any source file.
+    for path in paths {
+        let text = fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("cannot read dictionary {}: {e}", path.display()))?;
+        let map: std::collections::BTreeMap<String, String> = serde_json::from_str(&text)
+            .map_err(|e| anyhow::anyhow!("invalid dictionary {}: {e}", path.display()))?;
+        let mut seen = std::collections::HashSet::new();
+        for (from, to) in map {
+            leanck_config::validate_word_pair(&from, &to)?;
+            let key = if settings.rules.spelling.case_sensitive {
+                from
+            } else {
+                from.to_lowercase()
+            };
+            anyhow::ensure!(
+                seen.insert(key.clone()),
+                "ambiguous case-insensitive spelling {key:?} in {}",
+                path.display()
+            );
+            words.insert(key, to);
+        }
+    }
+    let dictionary = options
+        .spelling
+        .map(|direction| crate::configured_map(direction, &settings.rules.spelling, &words))
+        .transpose()
+        .map_err(anyhow::Error::msg)?;
+    let patterns = if args.exclude.is_empty() {
+        &settings.exclude
+    } else {
+        &args.exclude
+    };
+    let mut builder = globset::GlobSetBuilder::new();
+    for pattern in patterns {
+        builder.add(
+            globset::Glob::new(pattern)
+                .map_err(|e| anyhow::anyhow!("invalid normalize.exclude glob {pattern:?}: {e}"))?,
+        );
+    }
+    let exclude = builder.build()?;
+    let mut effective = options.configuration(args.width, &settings.rules);
+    if !args.dictionary.is_empty() {
+        effective.rules.spelling.files = args.dictionary.clone();
+    }
+    for warning in effective.warnings() {
+        eprintln!("warning: {}", warning.message);
+    }
+    if options.comments
+        && options.spelling.is_some()
+        && !effective.rules.spelling.use_builtin
+        && !paths.is_empty()
+        && words.is_empty()
+        && effective.rules.spelling.replacements.is_empty()
+    {
+        eprintln!(
+            "warning: custom dictionary files contain no entries and normalize.rules.spelling.use_builtin=false; spelling substitutions will have no effect"
+        );
+    }
+    match args.path.as_deref().filter(|p| p.as_os_str() != "-") {
+        Some(path) => run_path(
+            &args,
+            path,
+            options,
+            &exclude,
+            &settings.rules,
+            dictionary.as_ref(),
+        ),
+        None => {
+            let mut input = String::new();
+            io::stdin().read_to_string(&mut input)?;
+            if options.frontmatter.enabled
+                && options.frontmatter.header
+                && crate::frontmatter::is_module_file(&input)
+                && crate::frontmatter::leading_header(&input).is_none()
+            {
+                eprintln!(
+                    "note: stdin has no file history; missing attribution header left absent"
+                );
+            }
+            let result = crate::normalize_with_context(
+                &input,
+                args.width,
+                options,
+                &settings.rules,
+                &crate::Context {
+                    dictionary: dictionary.as_ref(),
+                    ..Default::default()
+                },
+            )?;
+            for warning in &result.warnings {
+                if let Some(line) = warning.line {
+                    eprintln!("warning: stdin:{line}: {}", warning.message);
+                }
+            }
+            if args.dry_run {
+                anyhow::ensure!(result.output == input, "stdin needs normalization");
+            } else {
+                print!("{}", result.output);
+            }
+            Ok(())
+        }
+    }
+}
+
+fn options_from_args(args: &Args, s: &leanck_config::Normalize) -> Options {
+    Options {
+        frontmatter: crate::FrontmatterOptions {
+            enabled: s.frontmatter && !args.no_frontmatter,
+            header: s.header && !args.no_header,
+            sort_imports: s.sort_imports && !args.no_sort_imports,
+        },
+        attributes: s.attributes && !args.no_attributes,
+        headings: s.headings || args.headings,
+        comments: s.comments && !args.no_comments,
+        comment_reflow: s.comment_reflow && !args.no_comment_reflow,
+        linkify_urls: s.linkify_urls || args.linkify_urls,
+        spelling: if args.no_spelling {
+            None
+        } else if args.british {
+            Some(SpellingDirection::AmericanToBritish)
+        } else {
+            match s.spelling {
+                leanck_config::Spelling::American => Some(SpellingDirection::BritishToAmerican),
+                leanck_config::Spelling::British => Some(SpellingDirection::AmericanToBritish),
+                leanck_config::Spelling::Off => None,
+            }
+        },
+        capitalize_after_colon: s.capitalize_after_colon && !args.no_capitalize_after_colon,
+        collapse_blank_lines: s.collapse_blank_lines && !args.no_collapse_blank_lines,
+    }
+}
+
+fn run_path(
+    args: &Args,
+    path: &Path,
+    options: Options,
+    exclude: &globset::GlobSet,
+    rules: &leanck_config::NormalizeRules,
+    dictionary: Option<&crate::Dictionary>,
+) -> anyhow::Result<()> {
+    let is_dir = fs::metadata(path)?.is_dir();
+    let mut files = Vec::new();
+    if is_dir {
+        collect_files(path, path, args.all_files, exclude, &mut files)?;
+    } else {
+        files.push(path.to_owned());
+    }
+    let mut changed = 0;
+    let mut failed = 0;
+    let mut totals = Stats::default();
+    for path in &files {
+        let result = (|| -> anyhow::Result<_> {
+            let original = fs::read_to_string(path)?;
+            let existing_header = crate::frontmatter::leading_header(&original).is_some();
+            let mut replacement_history_error = None;
+            let history = if (path.extension().is_some_and(|e| e == "lean")
+                || crate::frontmatter::is_module_file(&original)
+                || existing_header)
+                && crate::frontmatter::needs_history(
+                    &original,
+                    options.frontmatter,
+                    &rules.frontmatter,
+                ) {
+                match crate::history::read(path, &rules.frontmatter) {
+                    Ok(history) => Some(history),
+                    Err(reason) => {
+                        if existing_header {
+                            replacement_history_error = Some(reason);
+                        } else {
+                            eprintln!(
+                                "note: {}: {reason}; missing attribution header left absent",
+                                path.display()
+                            );
+                        }
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            let module = if path.extension().is_some_and(|e| e == "lean")
+                || crate::frontmatter::is_module_file(&original)
+            {
+                path.file_stem().and_then(|s| s.to_str())
+            } else {
+                None
+            };
+            let context = crate::Context {
+                history: history.as_ref(),
+                dictionary,
+                module_name: module,
+                seen_module_doc: false,
+            };
+            let result =
+                crate::normalize_with_context(&original, args.width, options, rules, &context)?;
+            for warning in &result.warnings {
+                if let Some(line) = warning.line {
+                    let detail = replacement_history_error
+                        .as_ref()
+                        .filter(|_| warning.code == "header_replacement_unavailable")
+                        .map(|reason| format!(" ({reason})"))
+                        .unwrap_or_default();
+                    eprintln!(
+                        "warning: {}:{line}: {}{detail}",
+                        path.display(),
+                        warning.message
+                    );
+                }
+            }
+            if result.output == original {
+                return Ok(None);
+            }
+            if !args.dry_run {
+                fs::write(path, &result.output)?;
+            }
+            Ok(Some(result.stats))
+        })();
+        match result {
+            Ok(Some(stats)) => {
+                changed += 1;
+                totals.add(&stats);
+                if args.dry_run {
+                    println!("would update {}", path.display());
+                } else if args.verbose || !is_dir {
+                    println!(
+                        "updated {} ({})",
+                        path.display(),
+                        stats.summary_parts().join(", ")
+                    );
+                }
+            }
+            Ok(None) => {
+                if !is_dir {
+                    println!("unchanged {}", path.display());
+                }
+            }
+            Err(error) => {
+                failed += 1;
+                eprintln!("error in {}: {error:#}", path.display());
+            }
+        }
+    }
+    if is_dir {
+        let failures = if failed == 0 {
+            String::new()
+        } else {
+            format!(", {failed} failed")
+        };
+        let parts = totals.summary_parts();
+        let stats = if parts.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", parts.join(", "))
+        };
+        println!(
+            "checked {} file{}, {changed} {}{failures}{stats}",
+            files.len(),
+            if files.len() == 1 { "" } else { "s" },
+            if args.dry_run {
+                "need normalization"
+            } else {
+                "updated"
+            }
+        );
+    }
+    anyhow::ensure!(failed == 0, "{failed} file(s) failed to normalize");
+    anyhow::ensure!(
+        !args.dry_run || changed == 0,
+        "{changed} file(s) need normalization"
+    );
+    Ok(())
+}
+
+/// Hidden entries and symlinks are always skipped during recursive traversal.
+fn collect_files(
+    root: &Path,
+    dir: &Path,
+    all_files: bool,
+    exclude: &globset::GlobSet,
+    out: &mut Vec<PathBuf>,
+) -> io::Result<()> {
+    let mut entries: Vec<_> = fs::read_dir(dir)?.collect::<io::Result<_>>()?;
+    entries.sort_by_key(|e| e.file_name());
+    for entry in entries {
+        if entry.file_name().to_string_lossy().starts_with('.') {
+            continue;
+        }
+        let path = entry.path();
+        if exclude.is_match(path.strip_prefix(root).unwrap_or(&path)) {
+            continue;
+        }
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            collect_files(root, &path, all_files, exclude, out)?;
+        } else if kind.is_file()
+            && (all_files || path.extension().and_then(|e| e.to_str()) == Some("lean"))
+        {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::{Parser, error::ErrorKind};
+
+    #[derive(Debug, Parser)]
+    struct Cli {
+        #[command(flatten)]
+        args: Args,
+    }
+
+    #[test]
+    fn omitted_path_uses_stdin_and_default_width() {
+        let args = Cli::try_parse_from(["normalize"]).unwrap().args;
+        assert_eq!(args.path, None);
+        assert_eq!(args.width, DEFAULT_WIDTH);
+    }
+
+    #[test]
+    fn numeric_positionals_are_always_paths() {
+        for path in ["80", "0", "184467440737095516160"] {
+            let args = Cli::try_parse_from(["normalize", path]).unwrap().args;
+            assert_eq!(args.path, Some(PathBuf::from(path)));
+            assert_eq!(args.width, DEFAULT_WIDTH);
+        }
+    }
+
+    #[test]
+    fn width_flags_work_with_stdin_and_paths() {
+        for flag in ["--width", "-w"] {
+            let args = Cli::try_parse_from(["normalize", flag, "72"]).unwrap().args;
+            assert_eq!(args.path, None);
+            assert_eq!(args.width, 72);
+
+            for path in ["Main.lean", "MyProject", "80"] {
+                let args = Cli::try_parse_from(["normalize", path, flag, "72"])
+                    .unwrap()
+                    .args;
+                assert_eq!(args.path, Some(PathBuf::from(path)));
+                assert_eq!(args.width, 72);
+            }
+        }
+    }
+
+    #[test]
+    fn second_positional_is_rejected_including_legacy_width_syntax() {
+        for positionals in [["80", "Main.lean"], ["Main.lean", "80"]] {
+            let error =
+                Cli::try_parse_from(["normalize", positionals[0], positionals[1]]).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::UnknownArgument);
+        }
+    }
+
+    #[test]
+    fn width_flag_requires_a_usize() {
+        for width in ["abc", "-1", "184467440737095516160"] {
+            assert!(Cli::try_parse_from(["normalize", "--width", width]).is_err());
+        }
+    }
+
+    #[test]
+    fn zero_width_is_rejected_before_stdin_or_path_io() {
+        for argv in [
+            vec!["normalize", "--width", "0"],
+            vec!["normalize", "--width", "0", "missing.lean"],
+        ] {
+            let args = Cli::try_parse_from(argv).unwrap().args;
+            assert_eq!(
+                run(args).unwrap_err().to_string(),
+                "--width must be greater than zero"
+            );
+        }
+    }
+}

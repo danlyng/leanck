@@ -1,11 +1,12 @@
-//! Regex-free declaration scanner. Direct port of `leanck-lsp/src/regexDecls.ts`.
+//! Heuristic declaration extraction over the shared Lean token scanner.
 //!
-//! Extracts top-level declaration names + start lines by scanning text, after
-//! blanking comments. Catches syntax-extension commands (Mathlib's `lemma`) that
+//! Extracts declaration names, kinds, and positions outside comments/strings.
+//! Catches syntax-extension commands (Mathlib's `lemma`) that
 //! `textDocument/documentSymbol` filters out. The `range.end` is a coarse upper
 //! bound (line before the next decl); callers refine via folding ranges.
 
 use crate::state::{WirePosition, WireRange};
+use leanck_core::api::LeanDeclarationKind;
 
 /// Sentinel "end of line" character (matches the TS `2 ** 30`).
 pub const END_CHAR: u32 = 1 << 30;
@@ -13,163 +14,102 @@ pub const END_CHAR: u32 = 1 << 30;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedDecl {
     pub name: String,
+    pub kind: LeanDeclarationKind,
+    pub selection_range: WireRange,
     pub range: WireRange,
 }
-
-const DECL_KEYWORDS: &[&str] = &[
-    "theorem",
-    "lemma",
-    "def",
-    "definition",
-    "abbrev",
-    "instance",
-    "structure",
-    "class",
-    "inductive",
-    "opaque",
-    "axiom",
-];
 
 const DECL_MODIFIERS: &[&str] = &["private", "protected", "noncomputable", "unsafe", "partial"];
 
 /// Extract every top-level declaration name + start line.
 pub fn extract_decls(source: &str) -> Vec<ParsedDecl> {
-    let cleaned = strip_comments(source);
-    let lines: Vec<&str> = cleaned.split('\n').collect();
-    let mut hits: Vec<(usize, String)> = Vec::new();
-    for (i, line) in lines.iter().enumerate() {
-        if let Some(name) = extract_decl_name(line) {
-            hits.push((i, name));
-        }
-    }
-    let mut out = Vec::with_capacity(hits.len());
-    let last_line = lines.len().saturating_sub(1);
-    for j in 0..hits.len() {
-        let (line, ref name) = hits[j];
-        let end_line = match hits.get(j + 1) {
-            Some((next_line, _)) => (*next_line).saturating_sub(1).max(line),
-            None => last_line,
-        };
-        out.push(ParsedDecl {
-            name: name.clone(),
-            range: WireRange {
-                start: WirePosition { line: line as u32, character: 0 },
-                end: WirePosition { line: end_line as u32, character: END_CHAR },
-            },
-        });
-    }
-    out
-}
-
-fn extract_decl_name(raw_line: &str) -> Option<String> {
-    let mut rest = raw_line.trim_start();
-    // Strip simple `@[...]` attribute groups, repeatedly.
-    while let Some(stripped) = rest.strip_prefix('@') {
-        let close = stripped.find(']')?;
-        rest = stripped[close + 1..].trim_start();
-    }
-    // Strip declaration modifiers (private, noncomputable, …).
-    loop {
-        let mut consumed = false;
-        for m in DECL_MODIFIERS {
-            if let Some(after) = rest.strip_prefix(m) {
-                if after.is_empty() || after.starts_with(char::is_whitespace) {
-                    rest = after.trim_start();
-                    consumed = true;
-                    break;
-                }
-            }
-        }
-        if !consumed {
-            break;
-        }
-    }
-    // Match a declaration keyword (must be followed by whitespace or EOL).
-    let mut matched = false;
-    for kw in DECL_KEYWORDS {
-        if let Some(after) = rest.strip_prefix(kw) {
-            if after.is_empty() || after.starts_with(char::is_whitespace) {
-                rest = after.trim_start();
-                matched = true;
-                break;
-            }
-        }
-    }
-    if !matched {
-        return None;
-    }
-    extract_name_token(rest)
-}
-
-/// First run of characters that aren't whitespace or a structural delimiter.
-/// Mirrors `NAME_TOKEN_RE = /^([^\s:{(\[<,=⦃]+)/`.
-fn extract_name_token(s: &str) -> Option<String> {
-    let mut out = String::new();
-    for ch in s.chars() {
-        if ch.is_whitespace() || matches!(ch, ':' | '{' | '(' | '[' | '<' | ',' | '=' | '⦃') {
-            break;
-        }
-        out.push(ch);
-    }
-    if out.is_empty() {
-        None
-    } else {
-        Some(out)
-    }
-}
-
-/// Replace block (`/- ... -/`, nested) and line (`-- ...`) comments with
-/// whitespace, preserving newlines so line indices stay valid.
-fn strip_comments(source: &str) -> String {
-    let chars: Vec<char> = source.chars().collect();
-    let mut out = String::with_capacity(source.len());
-    let mut depth: i32 = 0;
-    let mut in_line_comment = false;
+    let tokens = crate::scan::tokens(source);
+    let mut hits = Vec::new();
+    let mut scopes: Vec<Option<String>> = Vec::new();
     let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        let n = chars.get(i + 1).copied();
-        if c == '\n' {
-            out.push('\n');
-            in_line_comment = false;
+    while i < tokens.len() {
+        let start = i;
+        let line = tokens[i].range.start.line;
+        while i < tokens.len() && tokens[i].range.start.line == line {
             i += 1;
+        }
+        let row = &tokens[start..i];
+        let mut n = 0;
+        if row[0].text == "namespace" {
+            let prefix = scopes.iter().rev().find_map(|s| s.as_deref()).unwrap_or("");
+            scopes.push(row.get(1).map(|t| crate::resolve::qualify(prefix, &t.text)));
             continue;
         }
-        if in_line_comment {
-            out.push(' ');
-            i += 1;
+        if row[0].text == "section" {
+            scopes.push(None);
             continue;
         }
-        if depth == 0 && c == '-' && n == Some('-') {
-            in_line_comment = true;
-            out.push(' ');
-            out.push(' ');
-            i += 2;
+        if row[0].text == "end" {
+            scopes.pop();
             continue;
         }
-        if c == '/' && n == Some('-') {
-            depth += 1;
-            out.push(' ');
-            out.push(' ');
-            i += 2;
+        while n < row.len() && row[n].text == "@" {
+            n += 1;
+            let mut depth = 0;
+            while n < row.len() {
+                if row[n].text == "[" {
+                    depth += 1;
+                }
+                if row[n].text == "]" {
+                    depth -= 1;
+                    n += 1;
+                    if depth == 0 {
+                        break;
+                    }
+                    continue;
+                }
+                n += 1;
+            }
+        }
+        while n < row.len() && DECL_MODIFIERS.contains(&row[n].text.as_str()) {
+            n += 1;
+        }
+        if n + 1 >= row.len() {
             continue;
         }
-        if depth > 0 && c == '-' && n == Some('/') {
-            depth -= 1;
-            out.push(' ');
-            out.push(' ');
-            i += 2;
+        let Ok(kind) = row[n].text.parse::<LeanDeclarationKind>() else {
+            continue;
+        };
+        let name = &row[n + 1];
+        if name
+            .text
+            .chars()
+            .next()
+            .is_none_or(|c| matches!(c, ':' | '{' | '(' | '[' | '⦃' | '='))
+        {
             continue;
         }
-        if depth > 0 {
-            out.push(' ');
-            i += 1;
-            continue;
-        }
-        out.push(c);
-        i += 1;
+        let prefix = scopes.iter().rev().find_map(|s| s.as_deref()).unwrap_or("");
+        let full = crate::resolve::qualify(prefix, &name.text);
+        hits.push((line, full, kind, name.range));
     }
-    out
+    let last = source.lines().count().saturating_sub(1) as u32;
+    hits.iter()
+        .enumerate()
+        .map(|(i, (line, name, kind, selection))| ParsedDecl {
+            name: name.clone(),
+            kind: *kind,
+            selection_range: *selection,
+            range: WireRange {
+                start: WirePosition {
+                    line: *line,
+                    character: 0,
+                },
+                end: WirePosition {
+                    line: hits
+                        .get(i + 1)
+                        .map(|h| h.0.saturating_sub(1).max(*line))
+                        .unwrap_or(last),
+                    character: END_CHAR,
+                },
+            },
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -183,9 +123,21 @@ mod tests {
     #[test]
     fn extracts_theorem_and_def() {
         let decls = extract_decls("theorem foo : True := trivial\ndef bar := 1\n");
-        assert_eq!(decls.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), vec!["foo", "bar"]);
+        assert_eq!(
+            decls.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(),
+            vec!["foo", "bar"]
+        );
         assert_eq!(decls[0].range.start.line, 0);
         assert_eq!(decls[1].range.start.line, 1);
+    }
+
+    #[test]
+    fn every_lexical_keyword_has_a_typed_kind() {
+        for kind in LeanDeclarationKind::ALL {
+            let declarations = extract_decls(&format!("{} example := 0", kind.as_str()));
+            assert_eq!(declarations.len(), 1);
+            assert_eq!(declarations[0].kind, *kind);
+        }
     }
 
     #[test]
@@ -197,7 +149,10 @@ mod tests {
 
     #[test]
     fn strips_attributes_and_modifiers() {
-        assert_eq!(names("@[simp] private noncomputable def baz : Nat := 0"), vec!["baz"]);
+        assert_eq!(
+            names("@[simp] private noncomputable def baz : Nat := 0"),
+            vec!["baz"]
+        );
     }
 
     #[test]
@@ -222,6 +177,15 @@ mod tests {
         assert_eq!(extract_decls("definitely_not_a_decl := 1").len(), 0);
     }
 
+    #[test]
+    fn namespace_sections_and_root_prefix_share_qualification() {
+        assert_eq!(
+            names(
+                "namespace A\nsection\nnamespace B\nlemma α : True := trivial\nend B\nend\nnamespace _root_.C\ndef δ := 1\nend C\ndef _root_.global := 2\nend A"
+            ),
+            ["A.B.α", "C.δ", "global"]
+        );
+    }
     #[test]
     fn bounds_each_range_at_line_before_next() {
         let decls = extract_decls("def a := 1\n\ndef b := 2");

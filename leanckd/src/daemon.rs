@@ -4,33 +4,43 @@
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use serde_json::{Value, json};
+use crate::request::RequestContext;
+use serde_json::Value;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::{Error, Result};
-use crate::proto::{self, ErrorKind, PROTOCOL_VERSION, Request, Response, WireError, op};
 use crate::query;
 use crate::workspace::Workspace;
+use leanck_core::api::{
+    CancelResult, Command, HealthResult, LifecycleHealth, LifecycleState, PROTOCOL_VERSION,
+    Request, Response, ServerHealth, ShutdownResult,
+};
+use leanck_core::{
+    error::{ErrorKind, WireError},
+    wire,
+};
 
-/// Overall per-request deadline when the client doesn't specify one. Bounds the
-/// whole op (elaboration wait + LSP calls) so nothing rides forever.
-const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
-/// Idle period after which the daemon shuts itself down.
-const IDLE_REAP: Duration = Duration::from_secs(60 * 60);
+/// Maximum interval between idle accounting and retention sweeps.
 const REAP_TICK: Duration = Duration::from_secs(60);
 
 struct Daemon {
     ws: Arc<Workspace>,
-    socket: PathBuf,
-    pid_file: PathBuf,
     cancels: Mutex<HashMap<String, CancellationToken>>,
     shutdown: CancellationToken,
+    settings: leanck_config::Daemon,
+}
+
+impl Drop for Daemon {
+    fn drop(&mut self) {
+        self.shutdown.cancel();
+    }
 }
 
 /// Exclusive per-worktree startup/lifetime lock (advisory `flock` on the lock
@@ -40,7 +50,6 @@ struct Daemon {
 struct StartupLock {
     // Held only to keep the locked fd open; the `flock` lasts until it closes.
     _file: File,
-    path: PathBuf,
 }
 
 impl StartupLock {
@@ -49,114 +58,123 @@ impl StartupLock {
     fn acquire(path: &Path) -> std::io::Result<Option<StartupLock>> {
         let file = std::fs::OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(path)?;
-        // SAFETY: `file` owns a valid fd for the duration of the call.
-        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-        if rc == 0 {
-            return Ok(Some(StartupLock { _file: file, path: path.to_path_buf() }));
-        }
-        let err = std::io::Error::last_os_error();
-        match err.raw_os_error() {
-            Some(libc::EWOULDBLOCK) => Ok(None),
-            _ => Err(err),
+        match file.try_lock() {
+            Ok(()) => Ok(Some(StartupLock { _file: file })),
+            Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+            Err(std::fs::TryLockError::Error(error)) => Err(error),
         }
     }
 }
 
-impl Drop for StartupLock {
+/// Runtime files are owned only after acquiring the mandatory lifetime lock.
+/// Keep the lock inode: unlinking it lets a third launcher lock a different file.
+struct RuntimeOwner {
+    socket: PathBuf,
+    pid: PathBuf,
+    _lock: StartupLock,
+}
+impl Drop for RuntimeOwner {
     fn drop(&mut self) {
-        // Closing the fd (when `_file` drops) releases the lock; remove the file
-        // for tidiness. Best-effort — a leftover unlocked file is harmless.
-        let _ = std::fs::remove_file(&self.path);
+        let _ = std::fs::remove_file(&self.socket);
+        let _ = std::fs::remove_file(&self.pid);
     }
 }
 
 /// Run the daemon for `worktree` until idle-reaped or asked to shut down.
 pub async fn run(worktree: &Path) -> Result<()> {
-    let socket = crate::paths::socket_path(worktree);
-    let pid_file = crate::paths::pid_path(worktree);
-    let lock_file = crate::paths::lock_path(worktree);
+    let settings = leanck_config::ConfigArgs::default()
+        .load(worktree)
+        .map_err(|e| Error::BadRequest(format!("configuration: {e:#}")))?
+        .settings;
+    run_with_settings(worktree, settings).await
+}
 
-    // Single-instance guard, held for the daemon's whole lifetime. Acquired
-    // before any slow startup work (the Mathlib cache fetch) so concurrent
-    // launches don't each kick off their own `lake exe cache get`; the OS drops
-    // the lock if we die, so a crash never wedges the worktree.
-    let _lock = match StartupLock::acquire(&lock_file) {
-        Ok(Some(lock)) => Some(lock),
-        Ok(None) => {
-            tracing::info!(
-                worktree = %worktree.display(),
-                "another leanckd already owns this worktree; exiting"
-            );
-            return Ok(());
-        }
-        Err(e) => {
-            // Don't block startup on a lock-file problem; fall back to the
-            // socket-based duplicate check.
-            tracing::warn!(error = %e, "could not acquire startup lock; proceeding without it");
-            if socket.exists() && UnixStream::connect(&socket).await.is_ok() {
-                tracing::info!("daemon already running; exiting");
-                return Ok(());
-            }
-            None
+pub async fn run_with_settings(worktree: &Path, settings: leanck_config::Settings) -> Result<()> {
+    settings
+        .validate()
+        .map_err(|e| Error::BadRequest(format!("configuration: {e:#}")))?;
+    let runtime = leanck_core::paths::RuntimePaths::for_workspace(worktree).prepare()?;
+    let Some(lock) = StartupLock::acquire(&runtime.lock())? else {
+        tracing::info!(worktree = %worktree.display(), "another leanckd owns this worktree; exiting");
+        return Ok(());
+    };
+    let owner = RuntimeOwner {
+        socket: runtime.socket(),
+        pid: runtime.pid(),
+        _lock: lock,
+    };
+    let _ = std::fs::remove_file(&owner.socket);
+    std::fs::write(&owner.pid, std::process::id().to_string())?;
+    let shutdown = CancellationToken::new();
+    let mut tasks = JoinSet::new();
+    // Install signal handling before cache warmup and Lean initialization.
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+    let stop = shutdown.clone();
+    tasks.spawn(async move {
+        tokio::select! { _ = term.recv() => {}, _ = interrupt.recv() => {}, _ = stop.cancelled() => return }
+        stop.cancel();
+    });
+    let ws = match Workspace::start_configured(worktree, shutdown.clone(), &settings).await {
+        Ok(ws) => ws,
+        Err(Error::Cancelled) => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let listener = match UnixListener::bind(&owner.socket) {
+        Ok(listener) => listener,
+        Err(error) => {
+            ws.shutdown().await;
+            return Err(error.into());
         }
     };
-
-    // We hold the lock, so any socket on disk is stale (its owner is gone).
-    if socket.exists() {
-        let _ = std::fs::remove_file(&socket);
-    }
-    // Publish liveness early so a client waiting through a slow cache fetch can
-    // poll this pid and keep waiting instead of timing out.
-    let _ = std::fs::write(&pid_file, std::process::id().to_string());
-
-    // Warm up fully BEFORE advertising readiness: fetch the Mathlib cache and
-    // start `lake serve` (both inside `Workspace::start`). Only then bind the
-    // socket, so clients see the daemon exactly when it can actually serve.
-    let ws = Workspace::start(worktree).await?;
-
-    let listener = UnixListener::bind(&socket)?;
-    tracing::info!(socket = %socket.display(), "leanckd listening");
-
+    tracing::info!(socket = %owner.socket.display(), "leanckd listening");
     let daemon = Arc::new(Daemon {
         ws,
-        socket: socket.clone(),
-        pid_file: pid_file.clone(),
         cancels: Mutex::new(HashMap::new()),
-        shutdown: CancellationToken::new(),
+        shutdown,
+        settings: settings.daemon,
     });
-
-    tokio::spawn(reaper(daemon.clone()));
-
+    tasks.spawn(reaper(daemon.clone()));
     loop {
         tokio::select! {
-            accepted = listener.accept() => {
-                match accepted {
-                    Ok((stream, _addr)) => {
-                        let d = daemon.clone();
-                        tokio::spawn(async move { handle_connection(d, stream).await; });
-                    }
-                    Err(e) => tracing::warn!(error = %e, "accept failed"),
-                }
-            }
+            biased;
             _ = daemon.shutdown.cancelled() => break,
+            Some(result) = tasks.join_next() => {
+                if let Err(error) = result { tracing::warn!(%error, "daemon task failed"); }
+            }
+            accepted = listener.accept() => match accepted {
+                Ok((stream, _)) => { tasks.spawn(handle_connection(daemon.clone(), stream)); }
+                Err(error) => { tracing::warn!(%error, "accept failed"); daemon.shutdown.cancel(); }
+            }
         }
     }
-
-    tracing::info!("leanckd shutting down");
+    drop(listener);
+    daemon.shutdown.cancel();
+    // Stop admission, cancel active work, and let clients receive cancellation.
+    if tokio::time::timeout(Duration::from_secs(2), async {
+        while tasks.join_next().await.is_some() {}
+    })
+    .await
+    .is_err()
+    {
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+    }
     daemon.ws.shutdown().await;
-    let _ = std::fs::remove_file(&daemon.socket);
-    let _ = std::fs::remove_file(&daemon.pid_file);
+    drop(owner);
     Ok(())
 }
 
 async fn reaper(daemon: Arc<Daemon>) {
     loop {
         tokio::select! {
-            _ = tokio::time::sleep(REAP_TICK) => {
-                if daemon.ws.idle_for() >= IDLE_REAP {
+            _ = tokio::time::sleep(if daemon.settings.idle_timeout_ms == 0 { REAP_TICK } else { REAP_TICK.min(Duration::from_millis(daemon.settings.idle_timeout_ms)) }) => {
+                daemon.ws.evict_documents();
+                if daemon.settings.idle_timeout_ms != 0 && daemon.ws.idle_for() >= Duration::from_millis(daemon.settings.idle_timeout_ms) {
                     tracing::info!("idle timeout reached; reaping");
                     daemon.shutdown.cancel();
                     return;
@@ -168,155 +186,187 @@ async fn reaper(daemon: Arc<Daemon>) {
 }
 
 async fn handle_connection(daemon: Arc<Daemon>, stream: UnixStream) {
-    let (mut reader, mut writer) = stream.into_split();
+    let (reader, writer) = stream.into_split();
+    let mut reader = leanck_core::wire::reader(BufReader::new(reader));
+    let mut writer = leanck_core::wire::writer(writer);
+    let disconnect = daemon.shutdown.child_token();
     loop {
-        let frame = match proto::read_frame(&mut reader).await {
-            Ok(Some(f)) => f,
-            Ok(None) => break, // client closed
-            Err(e) => {
-                tracing::debug!(error = %e, "read_frame failed");
-                break;
-            }
+        let frame = tokio::select! {
+            biased;
+            _ = daemon.shutdown.cancelled() => break,
+            frame = tokio::time::timeout(Duration::from_secs(30), wire::read_frame(&mut reader)) => match frame { Ok(Ok(Some(frame))) => frame, _ => break }
         };
         let response = match serde_json::from_slice::<Request>(&frame) {
-            Ok(req) => dispatch(&daemon, req).await,
-            Err(e) => Response::err(
+            Ok(req) => {
+                let work = dispatch(&daemon, req, disconnect.clone());
+                tokio::pin!(work);
+                // Monitor EOF while working. Leave pipelined bytes buffered for
+                // the next frame rather than consuming or spinning on them.
+                if !reader.read_buffer().is_empty() {
+                    work.await
+                } else {
+                    tokio::select! {
+                        biased;
+                        response = &mut work => response,
+                        peek = reader.get_mut().fill_buf() => {
+                            if !matches!(peek, Ok(bytes) if !bytes.is_empty()) { disconnect.cancel(); break; }
+                            work.await
+                        }
+                    }
+                }
+            }
+            Err(error) => Response::err(
                 String::new(),
                 WireError {
                     kind: ErrorKind::BadRequest,
-                    message: format!("malformed request: {e}"),
+                    message: format!("malformed request: {error}"),
                 },
             ),
         };
-        let bytes = match serde_json::to_vec(&response) {
-            Ok(b) => b,
-            Err(_) => break,
+        let Ok(bytes) = serde_json::to_vec(&response) else {
+            break;
         };
-        if proto::write_frame(&mut writer, &bytes).await.is_err() {
+        if !matches!(
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                wire::write_frame(&mut writer, &bytes)
+            )
+            .await,
+            Ok(Ok(()))
+        ) {
             break;
         }
     }
+    disconnect.cancel();
 }
 
-async fn dispatch(daemon: &Arc<Daemon>, req: Request) -> Response {
+struct Registration {
+    daemon: Arc<Daemon>,
+    id: String,
+    token: CancellationToken,
+}
+impl Drop for Registration {
+    fn drop(&mut self) {
+        self.token.cancel();
+        self.daemon.cancels.lock().unwrap().remove(&self.id);
+    }
+}
+
+async fn dispatch(daemon: &Arc<Daemon>, req: Request, connection: CancellationToken) -> Response {
     daemon.ws.mark_active();
     let id = req.id.clone();
 
+    let command = match req.command() {
+        Ok(command) => command,
+        Err(error) => return Response::err(id, to_wire(&Error::BadRequest(error.to_string()))),
+    };
     // Control ops handled inline (no elaboration, no permit).
-    match req.op.as_str() {
-        op::HEALTH => return Response::ok(id, health(daemon)),
-        op::STATUS => return Response::ok(id, health(daemon)),
-        op::SHUTDOWN => {
+    match &command {
+        Command::Health | Command::Status => return response(id, Ok(health(daemon))),
+        Command::Shutdown => {
             daemon.shutdown.cancel();
-            return Response::ok(id, json!({ "shutting_down": true }));
+            return response(
+                id,
+                Ok(ShutdownResult {
+                    shutting_down: true,
+                }),
+            );
         }
-        op::CANCEL => {
-            return match serde_json::from_value::<proto::CancelParams>(req.params.clone()) {
-                Ok(c) => {
-                    if let Some(tok) = daemon.cancels.lock().unwrap().get(&c.target_id) {
-                        tok.cancel();
-                    }
-                    Response::ok(id, json!({ "cancelled": c.target_id }))
-                }
-                Err(e) => Response::err(
-                    id,
-                    WireError {
-                        kind: ErrorKind::BadRequest,
-                        message: e.to_string(),
-                    },
-                ),
-            };
+        Command::Cancel(params) => {
+            if let Some(token) = daemon.cancels.lock().unwrap().get(&params.target_id) {
+                token.cancel();
+            }
+            return response(
+                id,
+                Ok(CancelResult {
+                    cancelled: params.target_id.clone(),
+                }),
+            );
         }
         _ => {}
     }
 
-    // Query ops: register a cancellation token, bound by an overall timeout and
-    // backpressure permit.
-    let token = CancellationToken::new();
-    daemon
-        .cancels
-        .lock()
-        .unwrap()
-        .insert(id.clone(), token.clone());
-
-    let timeout = req
-        .timeout_ms
-        .map(Duration::from_millis)
-        .unwrap_or(DEFAULT_REQUEST_TIMEOUT);
-
-    let result = run_query(daemon, &req, &token, timeout).await;
-
-    daemon.cancels.lock().unwrap().remove(&id);
-
+    let token = connection.child_token();
+    let ctx = match RequestContext::with_default(
+        req.timeout_ms,
+        token.clone(),
+        Duration::from_millis(daemon.settings.request_timeout_ms),
+    ) {
+        Ok(ctx) => ctx,
+        Err(error) => return Response::err(id, to_wire(&error)),
+    };
+    {
+        let mut cancels = daemon.cancels.lock().unwrap();
+        if cancels.contains_key(&id) {
+            return Response::err(
+                id,
+                to_wire(&Error::BadRequest("request id already active".into())),
+            );
+        }
+        cancels.insert(id.clone(), token.clone());
+    }
+    let _registration = Registration {
+        daemon: daemon.clone(),
+        id: id.clone(),
+        token,
+    };
+    let _activity = daemon.ws.begin_request();
+    let result = ctx
+        .run(query::QueryService::new(&daemon.ws).execute(command, &ctx))
+        .await;
     match result {
-        Ok(v) => Response::ok(id, v),
-        Err(e) => Response::err(id, to_wire(&e)),
+        Ok(value) => Response::ok(id, value),
+        Err(error) => Response::err(id, to_wire(&error)),
     }
 }
 
-async fn run_query(
-    daemon: &Arc<Daemon>,
-    req: &Request,
-    token: &CancellationToken,
-    timeout: Duration,
-) -> Result<Value> {
-    // Backpressure for elaboration-blocking ops.
-    let _permit = match req.op.as_str() {
-        op::DIAGNOSTICS | op::GOAL | op::SORRY | op::LIST | op::REFERENCES => {
-            Some(daemon.ws.acquire_inflight().await?)
-        }
-        _ => None,
-    };
+fn encode<T: serde::Serialize>(value: T) -> Result<Value> {
+    Ok(serde_json::to_value(value)?)
+}
 
-    let ws = &daemon.ws;
-    let op_str = req.op.clone();
-    let params = req.params.clone();
-    // An explicit per-request deadline also stretches the elaboration wait
-    // inside the handlers (it defaults to the shorter DEFAULT_ELAB_TIMEOUT).
-    let wait_override = req.timeout_ms.map(Duration::from_millis);
-
-    let work = async move {
-        match op_str.as_str() {
-            op::DIAGNOSTICS => query::diagnostics(ws, &parse(params)?, wait_override).await,
-            op::GOAL => query::goal(ws, &parse(params)?, wait_override).await,
-            op::SORRY => query::sorry(ws, &parse(params)?, wait_override).await,
-            op::LIST => query::list(ws, &parse(params)?, wait_override).await,
-            op::REFERENCES => query::references(ws, &parse(params)?, wait_override).await,
-            op::RESTART_FILE => query::restart_file(ws, &parse(params)?).await,
-            other => Err(Error::BadRequest(format!("unknown op: {other}"))),
-        }
-    };
-
-    tokio::select! {
-        r = work => r,
-        _ = token.cancelled() => Err(Error::Cancelled),
-        _ = tokio::time::sleep(timeout) => Err(Error::Timeout),
+fn response<T: serde::Serialize>(id: String, result: Result<T>) -> Response {
+    match result.and_then(encode) {
+        Ok(value) => Response::ok(id, value),
+        Err(error) => Response::err(id, to_wire(&error)),
     }
 }
 
-fn parse<T: serde::de::DeserializeOwned>(params: Value) -> Result<T> {
-    serde_json::from_value(params).map_err(|e| Error::BadRequest(format!("bad params: {e}")))
-}
-
-fn health(daemon: &Arc<Daemon>) -> Value {
+fn health(daemon: &Arc<Daemon>) -> HealthResult {
     let server = daemon.ws.server();
-    json!({
-        "ok": !server.is_dead(),
-        "workspace": daemon.ws.worktree().to_string_lossy(),
-        "protocol_version": PROTOCOL_VERSION,
-        "server": { "running": !server.is_dead(), "pid": daemon.ws.pid() },
-        "idle_secs": daemon.ws.idle_for().as_secs(),
-    })
+    let running = !server.is_dead();
+    let state = if daemon.ws.is_shutting_down() {
+        LifecycleState::ShuttingDown
+    } else if !running {
+        LifecycleState::Recovering
+    } else {
+        LifecycleState::Ready
+    };
+    HealthResult {
+        ok: state == LifecycleState::Ready,
+        workspace: daemon.ws.worktree().to_string_lossy().into_owned(),
+        protocol_version: PROTOCOL_VERSION,
+        server: ServerHealth {
+            running,
+            pid: server.pid(),
+        },
+        idle_secs: daemon.ws.idle_for().as_secs(),
+        lifecycle: LifecycleHealth {
+            state,
+            active_requests: daemon.ws.active_requests(),
+        },
+    }
 }
 
 fn to_wire(e: &Error) -> WireError {
     let kind = match e {
         Error::Timeout => ErrorKind::Timeout,
         Error::Cancelled => ErrorKind::Cancelled,
-        Error::Unresolved(_) | Error::InvalidPath(_) => ErrorKind::NotFound,
+        Error::Unresolved(_)
+        | Error::InvalidPath(_)
+        | Error::Document(leanck_core::document::DocumentError::Path { .. }) => ErrorKind::NotFound,
+        Error::Document(_) => ErrorKind::BadRequest,
         Error::BadRequest(_) => ErrorKind::BadRequest,
         Error::ServerDown(_) | Error::Spawn(_) => ErrorKind::ServerDown,
-        Error::ServerUnhealthy => ErrorKind::ServerUnhealthy,
         Error::Overloaded => ErrorKind::Overloaded,
         _ => ErrorKind::Internal,
     };

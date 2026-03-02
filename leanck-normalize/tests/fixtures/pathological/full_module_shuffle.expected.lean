@@ -1,18 +1,20 @@
 /-
 Copyright (c) 1999 Pathological Tests.
 -/
+
 module
 
 public import Algebra.Basic
+import Zeta
+
 public import Data.List
 import Alpha
-import Zeta
 
 /-!
 # color center
 
 this module doc has a terribly long sentence with color and
-organisation details: It should be capitalized after the colon and
+organisation details: it should be capitalized after the colon and
 wrapped at a narrow width.
 
 * a bullet with a continuation line that has extra content about
@@ -30,7 +32,7 @@ namespace Weird
 
 def x := 1
 
-/-- a very long compact comment describing behavior: It favors color,
+/-- a very long compact comment describing behavior: it favors color,
 organize and marginalized examples while preserving a literal delimiter
 like /- inside the text and it should not lose the closing delimiter. -/
 theorem t : True := by

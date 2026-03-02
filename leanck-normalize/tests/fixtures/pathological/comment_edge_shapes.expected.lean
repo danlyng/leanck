@@ -15,7 +15,7 @@ written as prose.
   continuation text is indented more deeply and should
   remain attached to the bullet.
 
-Another paragraph after far too many blank lines: It
+Another paragraph after far too many blank lines: it
 should be capitalized and separated by just one blank
 line. -/
 

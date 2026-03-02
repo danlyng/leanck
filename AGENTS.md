@@ -2,57 +2,49 @@
 
 ## Project
 
-leanck provides standalone Lean 4 tooling through a CLI and an MCP server.
-Read `README.md` and `plugin/README.md` for setup and the component map.
+leanck provides standalone Lean 4 tooling through a CLI and an MCP server. Read `README.md` and `plugin/README.md` for setup and the component map.
 
 ## Build and test
 
-- `just build` stages the MCP server and daemon into `plugin/bin/` and installs
-  the CLI and daemon on PATH.
+- `just build` stages the MCP server and daemon into `plugin/bin/` and installs the CLI and daemon on PATH.
 - `cargo build --release --workspace --locked` builds every binary.
 - `cargo test --workspace --locked` runs the Rust suite.
-- `just build-mcp` / `just build-leanckd` stage individual binaries. On macOS,
-  copies must be re-signed ad hoc; the recipes already do this.
-- Live tests need Lake. Set `LEANCKD_TEST_PROJECT` to an absolute path to a
-  disposable copy of `leanck-mcp/test-project`, then run
-  `cargo test -p leanckd --test live_smoke -- --ignored` and
-  `cargo test -p leanckd --test socket_smoke -- --ignored` sequentially.
-  The MCP client test is `cargo test -p leanck-mcp --test daemon_e2e -- --ignored`;
-  also set `LEANCKD_BIN` to an absolute path to the built daemon.
+- `just build-mcp` / `just build-leanckd` stage individual binaries. On macOS, copies must be re-signed ad hoc; the recipes already do this.
+- Live tests need Lake. Set `LEANCKD_TEST_PROJECT` to an absolute path to a disposable copy of `leanck-mcp/test-project`, then run `cargo test -p leanckd --lib live_smoke --locked -- --ignored` and `cargo test -p leanckd --test socket_smoke --locked -- --ignored` sequentially. The MCP client test is `cargo test -p leanck-mcp --test daemon_e2e --locked -- --ignored`; build the workspace first so the test can select the built daemon beside the test executables.
+
+`just stage /absolute/staging/directory` builds locked release binaries and signs copied macOS executables without installing them. `just verify-distribution /absolute/template/project` uses temporary staging and unique disposable workspaces to check discovery, concurrent clients, switching, signing, and shutdown. The in-process live engine test uses `--lib live_smoke`; socket and MCP tests remain integration targets.
 
 ## Source map
 
-- `leanck-cli/src/cli.rs`: user command surface. Live queries use
-  `leanckd::client`; builds use `leanckd::build`; `doctor` is a non-spawning probe.
-- `leanck-mcp/src/mcp.rs`: MCP tool definitions. `daemon.rs` wraps the shared
-  client and holds the current workspace. `set_workspace` needs only a Lake marker.
-- `leanckd`: shared client, Unix socket protocol, Lean server lifecycle,
-  elaboration state, queries, build runner, and compact renderers.
-- `leanck-loogle`: shared Loogle client; local endpoint first, then self-hosted,
-  then main. `LOOGLE_URL` prepends an override. Local corpus coverage may differ.
-- `leanck-normalize`: library and standalone normalizer; also backs
-  `leanck normalize`.
-- `markdown-reflow`: Git dependency from `https://github.com/danlyng/markdown-reflow`,
-  pinned by revision in `leanck-normalize/Cargo.toml`. Update it with
-  `cargo add -p leanck-normalize markdown-reflow --git https://github.com/danlyng/markdown-reflow.git --rev <COMMIT>`
-  and rerun the normalizer tests.
+- `leanck-cli/src/cli.rs`: user command surface. `args.rs` holds shared workspace, timeout, and output flags. Live queries use `leanck-client`; builds use `leanck-lake`; normalization uses `leanck-normalize::command`; `doctor` is a non-spawning probe.
+- `leanck-mcp/src/mcp.rs`: MCP tool definitions and error adaptation. `workspace.rs` holds only the selected workspace; each operation captures one immutable shared client. `set_workspace` needs only a Lake marker.
+- `leanck-client`: shared workspace-bound client, discovery, startup, validated transport, retry policy, and live-query rendering. Public operations accept exact core parameter types and return exact core result types. Timeouts are supplied per request. Only failed connections permit a retry; failed writes, reads, or protocol validation are never automatically replayed.
+- `leanck-core`: shared identity, runtime paths, typed operation/parameter pairing, version 4 request/result models and wire errors, and optional Tokio length-delimited private-socket framing through its `wire` feature. Pagination counts use u64; diagnostic severity keeps its numeric wire representation through a domain enum. `ListParams.kind` is `Option<Vec<KindSelector>>` (omitted/empty means all); `ListedSymbol.kind` is a source-tagged `DeclarationKind`, not a string. Selectors are closed snake_case names; lexical Lean kinds take priority over coarse LSP fallbacks.
+- `leanckd`: Unix socket service and workspace lifecycle. Only `run` and its error/result types are public; live engine tests are compiled inside the library. `documents.rs` owns canonical source/version leases, all document mutations, import freshness, and retention; `state/` owns ElaborationStore generation/version transitions; `query.rs` owns QueryService; `declarations.rs` shares LSP/lexical discovery across listing and lookup; `scan.rs` provides UTF-16-aware heuristic tokens. `server/session.rs` owns typed standard LSP operations and Lean extensions; `server/io.rs` adapts lsp-server messages/request queues to cancellable child I/O. No frontend depends on its implementation. Daemon startup consumes cache outcomes from `leanck-lake` and chooses best-effort recovery.
+- `leanck-lake`: bounded project-toolchain execution and cross-process build/cache coordination, build parsing/rendering and outcomes, Mathlib cache detection/fetching, and evaluated project source-root discovery through `lake env printenv LEAN_SRC_PATH`. Uses the project's own `lake` on PATH. The crate is a library; it does not stage a replacement Lake binary.
+- `leanck-loogle`: shared structured search client with a reusable HTTP pool, endpoint fallback, limits, empty-query/multiple-term policy, and endpoint provenance. `loogle.endpoints` configures the local/main fallback list. Coverage is not inferred from URLs.
+- `leanck-normalize`: pure `normalize` API with options, output, statistics, and explicit copyright year. The optional `command` module backs both binary entry points. Default features include the command adapter; library-only consumers can disable default features.
+- `markdown-reflow`: Git dependency from `https://github.com/danlyng/markdown-reflow`, pinned by revision in `leanck-normalize/Cargo.toml`. Update it with `cargo add -p leanck-normalize markdown-reflow --git https://github.com/danlyng/markdown-reflow.git --rev <COMMIT>` and rerun the normalizer tests.
 - `plugin/`: plugin manifests, MCP configs, skills, agents, and hooks.
 - `leanck-skills/`, `leanck-subagents/`: CLI-oriented workflow definitions.
+- `test-support/contracts/v4.json`: authoritative version 4 contract fixtures, consumed directly rather than patching version 1 fixtures.
 
 ## Runtime
 
-The daemon warms the project before binding its socket. For Mathlib projects,
-it attempts `lake exe cache get` first (best effort; `LEANCKD_NO_CACHE_GET`
-skips it). The shared client waits while the daemon is alive, up to its startup
-cap. Socket, pid, and lock paths are derived per worktree.
+The daemon warms the project before binding its socket. For Mathlib projects, it attempts `lake exe cache get` first (best effort; `cache.enabled=false` skips it). The shared client waits while the daemon is alive, up to its startup cap. Socket, pid, and lock paths are derived per worktree.
 
-Builds use the project's own `lake` on PATH, preserving toolchain compatibility
-with the Lean language server. Parsing and rendering are shared in `leanckd::build`.
+Normal client queries negotiate wire version 4 through health before dispatch. Upgrade clients and daemon together and explicitly shut down older daemons; incompatible peers are not translated. Cold startup, operation execution, and short probes have separate budgets; `RequestOptions::transport_timeout_ms` independently bounds socket I/O. Request cancellation and dropped futures retain the query ID for a bounded best-effort cancel, and connection loss also cancels daemon work. The mandatory lifetime lock remains on disk after shutdown; ownership is released by closing its descriptor, including on crash. Do not unlink the lock while a daemon owns it.
 
-The daemon is the single shared owner of the Lean server, which is what fixes the multi-agent deadlocks the HTTP-to-VSCode path had: every LSP request is timeout-bounded and `$/cancelRequest`-cancellable; agents waiting on the same file share one elaboration wait (`tokio::Notify` per URI); restarts are serialized per URI; a semaphore caps in-flight elaboration work; and all in-memory state sits behind `std::sync::Mutex` so a guard can never span an `.await` (a compile error). Socket path / pid / lock are derived per-worktree in `leanckd/src/paths.rs`; the wire protocol (`proto.rs`) is shared with the `leanck-mcp` client.
+Builds use the project's own `lake` on PATH, preserving toolchain compatibility with the Lean language server. Execution, parsing, and rendering are shared in `leanck-lake`. Requested warnings include dependency diagnostics and locationless configuration warnings; strict mode rejects recognized warnings, including with a zero Lake exit code.
+
+The daemon is the single shared owner of the Lean server, which is what fixes the multi-agent deadlocks the HTTP-to-VSCode path had: one absolute request deadline and cancellation token cover admission, document locks, elaboration, confirmation, enrichment, and LSP requests; dropping a pending LSP future emits `$/cancelRequest`; agents waiting on the same file share one elaboration wait (`tokio::Notify` per URI); sync, restarts, and recovery share a per-URI read/write lock; query leases pin source/version/session and block mutation; generation-bound notifications reject obsolete state; a semaphore caps in-flight elaboration work; and ElaborationStore uses `std::sync::Mutex` so state guards cannot cross `.await` in the spawned query tasks. Document read/write leases intentionally span asynchronous work. Socket, PID, and lock paths are derived per worktree in `leanck-core/src/paths.rs`; `leanck-core/src/api.rs` and `wire.rs` are shared with the client. Connection, supervision, Lean I/O, and stderr tasks are tracked and stopped during bounded shutdown. Idle accounting uses monotonic time and includes queued/running operations. `HealthResult.lifecycle` is mandatory and reports ready, recovering, or shutting_down state and active request count.
 
 ## Packaging
 
-`plugin/bin/` contains staged executables, not source. MCP discovers the daemon
-via `LEANCKD_BIN`, a sibling executable, or PATH. The core has no credential or
-database bootstrap step. Normalization is available through the installed CLI.
+`plugin/bin/` contains staged executables, not source. The shared client discovers the daemon via configured `client.daemon_bin`, a sibling executable, or PATH. The core has no credential or database bootstrap step. Normalization uses `leanck normalize [OPTIONS] [PATH]` or standalone `leanck-normalize [OPTIONS] [PATH]`. Set width only with `--width N`; a numeric positional argument is a path. CLI file restarts use `leanck restart-file <file>`; MCP keeps `restart_file`. MCP `sorry` accepts `path`, not the former `file` alias.
+
+The Lean transport uses lsp-server 0.10 and lsp-types 0.95.1 models. LeanSession handles supported server requests explicitly and returns method_not_found for unsupported ones. One blocking parser task uses SyncIoBridge over a cancellation-aware reader; the writer stays asynchronous. Query handlers call typed session operations rather than constructing LSP method strings/JSON. Private socket framed readers must live for the connection lifetime so read-ahead bytes are retained; reads/writes share a 16 MiB cap and truncated frames fail.
+
+Document retention targets 128 entries and 64 MiB of source, with active leases and queued operations protected. Eviction sends didClose and forgets state; versions are not reused during the daemon lifetime. Source-root discovery is bounded to five seconds; unresolved layouts reopen conservatively. Directory sorry scans are text-only and do not open documents. Sorry reports always carry quality notes; `SorryParams` accepts only `path`, with no notes opt-in. List/reference fallbacks also expose quality notes. `DiagnosticsResult.source` is a mandatory pinned `String`; excerpts never fall back to the filesystem. See `docs/refactor/STAGE_7.md`.
+
+Builds remain outside daemon RPC. `leanck-lake` owns their default 30-minute budget, 8 MiB per-stream capture limit, cancellation, process-group cleanup, and JSON provenance. CLI exposes `--timeout SECS` and `--max-output-bytes BYTES`; MCP exposes `timeout_ms`, `max_output_bytes`, and optional targets. Build/cache entry points share the stable `.lake/leanck-execution.lock`; canonical aliases share ownership, and the child inherits the descriptor so it retains the lease after a caller crash. Keep that inode while owned. External Lake commands and Lean internal dependency builds retain their normal behavior. Generic read-only Lake probes avoid this gate. CacheOptions.execution supplies the shared runner settings (20-minute default for cache). File locking requires Rust 1.89 or newer. See `docs/refactor/STAGE_8.md`.

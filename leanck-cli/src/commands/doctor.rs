@@ -1,20 +1,22 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use crate::workspace::{detect_workspace, find_project_root};
+use crate::args::{OutputArgs, WorkspaceArgs};
+use leanck_client::{Client, RequestOptions};
+use leanck_core::workspace::has_project_marker;
 
 #[derive(clap::Args, Debug)]
 pub(crate) struct Args {
-    /// Workspace root. Defaults to the auto-detected Lake project.
-    #[arg(long)]
-    pub(crate) workspace: Option<PathBuf>,
+    #[arg(skip)]
+    pub(crate) settings: leanck_config::Settings,
+    #[command(flatten)]
+    pub(crate) workspace: WorkspaceArgs,
 
     /// Print all checks instead of just warnings and failures.
     #[arg(short, long)]
     pub(crate) verbose: bool,
 
-    /// Emit the full machine-readable JSON health payload.
-    #[arg(long)]
-    pub(crate) json: bool,
+    #[command(flatten)]
+    pub(crate) output: OutputArgs,
 }
 
 #[derive(serde::Serialize)]
@@ -33,27 +35,27 @@ impl Check {
 }
 
 pub(crate) fn run(args: Args) -> anyhow::Result<()> {
-    let workspace = match args.workspace {
+    let workspace = match args.workspace.workspace {
         Some(p) => p,
-        None => detect_workspace()?,
+        None => leanck_core::workspace::WorkspaceRoot::discover_current()?.into_path_buf(),
     };
     let workspace = workspace.canonicalize().unwrap_or(workspace);
     let mut checks = Vec::new();
-    if workspace.is_dir() && find_project_root(&workspace).as_deref() == Some(&workspace) {
+    if workspace.is_dir() && has_project_marker(&workspace) {
         checks.push(Check::new("ok", "Lake project marker found"));
-        report_leanckd(&mut checks, &workspace)?;
+        report_leanckd(&mut checks, &workspace, args.settings)?;
     } else {
         checks.push(Check::new("error", "workspace has no Lake project marker (lakefile.lean, lakefile.toml, or lean-toolchain)"));
     }
     let ok = !checks.iter().any(|check| check.status == "error");
     let issues: Vec<&Check> = checks.iter().filter(|check| check.status != "ok").collect();
-    if args.json {
+    if args.output.json {
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "ok": ok,
                 "workspace": workspace,
-                "socket_path": leanckd::paths::socket_path(&workspace),
+                "socket_path": leanck_core::paths::socket_path(&workspace),
                 "issues": issues.iter().map(|check| serde_json::json!({
                     "level": check.status, "message": check.summary,
                 })).collect::<Vec<_>>(),
@@ -64,7 +66,7 @@ pub(crate) fn run(args: Args) -> anyhow::Result<()> {
         println!("Workspace: {}", workspace.display());
         println!(
             "Socket: {}",
-            leanckd::paths::socket_path(&workspace).display()
+            leanck_core::paths::socket_path(&workspace).display()
         );
         for check in &checks {
             println!("{}: {}", check.status, check.summary);
@@ -83,40 +85,36 @@ pub(crate) fn run(args: Args) -> anyhow::Result<()> {
 }
 
 /// Probe without starting a daemon: idle projects do not need a Lean process.
-fn report_leanckd(checks: &mut Vec<Check>, workspace: &Path) -> anyhow::Result<()> {
-    let socket = leanckd::paths::socket_path(workspace);
+fn report_leanckd(
+    checks: &mut Vec<Check>,
+    workspace: &Path,
+    settings: leanck_config::Settings,
+) -> anyhow::Result<()> {
+    let client = Client::from_path(workspace)?.with_settings(settings);
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let health = rt.block_on(async {
-        if !leanckd::client::can_connect(&socket).await {
-            return None;
-        }
-        Some(leanckd::client::DaemonClient::new(socket).health().await)
-    });
+    let health = rt.block_on(client.probe_existing(RequestOptions::default()));
     match health {
-        None => checks.push(Check::new(
+        Ok(None) => checks.push(Check::new(
             "ok",
             "daemon not running (auto-starts on the first live-Lean query)",
         )),
-        Some(Err(e)) => checks.push(Check::new(
+        Err(e) => checks.push(Check::new(
             "error",
             format!("daemon health check failed: {e}"),
         )),
-        Some(Ok(h)) => {
-            if h.get("ok").and_then(|v| v.as_bool()) == Some(false) {
+        Ok(Some(h)) => {
+            if !h.ok {
                 checks.push(Check::new(
                     "error",
-                    format!("daemon reported unhealthy: {h}"),
+                    format!("daemon reported unhealthy: {}", serde_json::to_string(&h)?),
                 ));
                 return Ok(());
             }
-            let pid = h
-                .get("server")
-                .and_then(|s| s.get("pid"))
-                .and_then(|v| v.as_u64());
-            let proto = h.get("protocol_version").and_then(|v| v.as_u64());
-            let idle = h.get("idle_secs").and_then(|v| v.as_u64());
+            let pid = h.server.pid.map(u64::from);
+            let proto = u64::from(h.protocol_version);
+            let idle = h.idle_secs;
             let show =
                 |value: Option<u64>| value.map(|n| n.to_string()).unwrap_or_else(|| "?".into());
             checks.push(Check::new(
@@ -124,14 +122,13 @@ fn report_leanckd(checks: &mut Vec<Check>, workspace: &Path) -> anyhow::Result<(
                 format!(
                     "daemon running (pid {}, protocol v{}, idle {}s)",
                     show(pid),
-                    show(proto),
-                    show(idle)
+                    proto,
+                    idle
                 ),
             ));
-            let expected = u64::from(leanckd::proto::PROTOCOL_VERSION);
-            if let Some(actual) = proto
-                && actual != expected
-            {
+            let expected = u64::from(leanck_core::api::PROTOCOL_VERSION);
+            if proto != expected {
+                let actual = proto;
                 checks.push(Check::new("warning", format!("daemon protocol v{actual} != this build's v{expected}; restart the stale daemon or wait for idle reap")));
             }
         }

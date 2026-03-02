@@ -30,13 +30,19 @@ Before starting, confirm the workspace is operational:
   couldn't start — it auto-starts on first use, so this usually means the
   project doesn't build. Stop and confirm the project is a valid Lake project
   (`lake build` succeeds).
-* The target file builds **clean** (no errors). Run `leanck:diagnostics` on
-  the file with `severity: ["error"]`. If there are errors, refuse — this is
+* The target file builds **clean** (no errors). Run
+  `leanck diagnostics <file> --severity error` (errors are also the default).
+  If there are errors, refuse — this is
   the wrong skill. The user wants `lean-proving` to *fix* the proof first.
 * Capture the pre-existing warning count so post-edit drift can be
   distinguished from new issues. Either `lake env lean <file> 2>&1 | grep -c
   warning` or `git stash && lake env lean <file> 2>&1 | grep -c warning && git
   stash pop` if you've already started editing.
+
+`--severity` accepts `error`, `warning`, `information`, and `hint`, with
+comma-separated values or repeated flags (for example, `--severity error
+--severity warning`). Use `--all-severities` for all severities, not the old
+`--severity all`; it cannot be combined with `--severity`.
 
 ## Scoping the work
 
@@ -79,23 +85,23 @@ the user informed and prevents drift.
 
 ### 3. Edit one move at a time, diagnose after each
 
-After each edit, call `leanck:diagnostics` scoped to the declaration with
-`severity: ["error", "warning"]`. Compare against the pre-edit warning
-count. If the count went up, locate the new warning and either:
+After each edit, run
+`leanck diagnostics <file> --ident <declaration> --severity error,warning`.
+Compare against the pre-edit warning count. If the count went up, locate the new warning and either:
 - Fix it (e.g., `show` → `change`, `simp_rw` cleanup), or
 - Confirm it's actually pre-existing (line numbers shift after deletions —
   use `git stash && lake env lean <file>` as ground truth).
 
 If diagnostics report a stale state (e.g., a warning at a line past the
 current EOF, or `Cannot process request to closed file`), call
-`leanck:restart_file` and re-query.
+`leanck restart-file <file>` and re-query.
 
 ### 4. Bulk verify
 
 Once all moves are applied:
 
-1. `leanck:diagnostics` on the file (no `ident` filter) at `severity:
-   ["error", "warning"]`. Count must equal the pre-edit baseline (modulo
+1. `leanck diagnostics <file> --severity error,warning` (no `--ident`
+   filter). Count must equal the pre-edit baseline (modulo
    warnings you've intentionally fixed, e.g. `linter.style.show`).
 2. `lake build <module>` for the touched module. Must be green.
 3. `lake build` for the full project. **This step is essential.** Helper

@@ -1,9 +1,11 @@
-//! The Lean server side: stdio framing, JSON-RPC client, process lifecycle,
-//! and supervision.
+//! Typed Lean sessions, library-backed LSP I/O, and owned process lifecycle.
 
-pub mod jsonrpc;
+pub mod extensions;
+mod io;
 pub mod lifecycle;
-pub mod transport;
+pub mod session;
 
-pub use jsonrpc::{JsonRpc, NotifySink};
-pub use lifecycle::LeanServer;
+pub use session::LeanSession;
+
+#[cfg(test)]
+pub(crate) mod test_peer;

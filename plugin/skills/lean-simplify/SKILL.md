@@ -31,7 +31,8 @@ Before starting, confirm the workspace is operational:
   project doesn't build. Stop and confirm the project is a valid Lake project
   (`lake build` succeeds).
 * The target file builds **clean** (no errors). Run `leanck:diagnostics` on
-  the file with `severity: ["error"]`. If there are errors, refuse — this is
+  the file with `severity: {"mode":"only","severities":["error"]}`
+    (or omit `severity`). If there are errors, refuse — this is
   the wrong skill. The user wants `lean-proving` to *fix* the proof first.
 * Capture the pre-existing warning count so post-edit drift can be
   distinguished from new issues. Either `lake env lean <file> 2>&1 | grep -c
@@ -80,7 +81,8 @@ the user informed and prevents drift.
 ### 3. Edit one move at a time, diagnose after each
 
 After each edit, call `leanck:diagnostics` scoped to the declaration with
-`severity: ["error", "warning"]`. Compare against the pre-edit warning
+`severity: {"mode":"only","severities":["error","warning"]}`.
+Compare against the pre-edit warning
 count. If the count went up, locate the new warning and either:
 - Fix it (e.g., `show` → `change`, `simp_rw` cleanup), or
 - Confirm it's actually pre-existing (line numbers shift after deletions —
@@ -94,8 +96,9 @@ current EOF, or `Cannot process request to closed file`), call
 
 Once all moves are applied:
 
-1. `leanck:diagnostics` on the file (no `ident` filter) at `severity:
-   ["error", "warning"]`. Count must equal the pre-edit baseline (modulo
+1. `leanck:diagnostics` on the file (no `ident` filter) with
+   `severity: {"mode":"only","severities":["error","warning"]}`.
+   Count must equal the pre-edit baseline (modulo
    warnings you've intentionally fixed, e.g. `linter.style.show`).
 2. `lake build <module>` for the touched module. Must be green.
 3. `lake build` for the full project. **This step is essential.** Helper
@@ -333,7 +336,7 @@ Same as `lean-proving`. The ones used most heavily by this skill:
 
 | Tool | When in this workflow |
 |---|---|
-| `diagnostics` | After every edit, scoped via `ident` to the declaration. Severity `["error", "warning"]` to detect drift. |
+| `diagnostics` | After every edit, scoped via `ident` to the declaration. Use `severity: {"mode":"only","severities":["error","warning"]}` to detect drift. |
 | `loogle` | When you need an exact pattern match (e.g., looking for `LipschitzWith _ (fun x => _ - _)`). |
 | `restart_file` | When diagnostics report state past EOF or "closed file" errors after a large rewrite. |
 | `health` | Step 0 prerequisite check. |

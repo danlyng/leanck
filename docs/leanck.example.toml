@@ -1,0 +1,217 @@
+#! Complete configuration example. Active values below match built-in defaults.
+#! Copy to leanck.toml in a project, or ~/.config/leanck/config.toml for user defaults.
+#! Precedence: defaults < user file < nearest project file < --config/LEANCK_CONFIG
+#! < --set < explicit command flags/MCP parameters.
+#! Relative file paths resolve from the configuration file; no ~ or $VAR expansion.
+#! See CONFIGURATION.md for details.
+
+version = 1 # Configuration schema version; currently only 1 is supported.
+
+[normalize]
+width = 100 # Positive target width for comment reflow and long attribute lines.
+frontmatter = true # Apply header, import, and frontmatter ordering rules.
+header = true # Normalize existing headers; derive missing attribution from Git history.
+sort_imports = true # Apply import ordering, grouping, and deduplication rules.
+attributes = true # Apply attribute rules.
+headings = false # Apply Markdown heading formatting and conversion rules.
+comments = true # Apply block-comment transformation rules, including spelling.
+comment_reflow = true # Wrap comment prose to target width.
+linkify_urls = false # Turn bare comment URLs into Markdown links.
+spelling = "american" # "american", "british", or "off".
+capitalize_after_colon = false # Capitalize words after a colon.
+collapse_blank_lines = true # Apply the whitespace rule's blank-line cap.
+#! Recursive exclusions relative to the input directory, e.g. ["Generated/**", "Vendor/**"].
+#! Explicitly named files are still processed; hidden entries and symlinks are skipped.
+exclude = []
+
+[normalize.rules]
+#! Controls whether line directives are respected. Optional comma-separated rule names limit the
+#! directive, e.g. `-- leanck: off spelling,attributes` disables spelling and attribute normalization
+#! for the region while `-- leanck: off` disables all rules for the region.
+#! `-- leanck: on spelling,attributes` restores only those rules, even after disabling all.
+#! `-- leanck: on` restores all configured rules. Repeated directives do not nest.
+#! See CONFIGURATION.md#whitespace-and-local-exceptions for details.
+directives = true
+
+[normalize.rules.frontmatter]
+#! List the components in desired order. Omitted components are treated as barriers: other components
+#! cannot move across them. [] preserves all positions while still allowing header formatting and
+#! import-content policies. For example, ["header", "module", "imports", "docstring"] leaves
+#! sections/namespaces unchanged. Included headers will be first, module before imports/scopes, and
+#! imports before scopes. Only recognized initial frontmatter is reordered.
+order = [
+    "header", "module", "imports", "docstring", "section", "namespace",
+]
+#! Blank lines to add between components (overridden by normalize.rules.whitespace.max_blank_lines)
+blank_lines = 1
+#! Used to generate missing headers from Git history and check existing headers.
+#! Existing attribution/license text is retained unless invalid_existing = "replace".
+#! Placeholders: {copyright}, {authors}, {years}, {first_year}, {last_year}, {license}.
+#! {copyright} is ONE notice with the overall year range and unique author names.
+#! Empty template lines are ignored. Templates must be one outer Lean comment, with no nested
+#! comment delimiters.
+header_template = """
+/-
+{copyright}
+{license}
+Authors: {authors}
+-/"""
+license_text = "" # Text for the {license} field
+normalize_existing = true # Format retained header delimiters/spacing.
+#! When an existing header does not match header_template (including configured license_text):
+#! "warn" retains its text and warns; "ignore" retains its text silently.
+#! "replace" rebuilds it from the template and Git history; unavailable history retains it and warns.
+#! Replacement is independent of normalize_existing; --dry-run reports changes without writing.
+invalid_existing = "warn"
+#! Timeout for Git inspection and file log checks to determine authors (note: `fetch` is never run`)
+#! Unavailable/incomplete history leaves missing headers absent and retains existing headers.
+#! A note or warning reports the reason.
+history_timeout_ms = 5000
+follow_renames = true # Follow file renames; Git mailmaps are honored with either value.
+#! Exclude these Git authors from generated/replaced headers (before and after mailmap resolution).
+#! Exact name, email, or "Name <email>"; ASCII case-insensitive, no wildcards.
+#! Replacing this array replaces all defaults; [] includes every author.
+#! Committers and Co-authored-by trailers do not determine file authorship here.
+ignore_authors = [
+    "noreply@anthropic.com", # Claude Code (including model-specific names)
+    "209825114+claude[bot]@users.noreply.github.com",
+    "215619710+anthropic-claude[bot]@users.noreply.github.com",
+    "208546643+claude-code-action[bot]@users.noreply.github.com",
+    "noreply@openai.com", # Codex
+    "codex@openai.com",
+    "215057067+openai-codex[bot]@users.noreply.github.com",
+    "199175422+chatgpt-codex-connector[bot]@users.noreply.github.com",
+    "cursoragent@cursor.com", # Cursor
+    "206951365+cursor[bot]@users.noreply.github.com",
+    "198982749+Copilot@users.noreply.github.com", # GitHub Copilot
+    "167198135+copilot[bot]@users.noreply.github.com",
+    "aider@aider.chat", # Aider (current and legacy signatures)
+    "noreply@aider.chat",
+    "176961590+gemini-code-assist[bot]@users.noreply.github.com", # Gemini
+    "158243242+devin-ai-integration[bot]@users.noreply.github.com", # Devin
+]
+#! Optional missing module docstring; {module} is the input filename without its extension.
+# module_doc_template = "/-! # About {module} -/"
+
+#! These policies apply only when normalize.headings = true
+[normalize.rules.headings]
+level = 2 # Generated banner heading level (1–6); existing heading levels are preserved.
+case = "title" # Case for headings: "title", "sentence", or "off".
+#! Title-case exceptions for interior words. Replacing this array replaces the full list.
+small_words = ["a", "an", "and", "as", "at", "but", "by", "for", "from", "in", "into", "nor", "of",
+    "off", "on", "onto", "or", "over", "per", "so", "the", "to", "up", "via", "vs", "with", "yet"]
+#! Generated banner comment; {hashes} uses level, and {title} is the formatted title.
+template = "/-! {hashes} {title} -/"
+
+#! Exact title replacements run before case formatting. Quote keys containing spaces.
+[normalize.rules.headings.replacements]
+# "Old heading" = "Preferred heading"
+
+#! These rules apply when `normalize.spelling` is not `off`.
+[normalize.rules.spelling]
+use_builtin = true # Set false to ignore built-in dictionaries; supply custom dictionaries below.
+#! Relative file paths to JSON word-to-replacement files, e.g. {"origin":"destination"}.
+#! Precedence: built-in map < files in order < inline replacements < protected words.
+#! Export the built-in map with: leanck normalize --export-dictionary american
+files = []
+protected_words = [] # Words never replaced, e.g. ["colour", "MyProjectTerm"].
+case_sensitive = false # false preserves matched case; true uses exact keys/replacements.
+inflections = true # Also handle regular inflected forms of dictionary words.
+
+#! Inline word mappings; chains resolve to their final replacement, and cycles are errors.
+#! Spelling only changes prose; code, math, HTML, URLs, and link destinations are protected.
+[normalize.rules.spelling.replacements]
+# "origin" = "destination"
+
+[normalize.rules.attributes]
+#! "same_line": @[simp] theorem ...; "above": attributes on the preceding line;
+#! "off": leave placement untouched. Attribute order is always preserved.
+placement = "same_line"
+above_when_long = false # If "same_line": Move above when the combined line exceeds normalize.width.
+
+#! Per-attribute placement using bare names; same allowed values as placement.
+#! Conflicting/multiline groups or intervening comments are left intact.
+[normalize.rules.attributes.overrides]
+# ext = "above"
+# simp = "same_line"
+
+#! Import rules. Only applied when normalize.frontmatter and normalize.sort_imports are true.
+[normalize.rules.imports]
+order = "alphabetical" # "off" skips sorting; grouping/deduplication remain enabled.
+public_first = true # Put public imports first within each sortable group.
+preserve_groups = true # Keep blank-line-separated groups; never sort across comments.
+deduplicate = true # Remove exact duplicate import lines within each sortable group.
+
+[normalize.rules.comments]
+#! Each accepts "compact", "separate", or "off" delimiter placement:
+#! compact: /-- Docstring -/
+#! separate:
+#!  /--
+#!  Docstring
+#!  -/
+module = "separate" # Opening and closing delimiters on their own lines.
+declaration = "compact" # Delimiters share the first/last content lines when possible.
+section = "compact" # Includes standalone heading comments, even level-one headings.
+
+[normalize.rules.whitespace]
+max_blank_lines = 1 # Consecutive blank-line cap (0–254); protected code/math/literals remain.
+line_endings = "lf" # "off" keeps input convention; "lf"/"crlf" convert it.
+final_newline = "ensure" # "off" leaves it unchanged; "ensure" adds one; "remove" removes it.
+remove_bom = true # Remove a leading UTF-8 BOM; false retains it. Marks inside source remain.
+
+[loogle]
+#! Complete fallback chain in order; [] disables search. A local-only list stays local.
+#! URLs must be absolute HTTP(S), without credentials, query strings, or fragments.
+#! --set loogle.endpoints or --endpoint replaces the whole list.
+endpoints = [
+    "http://127.0.0.1:8118/loogle/json",
+    "https://loogle.lean-lang.org/json",
+]
+timeout_ms = 15000 # Per-endpoint request budget, including reading the response body.
+limit = 10 # Maximum returned hits; 0 is allowed.
+
+[build]
+warnings = false # Include recognized Lake warnings in results.
+strict = false # Fail on recognized warnings, even after a successful build; implies warnings.
+timeout_ms = 1800000 # 30-minute total budget, including execution-lock waiting.
+max_output_bytes = 8388608 # 8 MiB capture limit PER stream (stdout and stderr).
+targets = [] # Default Lake targets; [] builds the workspace. Explicit targets replace this.
+
+[client]
+#! Optional explicit daemon binary; otherwise discover a sibling executable, then PATH.
+# daemon_bin = "/absolute/path/to/leanckd"
+#! Optional live-query timeout, sent per request; also overrides daemon per-stage wait caps.
+#! Leave unset to use the daemon's separate operation and stage budgets.
+# timeout_ms = 300000
+#! Optional independent socket I/O budget. Normally the operation budget plus 1 second,
+#! or the probe budget for control operations; it does not extend the operation deadline.
+# transport_timeout_ms = 301000
+startup_timeout_ms = 1800000 # Absolute cold-start wait cap (30 minutes), separate from queries.
+startup_grace_ms = 30000 # Wait up to 30 seconds while no live daemon PID is visible.
+probe_timeout_ms = 2000 # Health/control and protocol compatibility handshake budget.
+
+#! `leanckd` settings (running daemons must be restarted to apply new settings)
+[daemon]
+idle_timeout_ms = 3600000 # Shut down after one idle hour; 0 disables idle shutdown.
+max_inflight = 8 # Concurrent elaboration-blocking requests (1–65536).
+max_documents = 128 # Retention target; active leases and queued operations stay protected.
+max_source_bytes = 67108864 # 64 MiB of retained source.
+request_timeout_ms = 300000 # Default whole-operation budget (5 minutes).
+elaboration_timeout_ms = 120000 # Default elaboration wait cap (2 minutes).
+lsp_timeout_ms = 30000 # Default Lean query/discovery/enrichment wait cap.
+permit_timeout_ms = 30000 # Admission wait before reporting overload.
+sorry_timeout_ms = 5000 # File-sorry elaboration gate before falling back to a text scan.
+
+[cache]
+#! Try to fetch the Mathlib cache before startup.
+enabled = true
+timeout_ms = 1200000 # 20-minute fetch budget, including execution-lock waiting.
+max_output_bytes = 8388608 # 8 MiB capture limit per stream.
+
+[diagnostics]
+limit = 5 # Diagnostics to show per page
+severity = ["error"] # Any of "error", "warning", "information", "hint"; [] selects none
+
+[output]
+#! Prefer JSON output for supported commands
+json = false

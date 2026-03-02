@@ -4,67 +4,33 @@ use std::time::Duration;
 
 use tokio::time::Instant;
 
-use super::docstate::{overlaps_any, range_overlaps, StateStore, WireDiagnostic, WireRange};
+use super::docstate::{ElaborationStore, WireDiagnostic, WireRange, overlaps_any, range_overlaps};
 use crate::error::{Error, Result};
 
-pub struct WaitResult {
-    pub version: i64,
-    pub diagnostics: Vec<WireDiagnostic>,
-}
-
-/// Block until the requested range (or the whole file, when `range` is `None`)
-/// is no longer pending elaboration, then return the merged diagnostics.
-///
-/// "Done" means: a fileProgress for the current version arrived (`seen_progress`
-/// && `seen_completion`), Lean's reported `version` has caught up to the
-/// observed `doc_version`, and no remaining `pending` range overlaps `range`.
-/// On re-edit, [`StateStore::apply_file_progress`] resets completion for the new
-/// version, so waiters re-loop. Returns [`Error::Timeout`] past the deadline.
-pub async fn wait_for_range(
-    store: &StateStore,
+/// A pinned query cannot silently move to another version or session.
+pub async fn wait_for_version(
+    store: &ElaborationStore,
+    generation: u64,
     uri: &str,
+    version: i64,
     range: Option<&WireRange>,
     timeout: Duration,
-) -> Result<WaitResult> {
+) -> Result<()> {
     let deadline = Instant::now() + timeout;
     let notify = store.notifier(uri);
     loop {
-        // Register interest BEFORE checking the gate so a state change between
-        // the check and the await is not lost (Notify::notify_waiters only wakes
-        // already-enabled waiters).
         let notified = notify.notified();
         tokio::pin!(notified);
         notified.as_mut().enable();
-
-        if let Some(res) = try_complete(store, uri, range) {
-            return Ok(res);
+        let state = store.get_version(generation, uri, version)?;
+        if state.seen_progress
+            && state.seen_completion
+            && state.version == version
+            && !overlaps_any(range, &state.pending)
+        {
+            return Ok(());
         }
-
-        if Instant::now() >= deadline {
-            return Err(Error::Timeout);
-        }
-        tokio::select! {
-            _ = &mut notified => {}
-            _ = tokio::time::sleep_until(deadline) => return Err(Error::Timeout),
-        }
-    }
-}
-
-/// Check the completion gate once; on success return the version + range-filtered
-/// diagnostics. Holds the store lock only synchronously (never across `.await`).
-fn try_complete(store: &StateStore, uri: &str, range: Option<&WireRange>) -> Option<WaitResult> {
-    let s = store.get(uri)?;
-    if s.seen_progress
-        && s.seen_completion
-        && s.version >= s.doc_version
-        && !overlaps_any(range, &s.pending)
-    {
-        Some(WaitResult {
-            version: s.version,
-            diagnostics: filter_by_range(&s.diagnostics, range),
-        })
-    } else {
-        None
+        tokio::select! {_=&mut notified=>{},_=tokio::time::sleep_until(deadline)=>return Err(Error::Timeout)}
     }
 }
 
@@ -87,8 +53,14 @@ mod tests {
 
     fn r(sl: u32, sc: u32, el: u32, ec: u32) -> WireRange {
         WireRange {
-            start: WirePosition { line: sl, character: sc },
-            end: WirePosition { line: el, character: ec },
+            start: WirePosition {
+                line: sl,
+                character: sc,
+            },
+            end: WirePosition {
+                line: el,
+                character: ec,
+            },
         }
     }
 
@@ -105,104 +77,70 @@ mod tests {
         }
     }
 
-    /// Drive a URI to fully-elaborated/complete at `version`.
-    fn complete(s: &StateStore, uri: &str, version: i64, diags: Vec<WireDiagnostic>) {
-        s.apply_file_progress(uri, version, vec![r(0, 0, 100, 0)]);
-        s.apply_diagnostics(uri, Some(version), diags);
-        s.apply_file_progress(uri, version, vec![]);
+    fn begin(s: &ElaborationStore) {
+        s.begin_document(0, "u", 1).unwrap();
     }
-
-    #[tokio::test]
-    async fn returns_immediately_when_already_complete() {
-        let s = StateStore::new();
-        s.touch("u");
-        s.observe_doc_version("u", 1);
-        complete(&s, "u", 1, vec![]);
-        let res = wait_for_range(&s, "u", None, Duration::from_secs(1)).await.unwrap();
-        assert_eq!(res.version, 1);
-        assert!(res.diagnostics.is_empty());
+    async fn wait(s: &ElaborationStore, range: Option<&WireRange>) -> Result<()> {
+        wait_for_version(s, 0, "u", 1, range, Duration::from_secs(1)).await
     }
-
     #[tokio::test]
-    async fn blocks_until_completion_then_resolves() {
-        let s = StateStore::new();
-        s.touch("u");
-        s.observe_doc_version("u", 1);
-        let fut = wait_for_range(&s, "u", None, Duration::from_secs(1));
-        s.apply_file_progress("u", 1, vec![r(0, 0, 10, 0)]);
-        s.apply_file_progress("u", 1, vec![]);
-        let res = fut.await.unwrap();
-        assert_eq!(res.version, 1);
-    }
-
-    #[tokio::test]
-    async fn does_not_return_stale_complete_when_docversion_ahead() {
-        let s = StateStore::new();
-        s.touch("u");
-        s.observe_doc_version("u", 1);
-        complete(&s, "u", 1, vec![]);
-        s.observe_doc_version("u", 2); // edit landed; Lean still at v1
-
-        // Must still be waiting.
-        let early = tokio::time::timeout(
-            Duration::from_millis(50),
-            wait_for_range(&s, "u", None, Duration::from_secs(10)),
-        )
-        .await;
-        assert!(early.is_err(), "should not have resolved with stale completion");
-
-        // Lean catches up to v2.
-        complete(&s, "u", 2, vec![]);
-        let res = wait_for_range(&s, "u", None, Duration::from_secs(1)).await.unwrap();
-        assert_eq!(res.version, 2);
-    }
-
-    #[tokio::test]
-    async fn filters_diagnostics_to_overlapping_range() {
-        let s = StateStore::new();
-        s.touch("u");
-        s.observe_doc_version("u", 1);
-        s.apply_file_progress("u", 1, vec![r(0, 0, 100, 0)]);
-        s.apply_diagnostics(
+    async fn returns_complete_matching_snapshot() {
+        let s = ElaborationStore::new();
+        begin(&s);
+        s.diagnostics_for(
+            0,
             "u",
             Some(1),
-            vec![diag(r(1, 0, 1, 5), "in"), diag(r(50, 0, 50, 5), "out")],
+            vec![diag(r(0, 0, 0, 2), "in"), diag(r(5, 0, 5, 2), "out")],
         );
-        s.apply_file_progress("u", 1, vec![]);
-
-        let res = wait_for_range(&s, "u", Some(&r(0, 0, 3, 0)), Duration::from_secs(1))
-            .await
-            .unwrap();
-        let msgs: Vec<_> = res.diagnostics.iter().map(|d| d.message.as_str()).collect();
-        assert_eq!(msgs, vec!["in"]);
+        s.progress_for(0, "u", 1, vec![]);
+        wait(&s, Some(&r(0, 0, 2, 0))).await.unwrap();
+        let result = s.get_version(0, "u", 1).unwrap();
+        assert_eq!(result.version, 1);
+        assert_eq!(
+            filter_by_range(&result.diagnostics, Some(&r(0, 0, 2, 0))).len(),
+            1
+        );
     }
-
     #[tokio::test]
-    async fn keeps_waiting_while_pending_overlaps_query() {
-        let s = StateStore::new();
-        s.touch("u");
-        s.observe_doc_version("u", 1);
-        s.apply_file_progress("u", 1, vec![r(2, 0, 4, 0)]);
-
-        let early = tokio::time::timeout(
-            Duration::from_millis(50),
-            wait_for_range(&s, "u", Some(&r(3, 0, 3, 0)), Duration::from_secs(10)),
-        )
-        .await;
-        assert!(early.is_err());
-
-        s.apply_file_progress("u", 1, vec![]);
-        let res = wait_for_range(&s, "u", Some(&r(3, 0, 3, 0)), Duration::from_secs(1)).await;
-        assert!(res.is_ok());
+    async fn blocks_for_current_completion_and_wakes_all_waiters() {
+        let s = std::sync::Arc::new(ElaborationStore::new());
+        begin(&s);
+        s.progress_for(0, "u", 1, vec![r(0, 0, 10, 0)]);
+        let first = s.clone();
+        let second = s.clone();
+        let a = tokio::spawn(async move { wait(&first, None).await });
+        let b = tokio::spawn(async move { wait(&second, None).await });
+        tokio::task::yield_now().await;
+        assert!(!a.is_finished());
+        assert!(!b.is_finished());
+        s.progress_for(0, "u", 1, vec![]);
+        a.await.unwrap().unwrap();
+        b.await.unwrap().unwrap();
     }
-
     #[tokio::test]
-    async fn times_out_when_never_completes() {
-        let s = StateStore::new();
-        s.touch("u");
-        s.observe_doc_version("u", 1);
-        s.apply_file_progress("u", 1, vec![r(0, 0, 1, 0)]); // never empties
-        let res = wait_for_range(&s, "u", None, Duration::from_millis(80)).await;
-        assert!(matches!(res, Err(Error::Timeout)));
+    async fn recovery_wakes_and_fails_a_pinned_wait() {
+        let s = std::sync::Arc::new(ElaborationStore::new());
+        begin(&s);
+        let copy = s.clone();
+        let waiter = tokio::spawn(async move { wait(&copy, None).await });
+        tokio::task::yield_now().await;
+        s.begin_generation(1);
+        assert!(matches!(waiter.await.unwrap(), Err(Error::ServerDown(_))));
+    }
+    #[tokio::test]
+    async fn replacement_version_fails_instead_of_following_an_edit() {
+        let s = ElaborationStore::new();
+        begin(&s);
+        s.begin_document(0, "u", 2).unwrap();
+        s.progress_for(0, "u", 2, vec![]);
+        assert!(matches!(wait(&s, None).await, Err(Error::ServerDown(_))));
+    }
+    #[tokio::test(start_paused = true)]
+    async fn timeout_does_not_accept_stale_progress() {
+        let s = ElaborationStore::new();
+        begin(&s);
+        s.progress_for(0, "u", 0, vec![]);
+        assert!(matches!(wait(&s, None).await, Err(Error::Timeout)));
     }
 }

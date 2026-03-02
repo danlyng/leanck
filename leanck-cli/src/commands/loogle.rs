@@ -1,10 +1,18 @@
 use clap::CommandFactory;
 use leanck_loogle::LoogleQuery;
 
-use crate::cli::{Cli, parse_positive_usize_cli};
+use crate::cli::Cli;
 
 #[derive(clap::Args, Debug)]
 pub(crate) struct Args {
+    #[arg(skip)]
+    pub(crate) settings: leanck_config::Loogle,
+    /// Replace the configured endpoint list, in fallback order (repeatable).
+    #[arg(long)]
+    pub(crate) endpoint: Vec<String>,
+    /// HTTP timeout for each endpoint, in milliseconds.
+    #[arg(long)]
+    pub(crate) timeout_ms: Option<u64>,
     /// Positional queries are intentionally unsupported; capture them so we can
     /// return a help-rich error instead of clap's generic "unexpected argument".
     #[arg(value_name = "QUERY", hide = true)]
@@ -31,7 +39,6 @@ pub(crate) struct Args {
         short = 'k',
         long = "limit",
         default_value_t = leanck_loogle::DEFAULT_LIMIT,
-        value_parser = parse_positive_usize_cli
     )]
     pub(crate) limit: usize,
 
@@ -40,40 +47,35 @@ pub(crate) struct Args {
     pub(crate) json: bool,
 }
 
-pub(crate) async fn run(args: Args) -> anyhow::Result<()> {
+pub(crate) async fn run(mut args: Args) -> anyhow::Result<()> {
     if !args.positional.is_empty() {
         return Err(positional_args_error(&args.positional));
     }
 
+    if !args.endpoint.is_empty() {
+        args.settings.endpoints = args.endpoint;
+    }
+    if let Some(timeout) = args.timeout_ms {
+        args.settings.timeout_ms = timeout;
+    }
+    let settings = leanck_config::Settings {
+        loogle: args.settings.clone(),
+        ..Default::default()
+    };
+    settings.validate()?;
     let input = LoogleQuery {
         constant: args.constant,
         substr: args.substr,
         subexpr: args.subexpr,
         conclusion: args.conclusion,
     };
-    let has_multiple_terms = input.has_multiple_terms();
-    let query = input.build().ok_or_else(|| {
-        anyhow::anyhow!(
-            "no Loogle query provided. Use `--constant`, `--substr`, `--subexpr`, or `--conclusion`."
-        )
-    })?;
-    let (mut result, endpoint) = leanck_loogle::search_with_endpoint(&query, args.limit)
-        .await
-        .map_err(|err| anyhow::anyhow!("{err}"))?;
-    result.add_empty_multi_term_note(has_multiple_terms);
+    let outcome = leanck_loogle::Client::from_config(&args.settings)
+        .search(&input, leanck_loogle::SearchOptions { limit: args.limit })
+        .await?;
     if args.json {
-        println!("{}", serde_json::to_string_pretty(&result)?);
+        println!("{}", serde_json::to_string_pretty(&outcome)?);
     } else {
-        println!("{}", leanck_loogle::format_human(&result));
-    }
-    // The local endpoint also indexes Econlib; any other endpoint is
-    // Mathlib-only. Warn (on stderr, so stdout/JSON stays clean) when the
-    // request fell through to a non-local endpoint.
-    if !leanck_loogle::endpoint_searches_econlib(&endpoint) {
-        eprintln!(
-            "warning: served by {endpoint}; Econlib is not being searched \
-             (only the local endpoint at localhost:8118 indexes Econlib)."
-        );
+        println!("{}", leanck_loogle::format_human(&outcome));
     }
     Ok(())
 }

@@ -735,7 +735,7 @@ issue. Check `git blame` (or the diff) before acting.
 
 After Case B's edit, the leanck server reported a `show` warning at a line
 number that no longer existed in the file (the warning was from the pre-edit
-state). The fix is `leanck:restart_file`. Detection signal: a diagnostic's
+state). The fix is `leanck restart-file <file>`. Detection signal: a diagnostic's
 line number is past the file's last line, or the highlighted text on that
 line doesn't match the warning description.
 
@@ -757,7 +757,7 @@ line doesn't match the warning description.
 | ≥2 `Finset.single_le_sum` calls + `linarith` in same block | Search for `sum_eq_zero_iff_of_nonneg` / `sum_eq_single` / structural sum lemma. |
 | Unused hypothesis with narratively-coherent name | Leave it (documentation as types). |
 | `Finset.add_sum_erase _ _ (mem_univ i)` + manual `add_zero` after rewriting | Use `Finset.sum_eq_single i` directly. |
-| Diagnostic's line number past file's EOF | Stale leanck state — `restart_file` and re-query. |
+| Diagnostic's line number past file's EOF | Stale leanck state — `leanck restart-file <file>` and re-query. |
 | `Real.sSup_def` + `dif_neg` in tactic block | Replace with `csSup_of_not_bddAbove` + `Real.sSup_empty`. |
 | Manual `•`/`+` algebra with ≥3 nested `have`s | Try one chained `rw [smul_add, ← add_assoc, ← add_smul, …]`. |
 | `have := lemma this; rw [eq] at this; exact this` | Term-mode `eq ▸ lemma <args>`. |

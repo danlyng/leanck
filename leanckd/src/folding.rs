@@ -2,40 +2,14 @@
 //!
 //! Lean emits one folding range per top-level command (including syntax-
 //! extension commands like `lemma` that `documentSymbol` filters out), so we use
-//! them to find the exact body end of a regex-discovered declaration — at the
+//! them to find the exact body end of a textually discovered declaration — at the
 //! cost of one cheap request to the **already-warm** worker (never a cold parse).
 
-use std::time::Duration;
-
-use serde::Deserialize;
-use serde_json::json;
-
-use crate::server::JsonRpc;
-
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct FoldingRange {
-    #[serde(rename = "startLine")]
     pub start_line: u32,
-    #[serde(rename = "endLine")]
     pub end_line: u32,
-    #[serde(default)]
     pub kind: Option<String>,
-}
-
-/// Fetch the file's folding ranges from the warm server. Returns `[]` on any
-/// failure so callers degrade gracefully.
-pub async fn fetch_folding_ranges(rpc: &JsonRpc, uri: &str, timeout: Duration) -> Vec<FoldingRange> {
-    match rpc
-        .request_simple(
-            "textDocument/foldingRange",
-            json!({ "textDocument": { "uri": uri } }),
-            timeout,
-        )
-        .await
-    {
-        Ok(v) => serde_json::from_value(v).unwrap_or_default(),
-        Err(_) => Vec::new(),
-    }
 }
 
 /// Pick the smallest `region`-kind fold containing `start_line`, preferring an
@@ -80,7 +54,11 @@ mod tests {
     use super::*;
 
     fn fold(start: u32, end: u32) -> FoldingRange {
-        FoldingRange { start_line: start, end_line: end, kind: None }
+        FoldingRange {
+            start_line: start,
+            end_line: end,
+            kind: None,
+        }
     }
 
     #[test]
@@ -91,7 +69,11 @@ mod tests {
 
     #[test]
     fn ignores_non_region_kinds() {
-        let folds = vec![FoldingRange { start_line: 0, end_line: 9, kind: Some("comment".into()) }];
+        let folds = vec![FoldingRange {
+            start_line: 0,
+            end_line: 9,
+            kind: Some("comment".into()),
+        }];
         assert_eq!(find_body_end(&folds, 0), None);
     }
 

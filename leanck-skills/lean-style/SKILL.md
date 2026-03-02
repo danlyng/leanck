@@ -7,7 +7,7 @@ description: Dispatch a team of lightweight agents to fix lean style issues.
 
 This skill is invoked when the user wants to align the specified files or directory
 with the repo style guidelines, which are provided in `STYLE.md` (supplementing what
-is in `CLAUDE.md`/`AGENTS.md`). 
+is in `AGENTS.md`). 
 
 DO NOT MAKE STYLE EDITS DIRECTLY. Instead, you will dispatch a focused team of 
 lightweight and inexpensive `lean-style-worker` agents. These agents will make style 

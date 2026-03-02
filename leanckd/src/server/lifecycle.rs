@@ -1,36 +1,48 @@
 //! Spawn and initialize one warm Lean server (`lake serve`) for a worktree, and
-//! route its notifications into the [`StateStore`].
+//! route its notifications into the [`ElaborationStore`].
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use leanck_lake::ProcessGroup;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 
-use super::jsonrpc::JsonRpc;
+use super::session::LeanSession;
 use crate::error::{Error, Result};
-use crate::state::{StateStore, WireDiagnostic, WireRange};
+use crate::request::RequestContext;
+use crate::state::ElaborationStore;
 
 /// How long to wait for the `initialize` response.
 const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// One running, initialized Lean server for a worktree.
 pub struct LeanServer {
-    rpc: Arc<JsonRpc>,
+    session: Arc<LeanSession>,
     child: Mutex<Child>,
     pid: Option<u32>,
     worktree: PathBuf,
+    group: ProcessGroup,
+    stderr: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    stopped: Mutex<bool>,
 }
 
 impl LeanServer {
     /// Spawn `lake serve --` (or `lean --server` for a non-Lake file tree) in
     /// `worktree`, perform the LSP initialize handshake, and wire notifications
     /// into `state`.
-    pub async fn spawn(worktree: &Path, state: Arc<StateStore>) -> Result<Arc<LeanServer>> {
+    pub async fn spawn_with_cancel(
+        worktree: &Path,
+        state: Arc<ElaborationStore>,
+        cancel: &CancellationToken,
+    ) -> Result<Arc<LeanServer>> {
+        if cancel.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
         let (program, args) = launch_command(worktree);
         tracing::info!(worktree = %worktree.display(), %program, ?args, "spawning lean server");
 
@@ -40,60 +52,55 @@ impl LeanServer {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .process_group(0)
             .kill_on_drop(true)
             .spawn()
             .map_err(|e| Error::Spawn(format!("{program}: {e}")))?;
 
+        let group = ProcessGroup::from_child(&child);
         let pid = child.id();
-        let stdin = child.stdin.take().ok_or_else(|| Error::Spawn("no stdin".into()))?;
-        let stdout = child.stdout.take().ok_or_else(|| Error::Spawn("no stdout".into()))?;
-        if let Some(stderr) = child.stderr.take() {
-            tokio::spawn(drain_stderr(stderr));
-        }
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| Error::Spawn("no stdin".into()))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| Error::Spawn("no stdout".into()))?;
+        let stderr = child
+            .stderr
+            .take()
+            .map(|stderr| tokio::spawn(drain_stderr(stderr)));
 
-        let sink_state = state.clone();
-        let rpc = JsonRpc::spawn(
-            stdout,
-            stdin,
-            Arc::new(move |method, params| route_notification(&sink_state, &method, params)),
-        );
+        let session = LeanSession::spawn(stdout, stdin, state);
 
         let server = Arc::new(LeanServer {
-            rpc,
+            session,
             child: Mutex::new(child),
             pid,
             worktree: worktree.to_path_buf(),
+            group,
+            stderr: std::sync::Mutex::new(stderr),
+            stopped: Mutex::new(false),
         });
 
-        server.initialize().await?;
+        if let Err(error) = server.initialize(cancel).await {
+            server.force_stop().await;
+            return Err(error);
+        }
         Ok(server)
     }
 
-    async fn initialize(&self) -> Result<()> {
-        let root_uri = path_to_uri(&self.worktree);
-        let params = json!({
-            "processId": std::process::id(),
-            "rootUri": root_uri,
-            "rootPath": self.worktree.to_string_lossy(),
-            "capabilities": client_capabilities(),
-            // `hasWidgets` enables the interactive RPC surface. We deliberately
-            // do NOT advertise incrementalDiagnosticSupport, so Lean publishes
-            // full diagnostic sets (which the state machine assumes).
-            "initializationOptions": { "hasWidgets": true },
-            "workspaceFolders": [{
-                "uri": root_uri,
-                "name": self.worktree.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
-            }],
-        });
-        self.rpc
-            .request_simple("initialize", params, INITIALIZE_TIMEOUT)
-            .await?;
-        self.rpc.send_notification("initialized", json!({}))?;
-        Ok(())
+    async fn initialize(&self, cancel: &CancellationToken) -> Result<()> {
+        let ctx = RequestContext::new(Some(INITIALIZE_TIMEOUT.as_millis() as u64), cancel.clone())?;
+        self.session
+            .initialize(&self.worktree, &ctx)
+            .await
+            .map(|_| ())
     }
 
-    pub fn rpc(&self) -> &Arc<JsonRpc> {
-        &self.rpc
+    pub fn session(&self) -> &Arc<LeanSession> {
+        &self.session
     }
 
     pub fn pid(&self) -> Option<u32> {
@@ -101,19 +108,40 @@ impl LeanServer {
     }
 
     pub fn is_dead(&self) -> bool {
-        self.rpc.is_dead()
+        self.session.is_dead()
     }
 
     /// Cooperative shutdown: ask the server to exit, then ensure it's killed.
     pub async fn shutdown(&self) {
-        let _ = self
-            .rpc
-            .request_simple("shutdown", json!(null), Duration::from_secs(2))
-            .await;
-        let _ = self.rpc.send_notification("exit", json!(null));
+        let mut stopped = self.stopped.lock().await;
+        if *stopped {
+            return;
+        }
+        if let Ok(ctx) = RequestContext::new(Some(2000), CancellationToken::new()) {
+            let _ = self.session.cooperative_shutdown(&ctx).await;
+        }
+        self.force_stop().await;
+        *stopped = true;
+    }
+    async fn force_stop(&self) {
+        self.group.terminate();
+        self.session.shutdown().await;
         let mut child = self.child.lock().await;
         let _ = child.start_kill();
-        let _ = child.wait().await;
+        let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
+        let stderr = self.stderr.lock().unwrap().take();
+        if let Some(task) = stderr {
+            task.abort();
+            let _ = task.await;
+        }
+    }
+}
+impl Drop for LeanServer {
+    fn drop(&mut self) {
+        self.group.terminate();
+        if let Some(task) = self.stderr.get_mut().unwrap().take() {
+            task.abort();
+        }
     }
 }
 
@@ -124,48 +152,12 @@ fn launch_command(worktree: &Path) -> (String, Vec<String>) {
     let has_lakefile =
         worktree.join("lakefile.lean").exists() || worktree.join("lakefile.toml").exists();
     if has_lakefile {
-        ("lake".to_string(), vec!["serve".to_string(), "--".to_string()])
+        (
+            "lake".to_string(),
+            vec!["serve".to_string(), "--".to_string()],
+        )
     } else {
         ("lean".to_string(), vec!["--server".to_string()])
-    }
-}
-
-/// Route a server notification into the state store. Handles
-/// `textDocument/publishDiagnostics` and `$/lean/fileProgress`; ignores the rest.
-fn route_notification(state: &StateStore, method: &str, params: Value) {
-    match method {
-        "textDocument/publishDiagnostics" => {
-            let Some(uri) = params.get("uri").and_then(|u| u.as_str()) else {
-                return;
-            };
-            let version = params.get("version").and_then(|v| v.as_i64());
-            let diags = params
-                .get("diagnostics")
-                .and_then(|d| d.as_array())
-                .map(|arr| arr.iter().filter_map(WireDiagnostic::from_lsp).collect())
-                .unwrap_or_default();
-            state.apply_diagnostics(uri, version, diags);
-        }
-        "$/lean/fileProgress" => {
-            let Some(td) = params.get("textDocument") else {
-                return;
-            };
-            let Some(uri) = td.get("uri").and_then(|u| u.as_str()) else {
-                return;
-            };
-            let version = td.get("version").and_then(|v| v.as_i64()).unwrap_or(0);
-            let processing: Vec<WireRange> = params
-                .get("processing")
-                .and_then(|p| p.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|e| serde_json::from_value(e.get("range")?.clone()).ok())
-                        .collect()
-                })
-                .unwrap_or_default();
-            state.apply_file_progress(uri, version, processing);
-        }
-        _ => {}
     }
 }
 
@@ -174,27 +166,6 @@ async fn drain_stderr(stderr: tokio::process::ChildStderr) {
     while let Ok(Some(line)) = lines.next_line().await {
         tracing::debug!(target: "lean_server_stderr", "{line}");
     }
-}
-
-/// Minimal client capabilities sufficient for diagnostics, goals, document
-/// symbols (hierarchical tree), and folding ranges.
-fn client_capabilities() -> Value {
-    json!({
-        "textDocument": {
-            "synchronization": { "didSave": true, "dynamicRegistration": false },
-            "publishDiagnostics": { "relatedInformation": true },
-            "documentSymbol": { "hierarchicalDocumentSymbolSupport": true },
-            "foldingRange": { "lineFoldingOnly": false },
-            "hover": { "contentFormat": ["plaintext"] },
-        },
-        "window": { "workDoneProgress": true },
-    })
-}
-
-/// `file://` URI for an absolute path (no percent-encoding of `/`). Matches the
-/// form Lean echoes back, which the state store keys on.
-pub fn path_to_uri(path: &Path) -> String {
-    format!("file://{}", path.to_string_lossy())
 }
 
 #[cfg(test)]
@@ -224,6 +195,9 @@ mod tests {
 
     #[test]
     fn uri_round_trips_path() {
-        assert_eq!(path_to_uri(Path::new("/a/b.lean")), "file:///a/b.lean");
+        assert_eq!(
+            leanck_core::document::path_to_uri(Path::new("/a/b.lean")).unwrap(),
+            "file:///a/b.lean"
+        );
     }
 }

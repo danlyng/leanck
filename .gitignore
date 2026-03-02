@@ -13,6 +13,7 @@ out/
 # Lake (Lean) build artifacts
 .lake/
 build/
+!leanck-lake/src/build/
 
 # Editor scratch
 *.swp

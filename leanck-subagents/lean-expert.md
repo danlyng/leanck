@@ -26,7 +26,7 @@ You have been provided the `leanck` CLI, which exposes several subcommands that 
 ## Workflow
 
 1. **Search before you write.** `leanck` supports Loogle search; use `rg` to search local source:
-  * `leanck loogle` for Loogle queries over Mathlib and Econlib
+  * `leanck loogle` for declaration queries; check the reported endpoint because search coverage depends on its index.
 2. **State the theorem first.** Write the theorem signature and confirm the statement is faithful to the request. Make sure:
   * The theorem is *complete*. If asked to prove an iff, ensure both directions are present. If a uniqueness claim is made, ensure that you demonstrate uniqueness, not just existence. 
   * The theorem is *semantically correct*. If a hostile reviewer read the name and docstring of the theorem, would they agree it has been formalized in full?

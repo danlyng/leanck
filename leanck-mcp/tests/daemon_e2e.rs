@@ -2,64 +2,124 @@
 //! real results. Ignored by default; run with:
 //!
 //! ```sh
-//! LEANCKD_BIN=target/debug/leanckd \
+//! cargo build --workspace --locked
+//!
 //! LEANCKD_TEST_PROJECT=/path/to/test-project \
 //!   cargo test -p leanck-mcp --test daemon_e2e -- --ignored --nocapture
 //! ```
 
-use std::path::PathBuf;
+use leanck_client::RequestOptions;
+use leanck_core::{
+    api::{DiagnosticsParams, GoalParams, GoalResult, ListParams},
+    workspace::WorkspaceRoot,
+};
+use leanck_mcp::workspace::WorkspaceSelection;
 
-use leanck_mcp::daemon::DaemonCache;
-use serde_json::json;
-
-fn project() -> Option<PathBuf> {
-    PathBuf::from(std::env::var("LEANCKD_TEST_PROJECT").ok()?).canonicalize().ok()
-}
+#[path = "../../test-support/mod.rs"]
+mod support;
 
 #[tokio::test]
 #[ignore]
 async fn client_auto_spawns_and_queries() {
-    let Some(worktree) = project() else {
-        eprintln!("set LEANCKD_TEST_PROJECT (and LEANCKD_BIN) to run this test");
+    let Some(mut project) = support::TestProject::from_env() else {
+        eprintln!("set LEANCKD_TEST_PROJECT to run this test (build the workspace first)");
         return;
     };
 
-    let cache = DaemonCache::new(worktree);
-    // First get() auto-spawns the daemon (cold start).
-    let client = cache.get().await.expect("daemon should auto-spawn");
+    let root = WorkspaceRoot::from_path(project.path()).unwrap();
+    let selection = WorkspaceSelection::new(root.clone());
+    let daemon = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("leanckd");
+    assert!(
+        daemon.is_file(),
+        "build the workspace before running this live test"
+    );
+    let mut settings = leanck_config::Settings::default();
+    settings.client.daemon_bin = Some(daemon);
+    selection.set_configured(root, settings);
+    // The first operation auto-spawns the daemon (cold start).
+    let client = selection.capture();
 
-    let health = client.healthz().await.expect("health");
+    let health = client
+        .health(RequestOptions::default())
+        .await
+        .expect("health");
     println!("HEALTH: {}", serde_json::to_string_pretty(&health).unwrap());
-    assert_eq!(health["ok"], json!(true));
+    assert!(health.ok);
+    project.track_lean(health.server.pid);
 
     let diags = client
-        .diagnostics(&json!({ "file": "TestProject/Basic.lean", "severity": "all" }))
+        .diagnostics(
+            &DiagnosticsParams {
+                file: "TestProject/Basic.lean".into(),
+                severity: leanck_core::api::SeverityFilter::All,
+                ..Default::default()
+            },
+            RequestOptions::default(),
+        )
         .await
         .expect("diagnostics");
-    println!("DIAGNOSTICS: {}", serde_json::to_string_pretty(&diags).unwrap());
-    assert!(diags["total"].as_u64().unwrap() >= 1);
+    println!(
+        "DIAGNOSTICS: {}",
+        serde_json::to_string_pretty(&diags).unwrap()
+    );
+    let mut expected = support::fixture("clean_diagnostics");
+    expected["uri"] = serde_json::json!(diags.uri);
+    expected["source"] = serde_json::json!(
+        std::fs::read_to_string(project.path().join("TestProject/Basic.lean")).unwrap()
+    );
+    assert_eq!(serde_json::to_value(diags).unwrap(), expected);
 
     let list = client
-        .list(&json!({ "file": "TestProject/Basic.lean", "kind": [] }))
+        .list(
+            &ListParams {
+                file: "TestProject/Basic.lean".into(),
+                kind: Some(vec![]),
+            },
+            RequestOptions::default(),
+        )
         .await
         .expect("list");
     println!("LIST: {}", serde_json::to_string_pretty(&list).unwrap());
-    let names: Vec<String> = list["symbols"]
-        .as_array()
-        .unwrap()
+    let names: Vec<_> = list
+        .symbols
         .iter()
-        .filter_map(|s| s["name"].as_str().map(str::to_string))
+        .map(|symbol| symbol.name.as_str())
         .collect();
-    assert!(names.iter().any(|n| n == "hello_world"), "missing hello_world: {names:?}");
+    assert!(
+        names.contains(&"hello_world"),
+        "missing hello_world: {names:?}"
+    );
 
-    // Second cache.get() should reuse the already-running daemon (no spawn).
-    let client2 = cache.get().await.expect("reuse running daemon");
+    // A second captured client reuses the already-running daemon.
+    let client2 = selection.capture();
     let goal = client2
-        .goal(&json!({ "file": "TestProject/Basic.lean", "line": 1, "character": 2 }))
+        .goal(
+            &GoalParams {
+                file: "TestProject/Basic.lean".into(),
+                line: 1,
+                character: 2,
+            },
+            RequestOptions::default(),
+        )
         .await
         .expect("goal");
-    println!("GOAL: {}", serde_json::to_string_pretty(&goal).unwrap());
+    assert_eq!(goal, GoalResult::NoGoal);
+    assert_eq!(
+        client2
+            .health(RequestOptions::default())
+            .await
+            .unwrap()
+            .server
+            .pid,
+        health.server.pid
+    );
 
     // Shut the daemon down so the test leaves nothing running.
-    let _ = client2.restart_file(&json!({ "file": "TestProject/Basic.lean" })).await;
+    project.shutdown_daemon().await;
 }

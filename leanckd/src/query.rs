@@ -1,63 +1,102 @@
-//! Query handlers: diagnostics, goal, sorry, list. Ports the request/response
-//! shaping from `leanck-lsp/src/httpServer.ts` so the `leanck-mcp` formatting
-//! layer is unchanged. All declaration work goes through the warm worker.
+//! Workspace-bound queries over document leases and shared declaration discovery.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use serde_json::{json, Value};
-
-use crate::decls::{extract_decls, END_CHAR};
+use crate::declarations::discover;
+use crate::documents::Document;
 use crate::error::{Error, Result};
-use crate::folding::{fetch_folding_ranges, find_body_end};
-use crate::proto::{
-    DiagnosticsParams, GoalParams, ListParams, ReferencesParams, RestartFileParams, SorryParams,
-};
-use crate::resolve::{
-    candidate_idents, canonical_uri, document_symbols, file_arg_to_uri,
-    resolve_declaration_in_file, symbol_matches,
-};
-use crate::sorries::{collect_sorries, SorryEntry, SorryKind};
-use crate::state::{
-    filter_by_range, range_overlaps, wait_for_range, WireDiagnostic, WirePosition, WireRange,
-};
+use crate::request::RequestContext;
+use crate::sorries::{SorryEntry, SorryKind, text_sorries, with_diagnostics};
+use crate::state::{WireDiagnostic, WirePosition, WireRange, filter_by_range, range_overlaps};
 use crate::workspace::Workspace;
+use leanck_core::api::{
+    DiagnosticsParams, DiagnosticsResult, GoalParams, GoalResult, ListParams, ListResult,
+    ListedSymbol, ReferencesParams, ReferencesResult, RestartFileParams, RestartFileResult,
+    Severity, SorryDirectory, SorryFile, SorryParams, SorryResult,
+};
+use leanck_core::document::DocumentPath;
+
+/// Workspace-bound query dispatch and admission; document leases own query freshness.
+pub struct QueryService<'a> {
+    workspace: &'a Workspace,
+}
+impl<'a> QueryService<'a> {
+    pub fn new(workspace: &'a Workspace) -> Self {
+        Self { workspace }
+    }
+    pub async fn execute(
+        &self,
+        command: leanck_core::api::Command,
+        ctx: &RequestContext,
+    ) -> Result<serde_json::Value> {
+        use leanck_core::api::Command;
+        let ws = self.workspace;
+        let _permit = if matches!(
+            &command,
+            Command::Diagnostics(_)
+                | Command::Goal(_)
+                | Command::Sorry(_)
+                | Command::List(_)
+                | Command::References(_)
+        ) {
+            Some(ws.acquire_inflight(ctx).await?)
+        } else {
+            None
+        };
+        fn encode<T: serde::Serialize>(value: T) -> Result<serde_json::Value> {
+            Ok(serde_json::to_value(value)?)
+        }
+        match command {
+            Command::Diagnostics(p) => encode(diagnostics(ws, &p, ctx).await?),
+            Command::Goal(p) => encode(goal(ws, &p, ctx).await?),
+            Command::Sorry(p) => encode(sorry(ws, &p, ctx).await?),
+            Command::List(p) => encode(list(ws, &p, ctx).await?),
+            Command::References(p) => encode(references(ws, &p, ctx).await?),
+            Command::RestartFile(p) => encode(restart_file(ws, &p, ctx).await?),
+            _ => Err(Error::BadRequest(
+                "control operation in query dispatcher".into(),
+            )),
+        }
+    }
+}
 
 const DIR_SKIP: &[&str] = &[".git", ".lake", "build", "target", "node_modules"];
-const SORRY_WAIT: Duration = Duration::from_secs(5);
 
 // ---- diagnostics ----------------------------------------------------------
 
 pub async fn diagnostics(
     ws: &Workspace,
     p: &DiagnosticsParams,
-    timeout: Option<Duration>,
-) -> Result<Value> {
-    let filter = parse_severity_filter(p.severity.as_deref())
-        .ok_or_else(|| Error::BadRequest("invalid severity (expected error|warning|info|hint|all)".into()))?;
+    ctx: &RequestContext,
+) -> Result<DiagnosticsResult> {
+    let filter = &p.severity;
     let limit = p.limit.unwrap_or(5);
     let offset = p.offset.unwrap_or(0);
+    let page_limit = usize::try_from(limit)
+        .map_err(|_| Error::BadRequest("limit exceeds this platform's address space".into()))?;
+    let page_offset = usize::try_from(offset)
+        .map_err(|_| Error::BadRequest("offset exceeds this platform's address space".into()))?;
 
-    let abs = file_arg_to_uri(ws.worktree(), &p.file);
+    let abs = DocumentPath::resolve(ws.worktree(), &p.file)?.into_path_buf();
 
-    // Resolve a declaration range if an ident was given; else whole-file.
-    let (uri, range, symbol) = match p.ident.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        Some(ident) => {
-            let resolved = resolve_declaration_in_file(ws, &abs, ident, None)
-                .await?
-                .ok_or_else(|| Error::Unresolved(ident.to_string()))?;
-            (resolved.uri, resolved.range, resolved.symbol)
-        }
-        None => {
-            let uri = ws.sync_from_disk(&abs).await?;
-            (uri, None, None)
-        }
-    };
-
-    let timeout = timeout.unwrap_or_else(|| ws.default_elab_timeout());
+    let doc = ws.document(&abs, ctx).await?;
+    let mut discovery_notes = Vec::new();
+    let (range, symbol) =
+        if let Some(ident) = p.ident.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            let discovery = discover(&doc, ctx).await?;
+            let hit = discovery.resolve(ident, None)?;
+            let found = (Some(hit.symbol.range), Some(hit.symbol.full_name.clone()));
+            discovery_notes = discovery.notes;
+            found
+        } else {
+            (None, None)
+        };
+    let uri = doc.uri.clone();
+    let timeout = ctx.wait_budget(ws.default_elab_timeout())?;
     let deadline = tokio::time::Instant::now() + timeout;
-    let wait = wait_for_range(ws.state(), &uri, range.as_ref(), timeout).await?;
+    doc.wait(range.as_ref(), timeout, ctx).await?;
 
     // The progress gate alone is not authoritative: Lean can clear fileProgress
     // while proofs still elaborate in background tasks, and the final
@@ -66,20 +105,28 @@ pub async fn diagnostics(
     // every diagnostic for this version has been emitted, so confirm, then
     // re-snapshot. Best-effort: if confirmation fails (crashed worker, deadline
     // exhausted), fall back to the gate's snapshot and say so in the notes.
-    let confirmed = ws
+    let confirmed = doc
+        .session
         .wait_for_diagnostics(
             &uri,
-            ws.doc_version(&uri),
+            doc.version(),
+            ctx,
             deadline.saturating_duration_since(tokio::time::Instant::now()),
         )
         .await;
-
-    let snapshot = ws.state().get(&uri);
-    let version = snapshot.as_ref().map(|s| s.version).unwrap_or(wait.version);
-    let all = snapshot.map(|s| s.diagnostics).unwrap_or_default();
-    let source = tokio::fs::read_to_string(&abs).await.unwrap_or_default();
-    let sorries = collect_sorries(ws.state(), &uri, &source);
+    ctx.check()?;
+    doc.validate()?;
+    let snapshot = doc.state()?;
+    let version = doc.version();
+    let all = snapshot.diagnostics;
+    let source = doc.source();
+    let sorries = with_diagnostics(&all, source);
     let mut notes = collect_notes(&all, range.as_ref(), &sorries);
+    notes.extend(doc.notes.clone());
+    notes.extend(discovery_notes);
+    if snapshot.unversioned_diagnostics {
+        notes.push("unversioned diagnostics were ignored; diagnostics may be incomplete".into());
+    }
     if let Err(e) = &confirmed {
         tracing::debug!(%uri, error = %e, "waitForDiagnostics did not confirm completion");
         notes.push(
@@ -90,44 +137,49 @@ pub async fn diagnostics(
 
     let filtered: Vec<WireDiagnostic> = filter_by_range(&all, range.as_ref())
         .into_iter()
-        .filter(|d| keep_by_severity(d, &filter) && !is_goals_accomplished(d))
+        .filter(|d| keep_by_severity(d, filter) && !is_goals_accomplished(d))
         .collect();
-    let total = filtered.len();
-    let paged: Vec<WireDiagnostic> = filtered.into_iter().skip(offset).take(limit).collect();
+    let total = u64::try_from(filtered.len())
+        .map_err(|_| Error::BadRequest("too many diagnostics".into()))?;
+    let paged: Vec<WireDiagnostic> = filtered
+        .into_iter()
+        .skip(page_offset)
+        .take(page_limit)
+        .collect();
     if total == 0 && confirmed.is_ok() {
-        notes.push("ok".to_string());
+        if notes.is_empty() {
+            notes.push("ok".to_string());
+        }
     }
-    let enriched = enrich_errors_with_goals(ws, &uri, paged).await;
+    let enriched = enrich_errors_with_goals(&doc, paged, ctx).await?;
+    doc.validate()?;
 
-    let mut body = json!({
-        "uri": uri,
-        "range": range,
-        "symbol": symbol,
-        "version": version,
-        "total": total,
-        "diagnostics": enriched,
-        "notes": notes,
-    });
-    if offset > 0 {
-        body["offset"] = json!(offset);
-    }
-    if offset + limit < total {
-        body["limit"] = json!(limit);
-    }
-    Ok(body)
+    Ok(DiagnosticsResult {
+        uri,
+        range,
+        symbol,
+        version,
+        total,
+        diagnostics: enriched,
+        source: source.to_owned(),
+        notes,
+        offset: (offset > 0).then_some(offset),
+        limit: (offset.saturating_add(limit) < total).then_some(limit),
+    })
 }
 
 /// For each error-severity diagnostic, attach the conclusions of the open goals
 /// at its start position. Best-effort; failures produce no `goals` field.
 async fn enrich_errors_with_goals(
-    ws: &Workspace,
-    uri: &str,
+    doc: &Document,
     diags: Vec<WireDiagnostic>,
-) -> Vec<WireDiagnostic> {
+    ctx: &RequestContext,
+) -> Result<Vec<WireDiagnostic>> {
     let mut cache: HashMap<(u32, u32), Option<Vec<String>>> = HashMap::new();
     let mut out = Vec::with_capacity(diags.len());
     for mut d in diags {
-        if d.severity.unwrap_or(1) != 1 {
+        ctx.check()?;
+        if d.severity_or_error() != Severity::Error {
             out.push(d);
             continue;
         }
@@ -135,7 +187,7 @@ async fn enrich_errors_with_goals(
         let goals = match cache.get(&pos) {
             Some(g) => g.clone(),
             None => {
-                let g = fetch_plain_goal_conclusions(ws, uri, pos).await;
+                let g = fetch_plain_goal_conclusions(doc, pos, ctx).await?;
                 cache.insert(pos, g.clone());
                 g
             }
@@ -147,96 +199,180 @@ async fn enrich_errors_with_goals(
         }
         out.push(d);
     }
-    out
+    Ok(out)
 }
 
 async fn fetch_plain_goal_conclusions(
-    ws: &Workspace,
-    uri: &str,
+    doc: &Document,
     pos: (u32, u32),
-) -> Option<Vec<String>> {
-    let resp = ws
-        .rpc()
-        .request_simple(
-            "$/lean/plainGoal",
-            json!({"textDocument": {"uri": uri}, "position": {"line": pos.0, "character": pos.1}}),
-            ws.default_lsp_timeout(),
+    ctx: &RequestContext,
+) -> Result<Option<Vec<String>>> {
+    let result = doc
+        .session
+        .goal(
+            &doc.uri,
+            WirePosition {
+                line: pos.0,
+                character: pos.1,
+            },
+            ctx,
+            doc.lsp_timeout,
         )
-        .await
-        .ok()?;
-    let goals = resp.get("goals")?.as_array()?;
-    let conclusions: Vec<String> = goals
-        .iter()
-        .filter_map(|g| g.as_str())
-        .filter_map(extract_conclusion)
-        .collect();
-    Some(conclusions)
+        .await;
+    doc.validate()?;
+    Ok(match ctx.optional(result)? {
+        Some(GoalResult::Goals(goals)) => Some(
+            goals
+                .goals
+                .iter()
+                .filter_map(|g| extract_conclusion(g))
+                .collect(),
+        ),
+        _ => None,
+    })
 }
 
-// ---- goal -----------------------------------------------------------------
-
-pub async fn goal(ws: &Workspace, p: &GoalParams, timeout: Option<Duration>) -> Result<Value> {
-    let abs = file_arg_to_uri(ws.worktree(), &p.file);
-    let uri = ws.sync_from_disk(&abs).await?;
-    let result = ws
-        .rpc()
-        .request_simple(
-            "$/lean/plainGoal",
-            json!({"textDocument": {"uri": uri}, "position": {"line": p.line, "character": p.character}}),
-            timeout.unwrap_or_else(|| ws.default_lsp_timeout()),
+pub async fn goal(ws: &Workspace, p: &GoalParams, ctx: &RequestContext) -> Result<GoalResult> {
+    let abs = DocumentPath::resolve(ws.worktree(), &p.file)?.into_path_buf();
+    let doc = ws.document(&abs, ctx).await?;
+    let result = doc
+        .session
+        .goal(
+            &doc.uri,
+            WirePosition {
+                line: p.line,
+                character: p.character,
+            },
+            ctx,
+            ctx.wait_budget(ws.default_lsp_timeout())?,
         )
         .await?;
-    if result.is_null() {
-        return Ok(Value::Null);
-    }
-    // Drop `rendered` (a markdown duplicate of `goals`).
-    let mut obj = result;
-    if let Some(map) = obj.as_object_mut() {
-        map.remove("rendered");
-    }
-    Ok(obj)
+    doc.validate()?;
+    Ok(result)
 }
 
 // ---- sorry ----------------------------------------------------------------
 
-pub async fn sorry(ws: &Workspace, p: &SorryParams, timeout: Option<Duration>) -> Result<Value> {
-    let abs = file_arg_to_uri(ws.worktree(), &p.path);
+pub async fn sorry(ws: &Workspace, p: &SorryParams, ctx: &RequestContext) -> Result<SorryResult> {
+    let abs = DocumentPath::resolve(ws.worktree(), &p.path)?.into_path_buf();
     let meta = tokio::fs::metadata(&abs)
         .await
         .map_err(|_| Error::InvalidPath(format!("not found: {}", abs.display())))?;
 
     if meta.is_dir() {
         let mut files = Vec::new();
-        let mut total = 0usize;
-        for leaf in walk_lean_files(&abs) {
-            let uri = canonical_uri(&leaf);
-            let source = tokio::fs::read_to_string(&leaf).await.unwrap_or_default();
-            ws.state().touch(&uri);
-            let entries = collect_sorries(ws.state(), &uri, &source);
+        let mut total = 0u64;
+        let path = abs.clone();
+        let context = ctx.clone();
+        let leaves = ctx
+            .run(async {
+                tokio::task::spawn_blocking(move || walk_lean_files(&path, &context))
+                    .await
+                    .map_err(|e| Error::InvalidPath(e.to_string()))?
+            })
+            .await?;
+        for leaf in leaves {
+            ctx.check()?;
+            let uri = leanck_core::document::path_to_uri(&leaf)?;
+            let source = ctx
+                .run(async {
+                    tokio::fs::read_to_string(&leaf)
+                        .await
+                        .map_err(|e| Error::InvalidPath(format!("{}: {e}", leaf.display())))
+                })
+                .await?;
+            let entries = ctx
+                .run(async {
+                    tokio::task::spawn_blocking(move || text_sorries(&source))
+                        .await
+                        .map_err(|e| Error::ServerDown(e.to_string()))
+                })
+                .await?;
             if entries.is_empty() {
                 continue;
             }
-            total += entries.len();
-            files.push(json!({ "uri": uri, "sorries": entries }));
+            total += u64::try_from(entries.len())
+                .map_err(|_| Error::BadRequest("too many sorries".into()))?;
+            files.push(SorryFile {
+                uri,
+                sorries: entries,
+                notes: Vec::new(),
+            });
         }
-        return Ok(json!({ "uri": canonical_uri(&abs), "total": total, "files": files }));
+        return Ok(SorryResult::Directory(SorryDirectory {
+            uri: leanck_core::document::path_to_uri(&abs)?,
+            total,
+            files,
+            notes: vec![
+                "text-only directory scan; declaration diagnostics are not included".into(),
+            ],
+        }));
     }
 
-    let uri = ws.sync_from_disk(&abs).await?;
-    // Wait briefly for elaboration so hasSorry diagnostics appear; fall back to
-    // a text-only scan on timeout. An explicit per-request timeout extends the wait.
-    let _ = wait_for_range(ws.state(), &uri, None, timeout.unwrap_or(SORRY_WAIT)).await;
-    let source = tokio::fs::read_to_string(&abs).await.unwrap_or_default();
-    let entries = collect_sorries(ws.state(), &uri, &source);
-    Ok(json!({ "uri": uri, "sorries": entries }))
+    let doc = ws.document(&abs, ctx).await?;
+    let budget = ctx.wait_budget(Duration::from_millis(ws.settings.sorry_timeout_ms))?;
+    let deadline = tokio::time::Instant::now() + budget;
+    let settled = doc.wait(None, budget, ctx).await;
+    let confirmed = if settled.is_ok() {
+        doc.session
+            .wait_for_diagnostics(
+                &doc.uri,
+                doc.version(),
+                ctx,
+                deadline.saturating_duration_since(tokio::time::Instant::now()),
+            )
+            .await
+    } else {
+        Err(Error::Timeout)
+    };
+    ctx.check()?;
+    doc.validate()?;
+    let (diagnostics, mut notes) = if settled.is_ok() {
+        let snapshot = doc.state()?;
+        let mut notes = doc.notes.clone();
+        if snapshot.unversioned_diagnostics {
+            notes.push(
+                "unversioned diagnostics ignored; declaration sorry report may be incomplete"
+                    .into(),
+            );
+        }
+        if confirmed.is_err() {
+            notes.push(
+                "elaboration not confirmed complete; declaration sorry report may be incomplete"
+                    .into(),
+            );
+        }
+        (snapshot.diagnostics, notes)
+    } else {
+        (
+            Vec::new(),
+            vec!["elaboration unavailable; sorry report uses a text-only heuristic".into()],
+        )
+    };
+    let entries = with_diagnostics(&diagnostics, doc.source());
+    doc.validate()?;
+    notes.dedup();
+
+    Ok(SorryResult::File(SorryFile {
+        uri: doc.uri.clone(),
+        sorries: entries,
+        notes,
+    }))
 }
 
 // ---- restart_file ---------------------------------------------------------
 
-pub async fn restart_file(ws: &Workspace, p: &RestartFileParams) -> Result<Value> {
-    let abs = file_arg_to_uri(ws.worktree(), &p.file);
-    let uri = ws.restart_file(&abs).await?;
-    Ok(json!({ "uri": uri, "restarted": true }))
+pub async fn restart_file(
+    ws: &Workspace,
+    p: &RestartFileParams,
+    ctx: &RequestContext,
+) -> Result<RestartFileResult> {
+    let abs = DocumentPath::resolve(ws.worktree(), &p.file)?.into_path_buf();
+    let uri = ctx.run(ws.restart_file(&abs, ctx)).await?;
+    Ok(RestartFileResult {
+        uri,
+        restarted: true,
+    })
 }
 
 // ---- references -----------------------------------------------------------
@@ -248,216 +384,72 @@ pub async fn restart_file(ws: &Workspace, p: &RestartFileParams) -> Result<Value
 pub async fn references(
     ws: &Workspace,
     p: &ReferencesParams,
-    timeout: Option<Duration>,
-) -> Result<Value> {
-    let abs = file_arg_to_uri(ws.worktree(), &p.file);
-    let uri = ws.sync_from_disk(&abs).await?;
-    // The server resolves a reference query against a position once the defining
-    // file has elaborated; gate on that first (like `list`).
-    wait_for_range(
-        ws.state(),
-        &uri,
-        None,
-        timeout.unwrap_or_else(|| ws.default_elab_timeout()),
-    )
-    .await?;
-
-    let lsp_timeout = ws.default_lsp_timeout();
-
-    // Resolve the declaration's *name token* position (selectionRange), which is
-    // where `textDocument/references` must be anchored.
-    let candidates = candidate_idents(&p.ident, p.namespace.as_deref());
-    let flat = document_symbols(ws, &uri, lsp_timeout).await;
-    let (name_pos, symbol) = match candidates
-        .iter()
-        .find_map(|c| flat.iter().find(|s| symbol_matches(s, c)))
-    {
-        Some(sym) => (sym.selection_range.start, sym.full_name.clone()),
-        None => {
-            // Syntax-extension decls documentSymbol drops: fall back to the
-            // regex/folding resolver and anchor at the declaration start.
-            let resolved = resolve_declaration_in_file(ws, &abs, &p.ident, p.namespace.as_deref())
-                .await?
-                .ok_or_else(|| Error::Unresolved(p.ident.clone()))?;
-            let pos = resolved
-                .range
-                .map(|r| r.start)
-                .unwrap_or(WirePosition { line: 0, character: 0 });
-            (pos, resolved.symbol.unwrap_or_else(|| p.ident.clone()))
-        }
-    };
-
-    let result = ws
-        .rpc()
-        .request_simple(
-            "textDocument/references",
-            json!({
-                "textDocument": {"uri": uri},
-                "position": {"line": name_pos.line, "character": name_pos.character},
-                "context": {"includeDeclaration": false},
-            }),
-            lsp_timeout,
+    ctx: &RequestContext,
+) -> Result<ReferencesResult> {
+    let abs = DocumentPath::resolve(ws.worktree(), &p.file)?.into_path_buf();
+    let doc = ws.document(&abs, ctx).await?;
+    doc.wait(None, ctx.wait_budget(ws.default_elab_timeout())?, ctx)
+        .await?;
+    let discovery = discover(&doc, ctx).await?;
+    let hit = discovery.resolve(&p.ident, p.namespace.as_deref())?;
+    let locations = doc
+        .session
+        .references(
+            &doc.uri,
+            hit.symbol.selection_range.start,
+            ctx,
+            ws.default_lsp_timeout(),
         )
         .await?;
-
-    let locations = match result {
-        Value::Array(arr) => arr,
-        _ => Vec::new(),
-    };
-    Ok(json!({ "symbol": symbol, "uri": uri, "locations": locations }))
+    doc.validate()?;
+    Ok(ReferencesResult {
+        symbol: hit.symbol.full_name.clone(),
+        uri: doc.uri.clone(),
+        locations,
+        notes: {
+            let mut notes = doc.notes.clone();
+            notes.extend(discovery.notes);
+            notes
+        },
+    })
 }
 
 // ---- list -----------------------------------------------------------------
 
-#[derive(Debug, Clone)]
-struct ListedSymbol {
-    name: String,
-    full_name: String,
-    kind: String,
-    range: WireRange,
-}
+pub async fn list(ws: &Workspace, p: &ListParams, ctx: &RequestContext) -> Result<ListResult> {
+    let abs = DocumentPath::resolve(ws.worktree(), &p.file)?.into_path_buf();
+    let doc = ws.document(&abs, ctx).await?;
+    doc.wait(None, ctx.wait_budget(ws.default_elab_timeout())?, ctx)
+        .await?;
+    let discovery = discover(&doc, ctx).await?;
 
-pub async fn list(ws: &Workspace, p: &ListParams, timeout: Option<Duration>) -> Result<Value> {
-    let abs = file_arg_to_uri(ws.worktree(), &p.file);
-    let uri = ws.sync_from_disk(&abs).await?;
-    // documentSymbol blocks server-side until elaboration settles; gate first.
-    wait_for_range(
-        ws.state(),
-        &uri,
-        None,
-        timeout.unwrap_or_else(|| ws.default_elab_timeout()),
-    )
-    .await?;
-
-    let source = tokio::fs::read_to_string(&abs).await.unwrap_or_default();
-    let listed = build_listed_symbols(ws, &uri, &source).await;
-
-    let filtered = match &p.kind {
-        Some(kinds) if !kinds.is_empty() => {
-            let allowed = normalize_kind_filter(kinds);
-            listed.into_iter().filter(|s| allowed.contains(&s.kind)).collect()
-        }
-        _ => listed,
-    };
-
-    let symbols: Vec<Value> = filtered
+    let symbols = discovery
+        .declarations
         .into_iter()
-        .map(|s| json!({"name": s.name, "fullName": s.full_name, "kind": s.kind, "range": s.range}))
-        .collect();
-    Ok(json!({ "uri": uri, "symbols": symbols }))
-}
-
-async fn build_listed_symbols(ws: &Workspace, uri: &str, source: &str) -> Vec<ListedSymbol> {
-    let timeout = ws.default_lsp_timeout();
-    let lsp_flat = document_symbols(ws, uri, timeout).await;
-    let lsp_names: HashSet<&str> = lsp_flat.iter().map(|s| s.name.as_str()).collect();
-    let lsp_full: HashSet<&str> = lsp_flat.iter().map(|s| s.full_name.as_str()).collect();
-
-    let parsed = extract_decls(source);
-    let new_regex: Vec<_> = parsed
-        .iter()
-        .filter(|p| {
-            let tail = p.name.rsplit('.').next().unwrap_or(&p.name);
-            !lsp_full.contains(p.name.as_str()) && !lsp_names.contains(tail)
+        .filter(|d| p.includes_kind(d.kind))
+        .map(|d| ListedSymbol {
+            name: d.symbol.name,
+            full_name: d.symbol.full_name,
+            kind: d.kind,
+            range: d.symbol.range,
         })
         .collect();
-
-    let folds = if new_regex.is_empty() {
-        Vec::new()
-    } else {
-        fetch_folding_ranges(ws.rpc().as_ref(), uri, timeout).await
-    };
-
-    // Merge: start from LSP symbols, then regex-only hits with folding-refined ends.
-    let mut merged: Vec<(String, String, i64, WireRange)> = lsp_flat
-        .iter()
-        .map(|s| (s.name.clone(), s.full_name.clone(), s.kind, s.range))
-        .collect();
-    for p in new_regex {
-        let tail = p.name.rsplit('.').next().unwrap_or(&p.name).to_string();
-        let start_line = p.range.start.line;
-        let end_line = find_body_end(&folds, start_line).unwrap_or(start_line);
-        merged.push((
-            tail,
-            p.name.clone(),
-            6, // method; reclassified below
-            WireRange {
-                start: WirePosition { line: start_line, character: 0 },
-                end: WirePosition { line: end_line, character: END_CHAR },
-            },
-        ));
-    }
-
-    let source_lines: Vec<&str> = source.split('\n').collect();
-    let mut listed: Vec<ListedSymbol> = merged
-        .into_iter()
-        .map(|(name, full_name, kind, range)| {
-            let kind_str = symbol_kind_name(kind);
-            let resolved = if kind_str == "method" {
-                classify_decl_kind(&source_lines, range.start.line as usize)
-            } else {
-                kind_str.to_string()
-            };
-            ListedSymbol { name, full_name, kind: resolved, range }
-        })
-        .collect();
-
-    listed.sort_by(|a, b| {
-        a.range
-            .start
-            .line
-            .cmp(&b.range.start.line)
-            .then(a.range.start.character.cmp(&b.range.start.character))
-    });
-    listed
+    doc.validate()?;
+    let mut notes = doc.notes.clone();
+    notes.extend(discovery.notes);
+    Ok(ListResult {
+        uri: doc.uri.clone(),
+        symbols,
+        notes,
+    })
 }
 
 // ---- helpers (ported from httpServer.ts) ----------------------------------
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SeverityFilter {
-    All,
-    Only(HashSet<i32>),
-}
-
-/// Parse a comma-separated severity list. `None`/empty → error-only. `"all"` →
-/// no filter. Returns `None` for an unknown token (caller → BadRequest).
-pub fn parse_severity_filter(raw: Option<&str>) -> Option<SeverityFilter> {
-    let raw = match raw {
-        None => return Some(SeverityFilter::Only(HashSet::from([1]))),
-        Some(s) if s.trim().is_empty() => return Some(SeverityFilter::Only(HashSet::from([1]))),
-        Some(s) => s,
-    };
-    let tokens: Vec<String> = raw
-        .split(',')
-        .map(|t| t.trim().to_lowercase())
-        .filter(|t| !t.is_empty())
-        .collect();
-    if tokens.is_empty() {
-        return Some(SeverityFilter::Only(HashSet::from([1])));
-    }
-    if tokens.iter().any(|t| t == "all") {
-        return Some(SeverityFilter::All);
-    }
-    let mut out = HashSet::new();
-    for t in tokens {
-        let sev = match t.as_str() {
-            "error" => 1,
-            "warning" | "warn" => 2,
-            "info" | "information" => 3,
-            "hint" => 4,
-            _ => return None,
-        };
-        out.insert(sev);
-    }
-    Some(SeverityFilter::Only(out))
-}
+pub use leanck_core::api::SeverityFilter;
 
 pub fn keep_by_severity(d: &WireDiagnostic, filter: &SeverityFilter) -> bool {
-    match filter {
-        SeverityFilter::All => true,
-        SeverityFilter::Only(set) => set.contains(&d.severity.unwrap_or(1)),
-    }
+    filter.includes(d.severity_or_error())
 }
 
 pub fn is_goals_accomplished(d: &WireDiagnostic) -> bool {
@@ -499,9 +491,17 @@ pub fn collect_notes(
     }
     let lines = sorry_note_lines(sorries, target_range);
     if !lines.is_empty() {
-        let scope = if target_range.is_some() { "declaration" } else { "file" };
+        let scope = if target_range.is_some() {
+            "declaration"
+        } else {
+            "file"
+        };
         let label = if lines.len() == 1 { "line" } else { "lines" };
-        let joined = lines.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(", ");
+        let joined = lines
+            .iter()
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
         notes.push(format!("{scope} contains sorry at {label} {joined}"));
     }
     notes
@@ -515,7 +515,10 @@ pub fn sorry_note_lines(sorries: &[SorryEntry], target_range: Option<&WireRange>
         .collect();
     let has_tactic = scoped.iter().any(|s| s.kind == SorryKind::Tactic);
     let preferred: Vec<&SorryEntry> = if has_tactic {
-        scoped.into_iter().filter(|s| s.kind == SorryKind::Tactic).collect()
+        scoped
+            .into_iter()
+            .filter(|s| s.kind == SorryKind::Tactic)
+            .collect()
     } else {
         scoped
     };
@@ -525,133 +528,20 @@ pub fn sorry_note_lines(sorries: &[SorryEntry], target_range: Option<&WireRange>
     lines
 }
 
-const DECL_KEYWORDS: &[&str] = &[
-    "theorem",
-    "lemma",
-    "def",
-    "definition",
-    "abbrev",
-    "instance",
-    "structure",
-    "class",
-    "inductive",
-    "opaque",
-    "axiom",
-];
-
-fn classify_decl_kind(source_lines: &[&str], start_line: usize) -> String {
-    let limit = 5.min(source_lines.len().saturating_sub(start_line));
-    for off in 0..limit {
-        let line = source_lines[start_line + off];
-        for kw in DECL_KEYWORDS {
-            if let Some(idx) = find_word(line, kw) {
-                let _ = idx;
-                return kw.to_string();
-            }
-        }
-    }
-    "method".to_string()
-}
-
-/// Find `word` as a whole word in `line` (word boundaries on both sides).
-fn find_word(line: &str, word: &str) -> Option<usize> {
-    let bytes = line.as_bytes();
-    let wb = word.as_bytes();
-    let mut i = 0;
-    while i + wb.len() <= bytes.len() {
-        if &bytes[i..i + wb.len()] == wb {
-            let before_ok = i == 0 || !is_word_byte(bytes[i - 1]);
-            let after = i + wb.len();
-            let after_ok = after >= bytes.len() || !is_word_byte(bytes[after]);
-            if before_ok && after_ok {
-                return Some(i);
-            }
-        }
-        i += 1;
-    }
-    None
-}
-
-fn is_word_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
-}
-
-fn symbol_kind_name(kind: i64) -> &'static str {
-    match kind {
-        1 => "file",
-        2 => "module",
-        3 => "namespace",
-        4 => "package",
-        5 => "class",
-        6 => "method",
-        7 => "property",
-        8 => "field",
-        9 => "constructor",
-        10 => "enum",
-        11 => "interface",
-        12 => "function",
-        13 => "variable",
-        14 => "constant",
-        15 => "string",
-        16 => "number",
-        17 => "boolean",
-        18 => "array",
-        19 => "object",
-        20 => "key",
-        21 => "null",
-        22 => "enumMember",
-        23 => "struct",
-        24 => "event",
-        25 => "operator",
-        26 => "typeParameter",
-        _ => "unknown",
-    }
-}
-
-fn normalize_kind_filter(kinds: &[String]) -> HashSet<String> {
-    let mut out = HashSet::new();
-    for k in kinds {
-        let lower = k.trim().to_lowercase();
-        if lower.is_empty() {
-            continue;
-        }
-        let aliases: &[&str] = match lower.as_str() {
-            "theorem" => &["theorem", "method"],
-            "lemma" => &["lemma", "method"],
-            "def" | "definition" => &["def", "definition", "method", "function"],
-            "instance" => &["instance", "method"],
-            "structure" => &["structure", "class", "struct"],
-            "class" => &["class"],
-            "inductive" => &["inductive", "enum"],
-            "abbrev" => &["abbrev", "method", "function"],
-            "namespace" | "section" => &["namespace"],
-            "variable" => &["variable"],
-            "constant" => &["constant"],
-            "axiom" => &["axiom", "constant"],
-            "opaque" => &["opaque", "constant"],
-            _ => &[],
-        };
-        if aliases.is_empty() {
-            out.insert(lower);
-        } else {
-            for a in aliases {
-                out.insert((*a).to_string());
-            }
-        }
-    }
-    out
-}
-
-fn walk_lean_files(root: &Path) -> Vec<PathBuf> {
+fn walk_lean_files(root: &Path, ctx: &RequestContext) -> Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
+        ctx.check()?;
+        let entries = std::fs::read_dir(&dir)
+            .map_err(|e| Error::InvalidPath(format!("{}: {e}", dir.display())))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| Error::InvalidPath(e.to_string()))?;
+            ctx.check()?;
             let path = entry.path();
-            let Ok(ft) = entry.file_type() else { continue };
+            let ft = entry
+                .file_type()
+                .map_err(|e| Error::InvalidPath(format!("{}: {e}", path.display())))?;
             if ft.is_dir() {
                 let name = entry.file_name();
                 if DIR_SKIP.iter().any(|d| std::ffi::OsStr::new(d) == name) {
@@ -664,7 +554,7 @@ fn walk_lean_files(root: &Path) -> Vec<PathBuf> {
         }
     }
     out.sort();
-    out
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -674,10 +564,16 @@ mod tests {
     fn diag(severity: Option<i32>, message: &str) -> WireDiagnostic {
         WireDiagnostic {
             range: WireRange {
-                start: WirePosition { line: 0, character: 0 },
-                end: WirePosition { line: 0, character: 1 },
+                start: WirePosition {
+                    line: 0,
+                    character: 0,
+                },
+                end: WirePosition {
+                    line: 0,
+                    character: 1,
+                },
             },
-            severity,
+            severity: severity.map(Into::into),
             code: None,
             message: message.to_string(),
             tags: None,
@@ -698,29 +594,24 @@ mod tests {
     }
 
     #[test]
-    fn severity_defaults_to_error_only() {
-        assert_eq!(parse_severity_filter(None), Some(SeverityFilter::Only(HashSet::from([1]))));
-        assert_eq!(parse_severity_filter(Some("  ")), Some(SeverityFilter::Only(HashSet::from([1]))));
-    }
-
-    #[test]
-    fn severity_maps_names_and_all_and_invalid() {
-        assert_eq!(
-            parse_severity_filter(Some("error,warn,info")),
-            Some(SeverityFilter::Only(HashSet::from([1, 2, 3])))
-        );
-        assert_eq!(parse_severity_filter(Some("hint")), Some(SeverityFilter::Only(HashSet::from([4]))));
-        assert_eq!(parse_severity_filter(Some("all")), Some(SeverityFilter::All));
-        assert_eq!(parse_severity_filter(Some("error,all")), Some(SeverityFilter::All));
-        assert_eq!(parse_severity_filter(Some("bogus")), None);
-    }
-
-    #[test]
     fn keep_by_severity_rules() {
+        use leanck_core::api::DiagnosticSeverity;
+        let warnings = SeverityFilter::Only {
+            severities: vec![DiagnosticSeverity::Warning],
+        };
         assert!(keep_by_severity(&diag(Some(3), ""), &SeverityFilter::All));
-        assert!(keep_by_severity(&diag(None, ""), &SeverityFilter::Only(HashSet::from([1]))));
-        assert!(!keep_by_severity(&diag(None, ""), &SeverityFilter::Only(HashSet::from([2]))));
-        assert!(keep_by_severity(&diag(Some(2), ""), &SeverityFilter::Only(HashSet::from([2]))));
+        assert!(keep_by_severity(&diag(Some(99), ""), &SeverityFilter::All));
+        assert!(keep_by_severity(
+            &diag(None, ""),
+            &SeverityFilter::default()
+        ));
+        assert!(!keep_by_severity(&diag(None, ""), &warnings));
+        assert!(keep_by_severity(&diag(Some(2), ""), &warnings));
+        assert!(!keep_by_severity(&diag(Some(99), ""), &warnings));
+        assert!(!keep_by_severity(
+            &diag(Some(1), ""),
+            &SeverityFilter::Only { severities: vec![] }
+        ));
     }
 
     #[test]
@@ -735,13 +626,20 @@ mod tests {
             extract_conclusion("n : Nat\nh : n > 0\n⊢ n + 0 = n").as_deref(),
             Some("n + 0 = n")
         );
-        assert_eq!(extract_conclusion("⊢ a =\n  b").as_deref(), Some("a =\n  b"));
+        assert_eq!(
+            extract_conclusion("⊢ a =\n  b").as_deref(),
+            Some("a =\n  b")
+        );
         assert_eq!(extract_conclusion("no turnstile here"), None);
     }
 
     #[test]
     fn collect_notes_flags_imports_and_sorries() {
-        let notes = collect_notes(&[diag(None, "Imports are out of date and must be rebuilt")], None, &[]);
+        let notes = collect_notes(
+            &[diag(None, "Imports are out of date and must be rebuilt")],
+            None,
+            &[],
+        );
         assert!(notes.iter().any(|n| n.contains("restart_file")));
 
         let notes = collect_notes(&[], None, &[sorry(4, SorryKind::Tactic)]);
@@ -766,20 +664,19 @@ mod tests {
     #[test]
     fn sorry_note_lines_honors_target_range() {
         let target = WireRange {
-            start: WirePosition { line: 0, character: 0 },
-            end: WirePosition { line: 3, character: 0 },
+            start: WirePosition {
+                line: 0,
+                character: 0,
+            },
+            end: WirePosition {
+                line: 3,
+                character: 0,
+            },
         };
         let lines = sorry_note_lines(
             &[sorry(1, SorryKind::Tactic), sorry(50, SorryKind::Tactic)],
             Some(&target),
         );
         assert_eq!(lines, vec![2]);
-    }
-
-    #[test]
-    fn classify_reads_keyword_from_source() {
-        assert_eq!(classify_decl_kind(&["theorem foo : True"], 0), "theorem");
-        assert_eq!(classify_decl_kind(&["lemma bar"], 0), "lemma");
-        assert_eq!(classify_decl_kind(&["#check x"], 0), "method");
     }
 }

@@ -1,7 +1,8 @@
 [package]
 name = "leanckd"
-version = "0.2.0"
+version = "0.15.0"
 edition = "2024"
+rust-version = "1.89"
 
 [lib]
 name = "leanckd"
@@ -13,17 +14,21 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = { workspace = true }
-bytes = "1.11.1"
 clap = { workspace = true }
-libc = "0.2.186"
+leanck-config = { version = "0.1.0", path = "../leanck-config" }
+leanck-core = { version = "0.10.0", path = "../leanck-core", features = ["wire"] }
+leanck-lake = { version = "0.5.0", path = "../leanck-lake" }
+lsp-server = "0.10.0"
+lsp-types = "0.95.1"
 serde = { workspace = true }
 serde_json = { workspace = true }
-sha1 = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-tokio-util = { version = "0.7.18", features = ["codec"] }
-toml = "1.1.2"
+tokio-util = { version = "0.7.18", features = ["rt", "io-util"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-url = "2.5.8"
-uuid = { version = "1.23.2", features = ["v4"] }
+
+[dev-dependencies]
+leanck-client = { path = "../leanck-client" }
+libc = "0.2.186"
+tokio = { workspace = true, features = ["test-util"] }

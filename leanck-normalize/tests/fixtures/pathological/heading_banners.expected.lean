@@ -1,5 +1,5 @@
 /-!
-# Scratch module
+# Scratch Module
 
 prose about the module.
 -/
