@@ -1,0 +1,31 @@
+# macOS
+.DS_Store
+
+# Rust
+target/
+
+# Node / TypeScript
+node_modules/
+out/
+*.tsbuildinfo
+*.vsix
+
+# Lake (Lean) build artifacts
+.lake/
+build/
+
+# Editor scratch
+*.swp
+*~
+
+# Local env
+.env
+.env.local
+
+# Per-project lean-registry DB (sibling of .lake/, large + regenerable)
+.lean-registry/
+
+# Loose SQLite DBs anywhere in the tree
+*.db
+*.db-shm
+*.db-wal

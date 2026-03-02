@@ -1,0 +1,26 @@
+[workspace]
+resolver = "3"
+members = [
+    "leanck-cli",
+    "leanck-mcp",
+    "leanckd",
+    "leanck-loogle",
+    "leanck-normalize",
+    "vendor/markdown-reflow",
+]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+
+[workspace.dependencies]
+anyhow = "1.0.102"
+clap = { version = "4.6.1", features = ["derive"] }
+reqwest = { version = "0.13.3", features = ["json", "query"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+sha1 = "0.11.0"
+thiserror = "2.0.18"
+tokio = { version = "1.52.3", features = ["full"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

@@ -1,0 +1,9 @@
+pub(crate) mod build;
+pub(crate) mod diagnostics;
+pub(crate) mod doctor;
+pub(crate) mod goal;
+pub(crate) mod lean;
+pub(crate) mod list;
+pub(crate) mod loogle;
+pub(crate) mod restart_file;
+pub(crate) mod sorry;

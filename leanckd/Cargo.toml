@@ -1,0 +1,29 @@
+[package]
+name = "leanckd"
+version = "0.2.0"
+edition = "2024"
+
+[lib]
+name = "leanckd"
+path = "src/lib.rs"
+
+[[bin]]
+name = "leanckd"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+bytes = "1.11.1"
+clap = { workspace = true }
+libc = "0.2.186"
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha1 = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { version = "0.7.18", features = ["codec"] }
+toml = "1.1.2"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+url = "2.5.8"
+uuid = { version = "1.23.2", features = ["v4"] }

@@ -1,0 +1,20 @@
+[package]
+name = "leanck-cli"
+version = "0.3.0"
+edition.workspace = true
+
+[[bin]]
+name = "leanck"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+leanck-loogle = { version = "0.1.0", path = "../leanck-loogle" }
+leanck-normalize = { path = "../leanck-normalize" }
+serde_json.workspace = true
+serde = { workspace = true, features = ["derive"] }
+leanckd = { version = "0.2.0", path = "../leanckd" }

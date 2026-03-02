@@ -1,0 +1,38 @@
+{
+  "name": "leanck",
+  "version": "0.1.0",
+  "description": "Lean 4 theorem-proving plugin with LSP diagnostics, goal and sorry tracking, plus semantic and lexical declaration search over a shared registry.",
+  "author": {
+    "name": "Dan Lyng"
+  },
+  "license": "MIT",
+  "keywords": [
+    "lean",
+    "lean4",
+    "theorem-proving",
+    "mcp",
+    "mathlib",
+    "proof-assistant"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.codex.json",
+  "interface": {
+    "displayName": "leanck",
+    "shortDescription": "Lean 4 proof tools for Codex",
+    "longDescription": "Leanck gives Codex Lean 4 theorem-proving workflows backed by LSP diagnostics, goal inspection, sorry tracking, and declaration search over project and Mathlib registries.",
+    "developerName": "Dan Lyng",
+    "category": "Engineering",
+    "capabilities": [
+      "Read",
+      "Write",
+      "Interactive"
+    ],
+    "defaultPrompt": [
+      "Inspect this Lean goal",
+      "Search Mathlib for this theorem",
+      "Help close this Lean proof"
+    ],
+    "brandColor": "#2563EB",
+    "screenshots": []
+  }
+}
