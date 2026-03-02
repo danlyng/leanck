@@ -18,10 +18,10 @@ Follow all applicable `AGENTS.md` files and preserve the exact scope set by the 
 
 ## Workflow
 
-1. Run `leanck health`. Stop if the CLI is unavailable, the workspace is not a valid Lean project, or the live Lean server cannot elaborate files. Surface registry or search-only warnings and continue with the available tools.
+1. Run `leanck health`. Stop if the CLI is unavailable, the workspace is not a valid Lean project, or the live Lean server cannot elaborate files.
 2. Read the target declaration and its local context.
 3. Run `leanck diagnostics <FILE> --ident <DECLARATION>` when the declaration name is available.
-4. Search for existing lemmas with `rg`, `leanck loogle`, or `leanck search` before recreating library facts.
+4. Search for existing lemmas with `rg` or `leanck loogle` before recreating library facts.
 5. Edit the proof, then rerun scoped diagnostics after every meaningful edit.
 6. If needed, inspect the exact proof state with `leanck goal <FILE> <LINE> <CHARACTER>` using zero-based positions.
 7. Before finishing, run an unscoped `leanck diagnostics <FILE>` so errors outside the identifier-filtered range are visible. Then run `leanck sorry <FILE>` and confirm that the assigned proof contains no `sorry`. The parent agent is responsible for any project-wide build.

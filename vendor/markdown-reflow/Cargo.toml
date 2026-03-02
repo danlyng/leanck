@@ -1,7 +1,0 @@
-[package]
-name = "markdown-reflow"
-version = "0.3.0"
-edition = "2024"
-
-[dependencies]
-markdown = { version = "1.0.0", features = ["serde"] }

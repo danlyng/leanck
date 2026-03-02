@@ -1,6 +1,6 @@
 [package]
 name = "leanck-normalize"
-version = "0.2.0"
+version = "0.2.2"
 edition.workspace = true
 
 [lib]
@@ -14,7 +14,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
-markdown-reflow = { version = "0.3.0", path = "../vendor/markdown-reflow" }
+markdown-reflow = { version = "0.4.0", git = "https://github.com/danlyng/markdown-reflow.git", rev = "592af86923543ab8e29691eceba3dec1f0e5c285" }
 regex = "1.12.3"
 serde_json = { workspace = true }
 

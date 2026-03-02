@@ -1,50 +1,49 @@
 # leanck-mcp
 
-The MCP server that fronts the `leanck` plugin. Stdio transport. Three families of tools:
+An MCP server over stdio for standalone Lean 4 tooling.
 
-- **LSP-backed** — `diagnostics`, `goal`, `sorry`, `list`, `restart_file`. These are forwarded over a Unix socket to the [`leanckd`](../leanckd) daemon, which owns a warm `lake serve` (the Lean 4 LSP). `leanck-mcp` auto-spawns one daemon per worktree, shared by every agent; the client lives in `src/daemon.rs`.
-- **Registry-backed** — `search`, `premise_search`, `set_workspace`. These hit or reopen an in-process [`leanck-registry`](../leanck-registry) library, which owns the project SQLite DB plus an optionally `ATTACH`ed Mathlib snapshot. `search` runs one hybrid query (optionally cross-encoder reranked); `premise_search` fans out several sub-queries and fuses them for proof-planning.
-- **Loogle-backed** — `loogle`. This calls the self-hosted Loogle endpoint first and falls back to the main Loogle server. Override with `LOOGLE_URL` when needed.
+| Tool | Purpose |
+|---|---|
+| `diagnostics` | Wait for elaboration and report file or declaration diagnostics. |
+| `goal` | Inspect the proof goal at a zero-indexed file position. |
+| `sorry` | Find unfinished proofs under a file or directory. |
+| `list` | List declarations in a file. |
+| `restart_file` | Restart a file's elaborator worker. |
+| `build` | Run the project's `lake build`; optionally report warnings or JSON. |
+| `loogle` | Search declarations by constant, substring, expression, or conclusion. |
+| `health` | Check daemon reachability; compact text or `{ok, lsp, issues}` JSON. |
+| `set_workspace` | Switch subsequent calls to another Lake project. |
 
-The MCP `health` tool reports the local state: `leanckd` reachability, plus registry document counts and Mathlib snapshot lookup status.
-
-See the workspace [README](../README.md) for the full architecture and plugin lifecycle.
+Live queries go over a Unix socket to `leanckd`, which keeps one warm
+`lake serve` per worktree. Builds run the project's own Lake toolchain.
+Loogle uses HTTP, trying local, self-hosted, and main endpoints in that order;
+`LOOGLE_URL` prepends an override.
 
 ## CLI
 
-```
-leanck-mcp [OPTIONS]
-
-  --workspace <PATH>        Lean project root. Auto-detected from cwd via
-                            lakefile.lean / lakefile.toml / lean-toolchain.
-  --registry-db <PATH>      Per-project SQLite registry.
-                            Default: <workspace>/.lean-registry/registry.db
-  --cache-dir <PATH>        Mathlib snapshot cache.
-                            Default: $XDG_CACHE_HOME/lean-registry
-                                   or ~/.cache/lean-registry
-  --embedder <KIND>         voyage | openai | none           [default: voyage]
-  --embedder-model <MODEL>  Model override for the chosen embedder.
+```sh
+leanck-mcp [--workspace <PATH>]
 ```
 
-With the default Voyage embedder, `leanck-mcp` reads `VOYAGE_API_KEY` if set;
-otherwise it runs `keyring get voyage api_key`.
+The workspace defaults to the nearest ancestor of the current directory with
+`lakefile.lean`, `lakefile.toml`, or `lean-toolchain`. `set_workspace` validates
+those same markers before switching and returns `{ok, workspace, socket_path}`.
+No project-name field, database, or API credentials are required.
 
-## Daemon discovery & auto-spawn
+## Daemon discovery
 
-`leanck-mcp` and `leanckd` both derive the same per-worktree socket path —
-`${XDG_RUNTIME_DIR:-$TMPDIR}/leanckd-{sha1(workspace_path)[0:16]}.sock` (see
-`leanckd/src/paths.rs`). On the first Lean tool call, `leanck-mcp` connects to
-that socket; if nothing is listening it spawns `leanckd` (resolved via
-`LEANCKD_BIN`, then a sibling of its own binary, then `PATH`) and waits for the
-socket to come up. The daemon idle-reaps after an hour; a later call respawns it.
+The CLI and MCP server derive the same socket path for a worktree (see
+`leanckd/src/paths.rs`). On first use, MCP connects or starts `leanckd`, looking
+for `LEANCKD_BIN`, then a sibling executable, then PATH. The daemon exits after
+an hour idle. MCP `health` also starts the daemon when necessary; CLI `doctor`
+only probes an existing daemon.
 
-## Build / run
+## Build
 
 ```sh
-cargo build --release -p leanck-mcp
-
-# Smoke test
+cargo build --release -p leanck-mcp -p leanckd --locked
 target/release/leanck-mcp --help
 ```
 
-The MCP server itself is normally launched by the Claude Code plugin (see `plugin/.mcp.json`); running it manually is only useful for debugging.
+The plugin normally launches this server using its MCP configuration.
+Stdout is reserved for the MCP protocol; logs go to stderr.

@@ -18,10 +18,9 @@ You have been provided the `leanck` CLI, which exposes several subcommands that 
 
 ## Workflow
 
-1. **Search before you write.** `leanck` includes three search tools:
-  * `leanck loogle` for Loogle queries over Mathlib and Econlib
-  * `leanck search` for semantic search over Mathlib and Econlib
-  * `leanck agent explore` for delegated, wide-ranging search of Mathlib and Econlib.
+1. **Search before you write.** Use `leanck loogle` for queries by constant,
+   name substring, subexpression, or conclusion type. Use `rg` for discovery
+   in project and Mathlib source. Inspect each candidate's full signature.
 2. **State the theorem first.** Write the theorem signature and confirm the statement is faithful to the request. Make sure:
   * The theorem is *complete*. If asked to prove an iff, ensure both directions are present. If a uniqueness claim is made, ensure that you demonstrate uniqueness, not just existence. 
   * The theorem is *semantically correct*. If a hostile reviewer read the name and docstring of the theorem, would they agree it has been formalized in full?
@@ -57,12 +56,11 @@ explanation of the object. Document economic meaning only where it applies; do n
 interpretation for general mathematical infrastructure.
 
 ### Use subagents
-To avoid churning through your context window, you should delegate extensively to traditional Claude subagents and via the `leanck agent` interface. `leanck agent <subcommand>` invokes a specialized harness optimized for the subcommand. invoke `leanck agent` directly via `Bash` with `run_in_background: true`. 
+Use the host's available subagents for bounded proof tasks, with explicit file
+ownership and self-contained briefs.
 
 * `lean-expert` (Traditional subagent): Opus-tier Lean 4 formalization specialist. Use when a proof needs Mathlib-fluent intuition (measure theory, functional analysis, intricate `simp`/rewrite chains, deep type-class plumbing) or is expected to be intricate.
 * `lean-grind` (Traditional subagent): Cost-optimized formalization agent. Use to discharge tedious or routine proofs that do not require deep insight but that would be time-consuming and error-prone to do on your own.
-* `leanck agent review` (leanck agent): Read-only agent specialized for adversarial review. Audits statements for *semantic* and *mathematical* correctness. Use when you're about to report a long or load-bearing proof back to the user and want a second pair of eyes, want to verify that a concept is encoded in lean correctly before beginning proof work, or you are unsure that the conclusion supports the claim you are making.
-* `leanck agent search` (leanck agent): Read-only agent specialized for surfacing relevant library results and existing infrastructure . Use in lieu of `Explore` agents to search for Mathlib and Econlib results; `leanck agent search` will do a better job.
 
 ### Parallelize work
 To increase efficiency, you should parallelize work as much as possible. Agents must work on disjoint files; dispatch them in worktrees to avoid transient typecheck errors.

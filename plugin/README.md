@@ -1,115 +1,53 @@
-# leanck Claude Code plugin
+# leanck plugin
 
-Combines four components:
+Lean 4 proof tools for Claude Code and Codex. The plugin exposes diagnostics,
+proof goals, unfinished proofs, declaration lists, builds, Loogle search,
+health checks, and workspace switching through `leanck-mcp`.
 
-- **leanck-mcp** — Rust MCP server (bundled at `${CLAUDE_PLUGIN_ROOT}/bin/leanck-mcp`). Provides LSP-backed tools (`diagnostics`, `goal`, `sorry`, `list`, `restart_file`), registry-backed tools (`search`, `set_workspace`), `loogle` for exact Loogle queries, and `health` for Lean-server plus registry/snapshot status.
-- **leanckd** — Rust daemon (bundled at `${CLAUDE_PLUGIN_ROOT}/bin/leanckd`) that owns one warm `lake serve` per worktree and answers proof queries over a Unix socket. `leanck-mcp` finds it as a sibling binary and **auto-starts it on first use** — nothing to install, no editor required. One daemon is shared by all agents on a worktree.
-- **leanck-registry** — Rust library owning the shared SQLite schema, FTS5 indexes, sqlite-vec embeddings, and stable `source_key` model. Linked into `leanck-mcp` directly; no separate process. Also exposes the snapshot extract/embed pipeline under the `cli` feature.
-- **leanck-cli** — `leanck` user-facing binary (`cargo install --path leanck-cli`), the human companion to the MCP server. Top-level commands mirror the agent tools (`diagnostics`/`goal`/`sorry`/`list`/`restart_file`/`search`/`premise_search`/`loogle`/`doctor`); registry bootstrap lives under `leanck registry {init,describe,index,update,snapshot,eval}`. **Not** invoked from the plugin — runs in your shell with your API keys.
+## Build
 
-## Prerequisites
+From the repository root:
 
-1. **Build + stage the plugin binaries** from the workspace root:
-   ```
-   just build           # populates plugin/bin/{leanck-mcp,leanckd,leanck-agent}
-   ```
-   The plugin manifest references `${CLAUDE_PLUGIN_ROOT}/bin/leanck-mcp`, which
-   auto-spawns the sibling `leanckd` daemon on first use. No editor or VSCode
-   extension is required — `leanckd` runs `lake serve` itself.
-
-2. **Install the bootstrap CLI** (one-time, shell-side):
-   ```
-   cargo install --path leanck-cli
-   leanck --help        # mirrors the agent tools; bootstrap under `leanck registry`
-   ```
-
-3. **Set embedder credentials** before running `leanck registry index` or launching Claude Code:
-   ```
-   keyring set voyage api_key
-   # or: export VOYAGE_API_KEY=...
-   ```
-   Voyage is the default embedder. Pass `--embedder openai` (with
-   `OPENAI_API_KEY` set) for OpenAI embeddings instead.
-
-## Install the plugin
-
-From the project root:
-
-```
-claude --plugin-dir leanck/plugin
+```sh
+just build
 ```
 
-## Pre-approve MCP tools (recommended)
+This stages `leanck-mcp` and `leanckd` into `plugin/bin/` and installs `leanck`
+and `leanckd` on PATH. The CLI includes `leanck normalize`, used by the style
+workflow. A Lean toolchain and Lake must be available through elan in the
+project you work on.
 
-The plugin ships subagents (`lean-expert`, `math-review`) that call
-`mcp__leanck__*` tools heavily, and Claude Code's plugin sandbox does not
-let the plugin pre-approve its own MCP tools (the plugin's `settings.json`
-only carries `agent` / `subagentStatusLine` keys, and plugin subagents
-have their `mcpServers` / `permissionMode` frontmatter ignored). To skip
-the per-call permission prompts, add this to `.claude/settings.json` (or
-`~/.claude/settings.json` for all projects) in any repo where you use the
-plugin:
+The MCP server automatically starts one shared `leanckd` daemon per worktree.
+The daemon runs `lake serve` itself, so no editor or extension is required.
+The core tools need no API credentials or database setup.
 
-```json
-{
-  "permissions": {
-    "allow": ["mcp__leanck__*"]
-  }
-}
+## Configuration
+
+- `.claude-plugin/plugin.json` and `.mcp.json` configure the Claude Code plugin.
+- `.codex-plugin/plugin.json` and `.mcp.codex.json` configure the Codex plugin.
+- `skills/`, `agents/`, and `hooks/` contain the proof and style workflows.
+
+To launch Claude Code with the checkout, run from your Lean project:
+
+```sh
+claude --plugin-dir /path/to/leanck/plugin
 ```
 
-Without this, the main session still works (the `lean-proving` skill
-pre-approves its own MCP calls), but spawned subagents will block on
-every MCP call.
+MCP accepts an optional `--workspace <PATH>`; otherwise it detects the project
+from its working directory. Use `set_workspace` to switch projects during a
+session. `LEANCKD_BIN` can override the daemon executable; otherwise MCP finds
+it beside its own binary or on PATH.
 
-## Where things live
+## Search and formatting
 
-- **Per-project registry** — `<workspace>/.lean-registry/registry.db`. Sibling of `.lake/` rather than inside it, so a `lake clean` doesn't wipe your embeddings. Add `.lean-registry/` to your project's `.gitignore`.
-- **Mathlib snapshot cache** — `$XDG_CACHE_HOME/lean-registry/` (or `~/.cache/lean-registry/`). Shared across every project on the machine. Snapshot files are named `mathlib-<rev>-<embedder>.db`. `<rev>` is taken from your project's `lake-manifest.json` (the same file `lake` uses to pin Mathlib); `<embedder>` is the embedder id (e.g. `voyage_voyage-4-large`, or `unembedded` for the raw snapshot before vectors are added).
+`loogle` queries a Loogle HTTP server by constant, name substring,
+subexpression, or conclusion type. It tries the local endpoint, then the
+self-hosted endpoint, then the main server. `LOOGLE_URL` prepends a custom
+endpoint. Search coverage depends on which server answers.
 
-Both paths are overridable on `leanck-mcp` via `--registry-db <PATH>` / `--cache-dir <PATH>`, and on `leanck registry index` via the same flags.
+Source cleanup is available through `leanck normalize <FILE_OR_DIR>`.
+The separate `leanck-normalize` binary can also be installed with
+`cargo install --path leanck-normalize --locked` from the repository root.
 
-## First-time indexing
-
-The plugin does **not** auto-index on load. To populate the per-project DB, run from the project's working directory:
-
-1. Generate doc-gen4 output for your project (separate Lean tooling).
-2. LLM-informalize the declarations:
-   ```
-   leanck registry describe -i api-docs.db -o .lean-registry/registry.db \
-       -p Mathlib.Topology -k theorem -n 100
-   ```
-3. Embed the per-project DB:
-   ```
-   leanck registry index
-   ```
-
-After that the plugin's `leanck:search` tool sees the project's declarations.
-Use `leanck:loogle` separately for exact Mathlib-style queries by constant,
-name substring, subexpression, or conclusion type. It uses the self-hosted
-Loogle endpoint first and falls back to the main Loogle server; set
-`LOOGLE_URL` to override the endpoint.
-
-## Building the Mathlib snapshot once
-
-The plugin `ATTACH`es a cached snapshot read-only and merges its hits into search results tagged with `db_origin: "mathlib"`. Build one with the `leanck registry snapshot` subcommands; the source is the full LLM-informalized Mathlib DB produced by `leanck registry describe` against full Mathlib doc-gen4 output.
-
-```
-# 1. (Done once, separately) populate informal-registry.db against full Mathlib
-#    via `leanck registry describe` — see leanck-describe/README.md.
-
-# 2. Prune to the mathlib4 + stdlib subset and write the "unembedded"
-#    snapshot. --workspace points at a Lean project so the Mathlib rev
-#    used in the filename matches what lake-manifest.json pins.
-leanck registry snapshot extract \
-    --input  ./informal-registry.db \
-    --workspace /path/to/your/lean-project
-
-# 3. Embed every document with voyage-4-large (the default). Produces a
-#    sibling .db named with the embedder id; resume-safe across runs.
-export VOYAGE_API_KEY=...
-leanck registry snapshot embed \
-    --input ~/.cache/lean-registry/mathlib-<rev>-unembedded.db
-```
-
-After that any project pinning the same Mathlib `<rev>` will attach the snapshot automatically on plugin load.
+See the [MCP tool reference](../leanck-mcp/README.md) and the
+[workspace README](../README.md) for more details.

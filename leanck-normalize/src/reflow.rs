@@ -1,4 +1,4 @@
-use markdown_reflow::reflow;
+use markdown_reflow::{EdgeWidths, Options as ReflowOptions, reflow};
 
 pub use crate::spelling::SpellingDirection;
 use crate::spelling::correct_spelling;
@@ -504,7 +504,11 @@ fn is_section_heading_block(
     for (offset, line) in lines[start_line..=end_line].iter().enumerate() {
         let li = start_line + offset;
         let start = if li == start_line { start_after } else { 0 };
-        let end = if li == end_line { end_before } else { line.len() };
+        let end = if li == end_line {
+            end_before
+        } else {
+            line.len()
+        };
         let t = line[start..end].trim();
         if !t.is_empty() {
             return t.starts_with("##");
@@ -549,10 +553,15 @@ fn reflow_block(
         let reflowed;
         let content_ref = if options.comment_reflow {
             let effective_w = target_width.saturating_sub(indent_w).max(1);
-            reflowed = reflow::reflow_with_options(
+            reflowed = reflow(
                 &content,
-                Some(effective_w),
-                reflow::Options {
+                ReflowOptions {
+                    widths: EdgeWidths {
+                        first: Some(effective_w),
+                        middle: Some(effective_w),
+                        last: Some(effective_w),
+                        single: Some(effective_w),
+                    },
                     linkify_urls: options.linkify_urls,
                 },
             )?;
@@ -585,13 +594,15 @@ fn reflow_block(
             let middle_w = target_width.saturating_sub(continuation_w).max(1);
             let final_w = target_width.saturating_sub(closing_w).max(1);
             let single_w = target_width.saturating_sub(both_w).max(1);
-            reflowed = reflow::reflow_with_edge_widths(
+            reflowed = reflow(
                 &content,
-                Some(first_w),
-                Some(middle_w),
-                Some(final_w),
-                Some(single_w),
-                reflow::Options {
+                ReflowOptions {
+                    widths: EdgeWidths {
+                        first: Some(first_w),
+                        middle: Some(middle_w),
+                        last: Some(final_w),
+                        single: Some(single_w),
+                    },
                     linkify_urls: options.linkify_urls,
                 },
             )?;
@@ -938,7 +949,10 @@ mod tests {
 def x := 1
 ";
         let out = normalize(src, 100, with_headings()).unwrap();
-        assert_eq!(out, "/-! ## The Beer-Quiche Signaling Game -/\ndef x := 1\n");
+        assert_eq!(
+            out,
+            "/-! ## The Beer-Quiche Signaling Game -/\ndef x := 1\n"
+        );
     }
 
     #[test]

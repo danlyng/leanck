@@ -311,34 +311,6 @@ it may genuinely be dead. **Ask the user before dropping it.** Removing a
 hypothesis changes the signature, and callers compiled against the longer
 signature will break.
 
-## Out-of-band helpers (`leanck-agent`)
-
-The plugin bundles two CLI helpers at `${CLAUDE_PLUGIN_ROOT}/bin/leanck-agent`.
-Use them for tasks that exceed a single MCP call.
-
-Invoke directly via `Bash` with `run_in_background: true`. Final response
-goes to stdout; metadata (`thread: <id>`, usage stats) goes to stderr.
-
-### `leanck-agent explore` — research before editing
-
-Use this when you need to scan Mathlib for a candidate replacement and
-`leanck:search` / `leanck:loogle` returns ambiguous results. The catalogue's
-"named Mathlib lemma" moves often require a survey of nearby
-`LipschitzWith.*`, `Finset.sum_*`, `Real.sSup_*` etc. before settling on the
-right one.
-
-```sh
-${CLAUDE_PLUGIN_ROOT}/bin/leanck-agent explore --skip-git-check "<brief>"
-```
-
-See [`reference/lean-explore.md`](../lean-proving/reference/lean-explore.md)
-in the `lean-proving` skill for the full flag list and brief template.
-
-### `leanck-agent routine` — *not for this skill*
-
-Routine is for closing `sorry` leaves with mechanical tactics. Simplification
-is not that — it operates on already-closed proofs. Don't use it.
-
 ## Subagents
 
 For unusually long proofs (≥300 lines) where you want a second pair of eyes
@@ -362,7 +334,6 @@ Same as `lean-proving`. The ones used most heavily by this skill:
 | Tool | When in this workflow |
 |---|---|
 | `diagnostics` | After every edit, scoped via `ident` to the declaration. Severity `["error", "warning"]` to detect drift. |
-| `search` | Step 1: planning, to find named Mathlib lemmas matching a move's detection signal. |
 | `loogle` | When you need an exact pattern match (e.g., looking for `LipschitzWith _ (fun x => _ - _)`). |
 | `restart_file` | When diagnostics report state past EOF or "closed file" errors after a large rewrite. |
 | `health` | Step 0 prerequisite check. |

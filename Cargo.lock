@@ -1007,7 +1007,7 @@ dependencies = [
 
 [[package]]
 name = "leanck-normalize"
-version = "0.2.0"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -1089,7 +1089,8 @@ dependencies = [
 
 [[package]]
 name = "markdown-reflow"
-version = "0.3.0"
+version = "0.4.0"
+source = "git+https://github.com/danlyng/markdown-reflow.git?rev=592af86923543ab8e29691eceba3dec1f0e5c285#592af86923543ab8e29691eceba3dec1f0e5c285"
 dependencies = [
  "markdown",
 ]

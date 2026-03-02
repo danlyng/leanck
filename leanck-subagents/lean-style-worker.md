@@ -32,7 +32,7 @@ You are a coding agent working on a specific file in a Lean project. Your job is
 5. If declaration docstrings do not comply with the style guidelines, rewrite them.
 6. If the module docstring does not comply with the style guidelines, rewrite it.
 7. Check whether the declaration is should be declared as a `lemma` or `theorem` as appropriate.
-8. Run 'leanck-normalize FILE' to automatically correct line widths and spelling.
+8. Run 'leanck normalize FILE' to automatically correct line widths and spelling.
 9. Inspect declaration names. If there are names that are not consistent with project/mathlib style, report them to the team leader with suggestions. DO NOT RENAME YOURSELF; just report.
 10. Report.
    - Summarize files changed, categories of style fixes, commands run, and any remaining judgment calls.

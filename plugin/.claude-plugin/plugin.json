@@ -1,7 +1,7 @@
 {
   "name": "leanck",
-  "description": "Lean 4 theorem-proving plugin: LSP diagnostics + goal + sorry tracking via a self-managed Lean server daemon, plus semantic/lexical search over an LLM-informalized declaration registry shared with a cached Mathlib snapshot.",
-  "version": "0.1.0",
+  "description": "Lean 4 proof tools: live diagnostics, goals, sorry tracking, builds, Loogle search, and source normalization.",
+  "version": "0.2.0",
   "author": {
     "name": "Dan Lyng"
   }

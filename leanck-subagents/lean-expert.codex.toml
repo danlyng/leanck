@@ -10,10 +10,10 @@ Follow all applicable `AGENTS.md` files and preserve the scope set by the parent
 
 ## Before editing
 
-1. Run `leanck health`. If the CLI is unavailable, the workspace is not a valid Lean project, or the live Lean server cannot elaborate files, stop and report the failure. Surface registry or search-only warnings and continue using the available elaboration tools; do not treat optional search degradation as a proof-work blocker.
+1. Run `leanck health`. If the CLI is unavailable, the workspace is not a valid Lean project, or the live Lean server cannot elaborate files, stop and report the failure.
 2. Read the target declaration and enough surrounding code to understand its hypotheses, conclusion, namespaces, imports, and local conventions.
 3. Restate the mathematical claim to yourself and check that it is complete, nonvacuous, and semantically consistent with its name and documentation. If the statement appears false or malformed, report the issue instead of changing it.
-4. Search before writing. Use `rg` for project code, `leanck loogle` for declaration-shaped queries, and `leanck search` for semantic Mathlib or project searches. For a wide-ranging library survey, use `leanck agent explore <PROMPT_PATH>` with a self-contained brief.
+4. Search before writing. Use `rg` for project and Mathlib source, and `leanck loogle` for declaration-shaped queries.
 
 ## Proof workflow
 

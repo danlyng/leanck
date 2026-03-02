@@ -1,7 +1,7 @@
 {
   "name": "leanck",
-  "version": "0.1.0",
-  "description": "Lean 4 theorem-proving plugin with LSP diagnostics, goal and sorry tracking, plus semantic and lexical declaration search over a shared registry.",
+  "version": "0.2.0",
+  "description": "Lean 4 proof tools: live diagnostics, goals, sorry tracking, builds, Loogle search, and source normalization.",
   "author": {
     "name": "Dan Lyng"
   },
@@ -19,7 +19,7 @@
   "interface": {
     "displayName": "leanck",
     "shortDescription": "Lean 4 proof tools for Codex",
-    "longDescription": "Leanck gives Codex Lean 4 theorem-proving workflows backed by LSP diagnostics, goal inspection, sorry tracking, and declaration search over project and Mathlib registries.",
+    "longDescription": "Leanck provides Lean 4 proof workflows with live diagnostics, goal inspection, sorry tracking, project builds, Loogle declaration search, and source normalization.",
     "developerName": "Dan Lyng",
     "category": "Engineering",
     "capabilities": [
