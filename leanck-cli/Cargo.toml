@@ -18,3 +18,4 @@ leanck-normalize = { path = "../leanck-normalize" }
 serde_json.workspace = true
 serde = { workspace = true, features = ["derive"] }
 leanckd = { version = "0.2.0", path = "../leanckd" }
+color-print = "0.3.7"

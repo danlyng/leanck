@@ -1,13 +1,30 @@
 use clap::{Parser, Subcommand};
 
+const SHORT_ABOUT: &str = color_print::cstr!(
+    r#"<b><bold>leanck</> ↦ Lean4 utilities for agents: diagnostics, goals, search, and more</>"#
+);
+
+const LONG_ABOUT: &str = color_print::cstr!(
+    r#"<b><bold>leanck:</> Lean4 utilities for agents</>
+  leanck is a virtual Lean4 IDE for coding agents. It allows agents to view file diagnostics,
+  inspect goal state, and search <underline>Loogle</>, among other things, with special attention to minimizing
+  token use and enabling quick iteration through fast feedback."#
+);
+
+const AFTER_HELP: &str = color_print::cstr!(
+    r#"<underline,bold>Examples:</>
+  leanck diagnostics Main.lean
+  leanck loogle --constant Nat.add
+  leanck normalize Main.lean"#
+);
+
 #[derive(Parser, Debug)]
 #[command(
     name = "leanck",
     version,
-    about = "Lean diagnostics, proof goals, builds, Loogle search, and source normalization",
-    long_about = "Standalone tools for Lean 4 projects. Live Lean commands share a warm \
-                  leanckd daemon, which starts automatically without an editor.",
-    after_help = "Examples:\n  leanck diagnostics Main.lean\n  leanck loogle --constant Nat.add\n  leanck normalize Main.lean"
+    about = SHORT_ABOUT,
+    long_about = LONG_ABOUT,
+    after_help = AFTER_HELP,
 )]
 pub(crate) struct Cli {
     #[command(subcommand)]
@@ -17,37 +34,33 @@ pub(crate) struct Cli {
 #[derive(Subcommand, Debug)]
 pub(crate) enum Cmd {
     // ── Live Lean state (same `leanckd` daemon the MCP server uses) ──────────
-    /// Wait for elaboration and report diagnostics for a file (alias: `d`).
+    /// Report diagnostics for a file.
     #[command(visible_alias = "d")]
     Diagnostics(crate::commands::diagnostics::Args),
 
-    /// Show the Lean proof goal at a file position (0-indexed line/character).
+    /// Show the proof goal at a file position.
     Goal(crate::commands::goal::Args),
 
     /// List `sorry` locations under a file or directory.
     Sorry(crate::commands::sorry::Args),
 
-    /// List declarations in a file, optionally filtered by kind.
+    /// List declarations in a file.
     List(crate::commands::list::Args),
 
-    /// Restart the Lean elaborator worker for a single file.
-    #[command(name = "restart_file", visible_alias = "restart-file")]
+    /// Rebuild the dependencies of a file.
+    #[command(name = "restart-file", alias = "restart_file")]
     RestartFile(crate::commands::restart_file::Args),
 
-    /// Run a full `lake build` and report a compact pass/fail log. Uses the
-    /// project's Lake toolchain so dependency caches are reused.
+    /// Wraps `lake build` for compact output.
     Build(crate::commands::build::Args),
 
-    /// Normalize Lean comment formatting and top-of-file frontmatter. Reflows
-    /// block comments, sorts imports, fixes spelling, and more. Reads stdin
-    /// when no path is given; rewrites a file or directory in place otherwise.
+    /// Normalize Lean comment formatting and top-of-file frontmatter.
     Normalize(leanck_normalize::Args),
 
     /// Search Lean and Mathlib declarations through Loogle.
     Loogle(crate::commands::loogle::Args),
 
-    // Lean daemon health.
-    /// Check the Lean workspace and daemon (alias: `health`). Exits non-zero on failure.
+    /// Check the Lean workspace and daemon.
     #[command(visible_alias = "health")]
     Doctor(crate::commands::doctor::Args),
 }
