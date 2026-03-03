@@ -1,0 +1,24 @@
+[package]
+name = "leanck-cli"
+version = "0.25.0"
+edition.workspace = true
+
+[[bin]]
+name = "leanck"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+leanck-loogle.workspace = true
+leanck-normalize = { workspace = true, features = ["command"] }
+serde_json.workspace = true
+serde.workspace = true
+color-print.workspace = true
+leanck-core.workspace = true
+leanck-client.workspace = true
+leanck-lake.workspace = true
+leanck-config = { workspace = true, default-features = true }

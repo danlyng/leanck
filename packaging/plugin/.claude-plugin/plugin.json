@@ -1,0 +1,8 @@
+{
+  "name": "leanck",
+  "description": "Lean 4 proof tools: live diagnostics, goals, sorry tracking, builds, Loogle search, and source normalization.",
+  "version": "0.2.0",
+  "author": {
+    "name": "Dan Lyng"
+  }
+}

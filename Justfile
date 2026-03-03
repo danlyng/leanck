@@ -1,6 +1,7 @@
 set shell := ["bash", "-cu"]
 
 plugin_bin := justfile_directory() / "plugin" / "bin"
+plugin_package := justfile_directory() / "leanck-plugin"
 
 default:
     @just --list
@@ -26,10 +27,11 @@ build-leanckd:
     cp target/release/leanckd "{{plugin_bin}}"/leanckd
     if [ "$(uname)" = "Darwin" ]; then codesign --force -s - "{{plugin_bin}}"/leanckd; fi
 
-# Install the `leanck` CLI and the `leanckd` daemon onto PATH
+# Install the `leanck` CLI, `leanck-mcp` server, and `leanckd` daemon onto PATH (Codex launches the PATH copies).
 install-cli:
-    cargo install --path leanck-cli --locked
-    cargo install --path leanckd --locked
+    cargo install --path crates/leanck-cli --locked
+    cargo install --path crates/leanck-mcp --locked
+    cargo install --path crates/leanckd --locked
 
 # Remove staged plugin binaries (does not touch target/).
 clean-plugin-bin:
@@ -49,3 +51,16 @@ verify-distribution project:
     trap 'rm -rf "$staging_dir"' EXIT
     just stage "$staging_dir"
     python3 test-support/verify_distribution.py --bin-dir "$staging_dir" --project "{{project}}"
+
+# Assemble the Claude Code and Codex plugin from repository sources and fresh release binaries.
+package-plugin destination=plugin_package:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    staging_dir=$(mktemp -d "${TMPDIR:-/tmp}/leanck-plugin-bin.XXXXXX")
+    trap 'rm -rf "$staging_dir"' EXIT
+    just stage "$staging_dir"
+    python3 packaging/package_plugin.py --bin-dir "$staging_dir" --output "{{destination}}"
+
+# Validate a packaged plugin with the Claude Code validator.
+validate-plugin destination=plugin_package:
+    claude plugin validate --strict "{{destination}}"

@@ -7,6 +7,7 @@ leanck provides standalone Lean 4 tooling through a CLI and an MCP server. Read 
 ## Build and test
 
 - `just build` stages the MCP server and daemon into `plugin/bin/` and installs the CLI and daemon on PATH.
+- `just package-plugin` builds locked release binaries and assembles the Claude Code and Codex plugin into the ignored, generated `leanck-plugin/`; `just validate-plugin` runs `claude plugin validate --strict` on it. `just install-cli` also installs `leanck-mcp`, which the Codex plugin launches from PATH.
 - `cargo build --release --workspace --locked` builds every binary.
 - `cargo test --workspace --locked` runs the Rust suite.
 - `just build-mcp` / `just build-leanckd` stage individual binaries. On macOS, copies must be re-signed ad hoc; the recipes already do this.
@@ -25,7 +26,8 @@ leanck provides standalone Lean 4 tooling through a CLI and an MCP server. Read 
 - `leanck-loogle`: shared structured search client with a reusable HTTP pool, endpoint fallback, limits, empty-query/multiple-term policy, and endpoint provenance. `loogle.endpoints` configures the local/main fallback list. Coverage is not inferred from URLs.
 - `leanck-normalize`: pure `normalize` API with options, output, statistics, and explicit copyright year. The optional `command` module backs both binary entry points. Default features include the command adapter; library-only consumers can disable default features.
 - `markdown-reflow`: Git dependency from `https://github.com/danlyng/markdown-reflow`, pinned by revision in `leanck-normalize/Cargo.toml`. Update it with `cargo add -p leanck-normalize markdown-reflow --git https://github.com/danlyng/markdown-reflow.git --rev <COMMIT>` and rerun the normalizer tests.
-- `plugin/`: plugin manifests, MCP configs, skills, agents, and hooks.
+- `packaging/plugin/`: plugin manifests, Claude/Codex MCP configs, and the plugin README, copied verbatim into the package. `packaging/package_plugin.py` adds `leanck-skills/`, `leanck-subagents/` (`*.md` for Claude Code, `*.codex.toml` for Codex under `codex/agents/`), `leanck-hooks/`, and staged binaries, validating frontmatter, TOML, and JSON first. `plugin/` is a legacy copy kept for reference; do not edit it.
+- `leanck-hooks/`: plugin hooks shared by Claude Code and Codex.
 - `leanck-skills/`, `leanck-subagents/`: CLI-oriented workflow definitions.
 - `test-support/contracts/v4.json`: authoritative version 4 contract fixtures, consumed directly rather than patching version 1 fixtures.
 

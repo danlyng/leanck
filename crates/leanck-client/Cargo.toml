@@ -1,0 +1,18 @@
+[package]
+name = "leanck-client"
+edition.workspace = true
+version = "0.11.0"
+
+[dependencies]
+leanck-config = { workspace = true, default-features = true }
+leanck-core = { workspace = true, features = ["wire"] }
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util = { workspace = true, features = ["rt"] }
+uuid = { workspace = true, features = ["v4"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

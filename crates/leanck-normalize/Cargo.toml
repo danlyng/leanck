@@ -1,0 +1,31 @@
+[package]
+name = "leanck-normalize"
+version = "0.14.0"
+edition.workspace = true
+
+[lib]
+name = "leanck_normalize"
+path = "src/lib.rs"
+
+[[bin]]
+name = "leanck-normalize"
+path = "src/main.rs"
+required-features = ["command"]
+
+[dependencies]
+anyhow = { workspace = true, optional = true }
+clap = { workspace = true, optional = true }
+globset = { workspace = true, optional = true }
+leanck-config = { workspace = true, default-features = false }
+markdown.workspace = true
+markdown-reflow.workspace = true
+regex.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+indoc.workspace = true
+
+[features]
+default = ["command"]
+command = ["dep:clap", "dep:anyhow", "dep:globset", "leanck-config/loader"]
+globset = ["dep:globset"]

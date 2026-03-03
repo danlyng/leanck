@@ -1,0 +1,34 @@
+[package]
+name = "leanckd"
+version = "0.15.0"
+edition = "2024"
+rust-version = "1.89"
+
+[lib]
+name = "leanckd"
+path = "src/lib.rs"
+
+[[bin]]
+name = "leanckd"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+leanck-config = { workspace = true, default-features = true }
+leanck-core = { workspace = true, features = ["wire"] }
+leanck-lake.workspace = true
+lsp-server.workspace = true
+lsp-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util = { workspace = true, features = ["rt", "io-util"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+leanck-client.workspace = true
+libc.workspace = true
+tokio = { workspace = true, features = ["test-util"] }

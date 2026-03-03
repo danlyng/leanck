@@ -1,13 +1,24 @@
-# leanck
+# leanck - the Lean infoview for agents
 
-Standalone tools for working in Lean 4 projects, available through a CLI and an MCP server. Live Lean queries use a shared background daemon, so no editor needs to be running.
+`leanck` provides utilities for accelerating agentic Lean 4 development. The motivation is a faster feedback loop: Agents write lean and can quickly inspect the proof state and file diagnostics without having to run `lake env lean` or `lake build`. If you've noticed that your infoview gives you feedback far faster than your agents are able to get it, `leanck` is for you!
 
-- **Live proof information:** diagnostics, proof goals, declaration lists, and unfinished proofs (`sorry`).
-- **Project builds:** run the project's own Lake toolchain and return a compact report, with optional warnings, strict mode, and JSON output.
-- **Loogle search:** look up declarations by constant, name substring, subexpression, or conclusion type.
-- **Source normalization:** reflow Lean comments, normalize spelling and frontmatter, and sort imports.
+## Features
+- **Live proof information:** Get proof state and diagnostics quickly.
+- **Project builds:** Save tokens by using `leanck build`, which filters out unwanted noise.
+- **Loogle search:** Look up declarations in Loogle (custom endpoints are supported).
+- **Source normalization:** Normalize Lean source files according to configurable rules.
 
-## Components
+## Quickstart
+Install prebuilt `leanck`:
+```bash
+<some kind of curl command lean4.party/leanck-install.sh>
+```
+
+Or build from source by cloning this directory and running `just install`.
+
+## Details
+
+`leanck` sets up a background daemon per Lean workspace.
 
 | Directory | Purpose |
 |---|---|
@@ -20,8 +31,9 @@ Standalone tools for working in Lean 4 projects, available through a CLI and an 
 | `leanck-mcp/` | MCP server over stdio for live Lean tools, builds, and Loogle. |
 | `leanck-loogle/` | Shared structured Loogle search, reusable HTTP client, fallback, and endpoint provenance. |
 | `leanck-normalize/` | Pure source normalization and an optional command adapter shared by both binary entry points. |
-| `plugin/` | Claude Code and Codex plugin manifests, skills, agents, and hooks. |
+| `packaging/plugin/` | Claude Code and Codex plugin manifests, MCP configurations, and plugin README. |
 | `leanck-skills/`, `leanck-subagents/` | CLI-oriented skills and agent definitions. |
+| `leanck-hooks/` | Plugin hooks shared by Claude Code and Codex. |
 
 ```text
 CLI / MCP ── live queries ──► leanck-client ──► leanckd ──► lake serve
@@ -48,7 +60,7 @@ cargo install --path leanckd --locked
 cargo install --path leanck-normalize --locked
 ```
 
-For the plugin, `just build` stages `leanck-mcp` and `leanckd` into `plugin/bin/` and installs the CLI and daemon on PATH. See [plugin setup](plugin/README.md). Cargo fetches the Markdown reflow engine from its [Git repository](https://github.com/danlyng/markdown-reflow), pinned to a commit in `leanck-normalize/Cargo.toml`. No sibling checkout is required to build.
+For the plugin, `just package-plugin` assembles `leanck-plugin/` for Claude Code and Codex from these sources and fresh release binaries. See [plugin setup](packaging/plugin/README.md). Cargo fetches the Markdown reflow engine from its [Git repository](https://github.com/danlyng/markdown-reflow), pinned to a commit in `leanck-normalize/Cargo.toml`. No sibling checkout is required to build.
 
 ## Use
 

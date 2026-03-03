@@ -1,0 +1,17 @@
+[package]
+name = "leanck-config"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow = { workspace = true, optional = true }
+clap = { workspace = true, optional = true }
+globset = { workspace = true, optional = true }
+serde.workspace = true
+serde_json = { workspace = true, optional = true }
+toml = { workspace = true, optional = true }
+url = { workspace = true, optional = true }
+
+[features]
+default = ["loader"]
+loader = ["dep:anyhow", "dep:clap", "dep:globset", "dep:serde_json", "dep:toml", "dep:url"]

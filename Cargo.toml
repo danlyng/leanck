@@ -1,15 +1,15 @@
 [workspace]
 resolver = "3"
 members = [
-    "leanck-core",
-    "leanck-client",
-    "leanck-cli",
-    "leanck-mcp",
-    "leanckd",
-    "leanck-lake",
-    "leanck-loogle",
-    "leanck-normalize",
-    "leanck-config",
+    "crates/leanck-cli",
+    "crates/leanck-client",
+    "crates/leanck-core",
+    "crates/leanck-config",
+    "crates/leanck-lake",
+    "crates/leanck-mcp",
+    "crates/leanck-loogle",
+    "crates/leanck-normalize",
+    "crates/leanckd",
 ]
 
 [workspace.package]
@@ -19,12 +19,35 @@ version = "0.1.0"
 [workspace.dependencies]
 anyhow = "1.0.102"
 blake2 = "0.11.0"
+bytes = "1.11.1"
 clap = { version = "4.6.1", features = ["derive"] }
+color-print = "0.3.7"
+futures = { version = "0.3.32", default-features = false }
+globset = "0.4.20"
 hex = "0.4.3"
+indoc = "2.0.7"
+leanck-client = { version = "0.11.0", path = "crates/leanck-client" }
+leanck-config = { version = "0.1.0", path = "crates/leanck-config", default-features = false }
+leanck-core = { version = "0.10.0", path = "crates/leanck-core" }
+leanck-lake = { version = "0.5.0", path = "crates/leanck-lake" }
+leanck-loogle = { version = "0.4.0", path = "crates/leanck-loogle" }
+leanck-normalize = { version = "0.14.0", path = "crates/leanck-normalize" }
+libc = "0.2.186"
+lsp-server = "0.10.0"
+lsp-types = "0.95.1"
+markdown = "1.0.0"
+markdown-reflow = { version = "0.5.0", git = "https://github.com/danlyng/markdown-reflow.git", rev = "7da4b3abc1505533dd0bf02456ef0b7e6e712797" }
+regex = "1.12.3"
 reqwest = { version = "0.13.3", features = ["json", "query"] }
+rmcp = "1.7.0"
+schemars = "1.2.1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 thiserror = "2.0.18"
 tokio = { version = "1.52.3", features = ["full"] }
+tokio-util = "0.7.18"
+toml = "1.1.8"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+url = "2.5.8"
+uuid = "1.23.2"

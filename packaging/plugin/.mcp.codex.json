@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "leanck": {
+      "command": "leanck-mcp",
+      "args": []
+    }
+  }
+}
