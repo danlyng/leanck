@@ -107,5 +107,6 @@ fn run(json: &mut bool) -> anyhow::Result<()> {
 
         // Lean daemon health.
         Cmd::Doctor(args) => commands::doctor::run(args),
+        Cmd::Daemons(args) => block_on(commands::daemons::run(args)),
     }
 }

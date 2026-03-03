@@ -53,6 +53,10 @@ pub(crate) fn apply(command: &mut Cmd, s: &Settings, matches: &ArgMatches) {
             a.settings = s.clone();
             a.output.json |= s.output.json;
         }
+        Cmd::Daemons(a) => {
+            a.settings = s.clone();
+            a.json |= s.output.json;
+        }
         Cmd::Loogle(a) => {
             a.settings = s.loogle.clone();
             a.json |= s.output.json;

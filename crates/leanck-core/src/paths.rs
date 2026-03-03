@@ -4,14 +4,18 @@ use std::path::{Path, PathBuf};
 
 /// `$XDG_CACHE_HOME/leanck`, `$HOME/.cache/leanck`, otherwise the system temp directory.
 pub fn cache_dir() -> PathBuf {
+    user_cache_dir().unwrap_or_else(std::env::temp_dir)
+}
+
+/// `$XDG_CACHE_HOME/leanck` or `$HOME/.cache/leanck`; `None` when this user has
+/// neither, so the only candidate would be the shared system temp directory.
+fn user_cache_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("XDG_CACHE_HOME")
         && !dir.is_empty()
     {
-        PathBuf::from(dir).join("leanck")
-    } else if let Some(home) = std::env::home_dir() {
-        home.join(".cache/leanck")
+        Some(PathBuf::from(dir).join("leanck"))
     } else {
-        std::env::temp_dir()
+        std::env::home_dir().map(|home| home.join(".cache/leanck"))
     }
 }
 
@@ -29,6 +33,8 @@ pub fn worktree_key(worktree: &Path) -> String {
 pub struct RuntimePaths {
     directory: PathBuf,
     key: String,
+    /// The directory is the legacy system temp fallback rather than the selected location.
+    fallback: bool,
 }
 
 impl RuntimePaths {
@@ -36,13 +42,26 @@ impl RuntimePaths {
         Self {
             directory,
             key: worktree_key(worktree),
+            fallback: false,
         }
     }
 
-    /// Discover an existing legacy temp-directory fallback as well as the preferred location.
+    /// Discover an existing legacy temp-directory fallback as well as the
+    /// preferred location. Without a per-user cache directory, the system temp
+    /// directory is the only location, and it is a fallback.
     pub fn for_workspace(worktree: &Path) -> Self {
-        let preferred = Self::in_directory(cache_dir(), worktree);
-        let fallback = Self::in_directory(std::env::temp_dir(), worktree);
+        Self::select(user_cache_dir(), worktree)
+    }
+
+    fn select(user_cache: Option<PathBuf>, worktree: &Path) -> Self {
+        let fallback = Self {
+            fallback: true,
+            ..Self::in_directory(std::env::temp_dir(), worktree)
+        };
+        let Some(directory) = user_cache else {
+            return fallback;
+        };
+        let preferred = Self::in_directory(directory, worktree);
         if !preferred.socket().exists()
             && !preferred.pid().exists()
             && (fallback.socket().exists() || fallback.pid().exists())
@@ -61,6 +80,7 @@ impl RuntimePaths {
         let fallback = Self {
             directory: std::env::temp_dir(),
             key: self.key,
+            fallback: true,
         };
         std::fs::create_dir_all(&fallback.directory)?;
         Ok(fallback)
@@ -68,6 +88,11 @@ impl RuntimePaths {
 
     pub fn directory(&self) -> &Path {
         &self.directory
+    }
+    /// Whether these paths use the legacy system temp fallback. Fallback runtimes
+    /// take no instance slot: the slot directory is `directory()` only when this is false.
+    pub fn is_fallback(&self) -> bool {
+        self.fallback
     }
     fn artifact(&self, extension: &str) -> PathBuf {
         self.directory
@@ -85,6 +110,11 @@ impl RuntimePaths {
     pub fn log(&self) -> PathBuf {
         self.artifact("log")
     }
+    /// Held by the client that is starting this worktree's daemon, so
+    /// concurrent clients make room and spawn once.
+    pub fn start_lock(&self) -> PathBuf {
+        self.artifact("start.lock")
+    }
 }
 
 pub fn socket_path(worktree: &Path) -> PathBuf {
@@ -98,4 +128,21 @@ pub fn lock_path(worktree: &Path) -> PathBuf {
 }
 pub fn log_path(worktree: &Path) -> PathBuf {
     RuntimePaths::for_workspace(worktree).log()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn without_a_user_cache_directory_the_temp_runtime_is_a_fallback() {
+        let worktree = std::env::temp_dir();
+        let shared = RuntimePaths::select(None, &worktree);
+        assert!(shared.is_fallback());
+        assert_eq!(shared.directory(), std::env::temp_dir());
+        let missing = std::env::temp_dir().join(format!("leanck-paths-{}", std::process::id()));
+        let preferred = RuntimePaths::select(Some(missing.clone()), &worktree);
+        assert!(!preferred.is_fallback());
+        assert_eq!(preferred.directory(), missing);
+    }
 }

@@ -56,6 +56,7 @@ fn defaults_roundtrip_and_daemon_snapshot_preserve_settings() {
     settings.daemon.max_inflight = 3;
     settings.daemon.idle_timeout_ms = 0;
     settings.cache.enabled = false;
+    settings.instances.limit = 3;
     settings.normalize.rules.frontmatter.license_text = "A project license.".into();
     let path = dir.file("config.toml", &toml::to_string_pretty(&settings).unwrap());
     let loaded = load_files(&[(path, true)], &[]).unwrap();
@@ -67,6 +68,91 @@ fn defaults_roundtrip_and_daemon_snapshot_preserve_settings() {
     assert_eq!(child.settings.daemon.max_inflight, 3);
     assert_eq!(child.settings.daemon.idle_timeout_ms, 0);
     assert!(!child.settings.cache.enabled);
+    assert_eq!(child.settings.instances.limit, 3);
+    assert_eq!(child.settings.instances.on_limit, OnLimit::EvictIdle);
+    let assignments = settings.daemon_assignments();
+    assert!(assignments.contains(&"instances.limit=3".to_owned()));
+    assert!(assignments.contains(&"instances.on_limit=\"evict_idle\"".to_owned()));
+}
+#[test]
+fn instances_defaults_range_and_policy_names() {
+    let defaults = Settings::default().instances;
+    assert_eq!(defaults.limit, 8);
+    assert_eq!(defaults.on_limit, OnLimit::EvictIdle);
+    for assignment in [
+        "instances.limit=4097",
+        "instances.limit=-1",
+        "instances.on_limit='evict'",
+        "instances.on_limit=true",
+        "instances.unknown=1",
+    ] {
+        assert!(
+            load_files(&[], &[assignment.into()]).is_err(),
+            "accepted {assignment}"
+        );
+    }
+    for (name, policy) in [
+        ("warn", OnLimit::Warn),
+        ("refuse", OnLimit::Refuse),
+        ("evict_idle", OnLimit::EvictIdle),
+    ] {
+        let loaded = load_files(
+            &[],
+            &[
+                format!("instances.on_limit='{name}'"),
+                "instances.limit=4096".into(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(loaded.settings.instances.on_limit, policy);
+        assert_eq!(policy.as_str(), name);
+        assert_eq!(loaded.settings.instances.limit, 4096);
+    }
+    assert_eq!(
+        load_files(&[], &["instances.limit=0".into()])
+            .unwrap()
+            .settings
+            .instances
+            .limit,
+        0
+    );
+}
+#[test]
+fn project_configuration_cannot_set_instances() {
+    let dir = Scratch::new();
+    dir.file("project/lakefile.toml", "");
+    let project = dir.file("project/leanck.toml", "[instances]\nlimit = 2\n");
+    let error = ConfigArgs::default()
+        .load(&dir.0.join("project"))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("[instances]"), "{error}");
+    assert!(error.contains("leanck/config.toml"), "{error}");
+    assert!(error.contains(&project.display().to_string()), "{error}");
+    // An explicit layer that is the project file itself is accepted.
+    let loaded = ConfigArgs {
+        config: Some(project.clone()),
+        ..Default::default()
+    }
+    .load(&dir.0.join("project"))
+    .unwrap();
+    assert_eq!(loaded.settings.instances.limit, 2);
+    // Other explicit layers and overrides may set [instances].
+    std::fs::write(&project, "[normalize]\nwidth = 90\n").unwrap();
+    let explicit = dir.file(
+        "explicit.toml",
+        "[instances]\nlimit = 5\non_limit = 'warn'\n",
+    );
+    let loaded = ConfigArgs {
+        config: Some(explicit),
+        overrides: vec!["instances.limit=6".into()],
+        ..Default::default()
+    }
+    .load(&dir.0.join("project"))
+    .unwrap();
+    assert_eq!(loaded.settings.instances.limit, 6);
+    assert_eq!(loaded.settings.instances.on_limit, OnLimit::Warn);
+    assert_eq!(loaded.settings.normalize.width, 90);
 }
 #[test]
 fn invalid_keys_types_ranges_urls_and_globs_fail() {

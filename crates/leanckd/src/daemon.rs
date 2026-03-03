@@ -18,17 +18,25 @@ use tokio_util::sync::CancellationToken;
 use crate::error::{Error, Result};
 use crate::query;
 use crate::workspace::Workspace;
+use leanck_config::OnLimit;
 use leanck_core::api::{
     CancelResult, Command, HealthResult, LifecycleHealth, LifecycleState, PROTOCOL_VERSION,
     Request, Response, ServerHealth, ShutdownResult,
 };
 use leanck_core::{
     error::{ErrorKind, WireError},
+    instances::{
+        MAX_SLOTS, SlotLock, SlotOutcome, SlotPolicy, SlotRecord, now_unix_secs, process_start_id,
+    },
+    paths::RuntimePaths,
     wire,
 };
 
 /// Maximum interval between idle accounting and retention sweeps.
 const REAP_TICK: Duration = Duration::from_secs(60);
+
+// Every configurable limit must be reachable by the slot scan.
+const _: () = assert!(leanck_config::Instances::MAX_LIMIT == MAX_SLOTS as u64);
 
 struct Daemon {
     ws: Arc<Workspace>,
@@ -75,12 +83,71 @@ impl StartupLock {
 struct RuntimeOwner {
     socket: PathBuf,
     pid: PathBuf,
+    // Declared before `_lock` so the instance slot is released no later than
+    // the worktree lock; both live for the daemon's whole run.
+    _slot: Option<SlotLock>,
     _lock: StartupLock,
 }
+
 impl Drop for RuntimeOwner {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.socket);
         let _ = std::fs::remove_file(&self.pid);
+    }
+}
+
+/// Take a machine-wide instance slot for this daemon. Fallback runtime
+/// directories take no slot. Over the limit under `refuse` or `evict_idle`
+/// this fails before any runtime file is written; the daemon never evicts.
+fn acquire_slot(
+    runtime: &RuntimePaths,
+    worktree: &Path,
+    instances: &leanck_config::Instances,
+) -> Result<Option<SlotLock>> {
+    if runtime.is_fallback() {
+        tracing::warn!(
+            directory = %runtime.directory().display(),
+            "runtime directory fell back to the system temp directory; this daemon is not counted against instances.limit"
+        );
+        return Ok(None);
+    }
+    let record = SlotRecord {
+        pid: std::process::id(),
+        worktree: worktree
+            .canonicalize()
+            .unwrap_or_else(|_| worktree.to_path_buf()),
+        socket: runtime.socket(),
+        started_at: now_unix_secs(),
+        start_id: process_start_id(std::process::id()),
+    };
+    let policy = match instances.on_limit {
+        OnLimit::Warn => SlotPolicy::Continue,
+        OnLimit::Refuse | OnLimit::EvictIdle => SlotPolicy::Refuse,
+    };
+    match SlotLock::acquire(runtime.directory(), instances.limit, policy, &record)? {
+        SlotOutcome::OverLimit { held, limit } => {
+            tracing::warn!(
+                running = held,
+                limit,
+                on_limit = instances.on_limit.as_str(),
+                "instance limit reached; refusing to start"
+            );
+            Err(Error::InstanceLimit {
+                running: held,
+                limit,
+            })
+        }
+        SlotOutcome::Acquired { lock, running } => {
+            if instances.limit > 0 && running > instances.limit {
+                tracing::warn!(
+                    slot = lock.slot(),
+                    running,
+                    limit = instances.limit,
+                    "instance limit exceeded; starting anyway because on_limit=warn"
+                );
+            }
+            Ok(Some(lock))
+        }
     }
 }
 
@@ -97,14 +164,17 @@ pub async fn run_with_settings(worktree: &Path, settings: leanck_config::Setting
     settings
         .validate()
         .map_err(|e| Error::BadRequest(format!("configuration: {e:#}")))?;
-    let runtime = leanck_core::paths::RuntimePaths::for_workspace(worktree).prepare()?;
+    let runtime = RuntimePaths::for_workspace(worktree).prepare()?;
     let Some(lock) = StartupLock::acquire(&runtime.lock())? else {
         tracing::info!(worktree = %worktree.display(), "another leanckd owns this worktree; exiting");
         return Ok(());
     };
+    // Returning an error here drops the worktree lock; nothing else was written yet.
+    let slot = acquire_slot(&runtime, worktree, &settings.instances)?;
     let owner = RuntimeOwner {
         socket: runtime.socket(),
         pid: runtime.pid(),
+        _slot: slot,
         _lock: lock,
     };
     let _ = std::fs::remove_file(&owner.socket);
@@ -132,6 +202,9 @@ pub async fn run_with_settings(worktree: &Path, settings: leanck_config::Setting
         }
     };
     tracing::info!(socket = %owner.socket.display(), "leanckd listening");
+    // Warmup is not idle time: a freshly listening daemon must not look like
+    // the longest-idle eviction candidate.
+    ws.mark_active();
     let daemon = Arc::new(Daemon {
         ws,
         cancels: Mutex::new(HashMap::new()),
@@ -174,7 +247,9 @@ async fn reaper(daemon: Arc<Daemon>) {
         tokio::select! {
             _ = tokio::time::sleep(if daemon.settings.idle_timeout_ms == 0 { REAP_TICK } else { REAP_TICK.min(Duration::from_millis(daemon.settings.idle_timeout_ms)) }) => {
                 daemon.ws.evict_documents();
-                if daemon.settings.idle_timeout_ms != 0 && daemon.ws.idle_for() >= Duration::from_millis(daemon.settings.idle_timeout_ms) {
+                // Closing admission first means a query admitted just now keeps
+                // the daemon alive instead of being cancelled by the reap.
+                if daemon.settings.idle_timeout_ms != 0 && daemon.ws.idle_for() >= Duration::from_millis(daemon.settings.idle_timeout_ms) && daemon.ws.close_if_idle() {
                     tracing::info!("idle timeout reached; reaping");
                     daemon.shutdown.cancel();
                     return;
@@ -253,24 +328,32 @@ impl Drop for Registration {
 }
 
 async fn dispatch(daemon: &Arc<Daemon>, req: Request, connection: CancellationToken) -> Response {
-    daemon.ws.mark_active();
     let id = req.id.clone();
 
     let command = match req.command() {
         Ok(command) => command,
         Err(error) => return Response::err(id, to_wire(&Error::BadRequest(error.to_string()))),
     };
-    // Control ops handled inline (no elaboration, no permit).
+    // Control ops handled inline (no elaboration, no permit). They never touch
+    // the idle clock, so probing a daemon does not postpone its idle shutdown
+    // or hide how long it has been idle.
     match &command {
         Command::Health | Command::Status => return response(id, Ok(health(daemon))),
-        Command::Shutdown => {
-            daemon.shutdown.cancel();
-            return response(
-                id,
-                Ok(ShutdownResult {
-                    shutting_down: true,
-                }),
-            );
+        Command::Shutdown(params) => {
+            // A conditional shutdown that finds admission already closed (by
+            // another shutdown or the idle reaper) reports the shutdown in
+            // progress rather than a busy daemon. Closing is permanent, so the
+            // second check cannot see a reopened daemon.
+            let shutting_down = if params.if_idle {
+                daemon.ws.close_if_idle() || daemon.ws.admission_closed()
+            } else {
+                daemon.ws.close();
+                true
+            };
+            if shutting_down {
+                daemon.shutdown.cancel();
+            }
+            return response(id, Ok(ShutdownResult { shutting_down }));
         }
         Command::Cancel(params) => {
             if let Some(token) = daemon.cancels.lock().unwrap().get(&params.target_id) {
@@ -286,6 +369,11 @@ async fn dispatch(daemon: &Arc<Daemon>, req: Request, connection: CancellationTo
         _ => {}
     }
 
+    // Queries hold a lease from admission until their response is built; the
+    // lease also touches the idle clock on both ends.
+    let Some(_activity) = daemon.ws.begin_request() else {
+        return Response::err(id, to_wire(&Error::ShuttingDown));
+    };
     let token = connection.child_token();
     let ctx = match RequestContext::with_default(
         req.timeout_ms,
@@ -310,7 +398,6 @@ async fn dispatch(daemon: &Arc<Daemon>, req: Request, connection: CancellationTo
         id: id.clone(),
         token,
     };
-    let _activity = daemon.ws.begin_request();
     let result = ctx
         .run(query::QueryService::new(&daemon.ws).execute(command, &ctx))
         .await;
@@ -366,7 +453,7 @@ fn to_wire(e: &Error) -> WireError {
         | Error::Document(leanck_core::document::DocumentError::Path { .. }) => ErrorKind::NotFound,
         Error::Document(_) => ErrorKind::BadRequest,
         Error::BadRequest(_) => ErrorKind::BadRequest,
-        Error::ServerDown(_) | Error::Spawn(_) => ErrorKind::ServerDown,
+        Error::ServerDown(_) | Error::Spawn(_) | Error::ShuttingDown => ErrorKind::ServerDown,
         Error::Overloaded => ErrorKind::Overloaded,
         _ => ErrorKind::Internal,
     };

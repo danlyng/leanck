@@ -1,7 +1,10 @@
 use std::path::Path;
 
 use crate::args::{OutputArgs, WorkspaceArgs};
+use crate::commands::daemons::summary_line;
+use leanck_client::instances::Summary;
 use leanck_client::{Client, RequestOptions};
+use leanck_config::OnLimit;
 use leanck_core::workspace::has_project_marker;
 
 #[derive(clap::Args, Debug)]
@@ -41,12 +44,14 @@ pub(crate) fn run(args: Args) -> anyhow::Result<()> {
     };
     let workspace = workspace.canonicalize().unwrap_or(workspace);
     let mut checks = Vec::new();
+    let instances = leanck_client::instances::summary(&args.settings);
     if workspace.is_dir() && has_project_marker(&workspace) {
         checks.push(Check::new("ok", "Lake project marker found"));
         report_leanckd(&mut checks, &workspace, args.settings)?;
     } else {
         checks.push(Check::new("error", "workspace has no Lake project marker (lakefile.lean, lakefile.toml, or lean-toolchain)"));
     }
+    checks.push(instances_check(&instances));
     let ok = !checks.iter().any(|check| check.status == "error");
     let issues: Vec<&Check> = checks.iter().filter(|check| check.status != "ok").collect();
     if args.output.json {
@@ -60,6 +65,7 @@ pub(crate) fn run(args: Args) -> anyhow::Result<()> {
                     "level": check.status, "message": check.summary,
                 })).collect::<Vec<_>>(),
                 "checks": checks,
+                "instances": instances,
             }))?
         );
     } else if args.verbose {
@@ -82,6 +88,24 @@ pub(crate) fn run(args: Args) -> anyhow::Result<()> {
         anyhow::bail!("one or more doctor checks failed");
     }
     Ok(())
+}
+
+/// Machine-wide count from slot records; reads only, never creates the slot directory.
+fn instances_check(summary: &Summary) -> Check {
+    let line = format!("instances: {}", summary_line(summary));
+    if summary.limit > 0 && summary.running >= summary.limit {
+        let consequence = match summary.on_limit {
+            OnLimit::Refuse => "a daemon for another worktree will be refused",
+            OnLimit::EvictIdle => "a daemon for another worktree will evict the longest-idle one",
+            OnLimit::Warn => "a daemon for another worktree will start past the limit",
+        };
+        Check::new(
+            "warning",
+            format!("{line}; {consequence} (free slots with `leanck daemons stop --idle`)"),
+        )
+    } else {
+        Check::new("ok", line)
+    }
 }
 
 /// Probe without starting a daemon: idle projects do not need a Lean process.
@@ -134,4 +158,37 @@ fn report_leanckd(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn instances_check_warns_only_at_a_nonzero_limit() {
+        for (running, limit, status) in
+            [(0, 8, "ok"), (7, 8, "ok"), (8, 8, "warning"), (9, 0, "ok")]
+        {
+            let check = instances_check(&Summary {
+                running,
+                limit,
+                on_limit: OnLimit::Refuse,
+            });
+            assert_eq!(check.status, status, "{running}/{limit}");
+            assert!(
+                check
+                    .summary
+                    .starts_with(&format!("instances: {running} running"))
+            );
+        }
+        let check = instances_check(&Summary {
+            running: 8,
+            limit: 8,
+            on_limit: OnLimit::Refuse,
+        });
+        assert_eq!(
+            check.summary,
+            "instances: 8 running, limit 8 (on_limit=refuse); a daemon for another worktree will be refused (free slots with `leanck daemons stop --idle`)"
+        );
+    }
 }

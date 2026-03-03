@@ -67,6 +67,9 @@ pub(crate) enum Cmd {
     /// Check the Lean workspace and daemon.
     #[command(visible_alias = "health")]
     Doctor(crate::commands::doctor::Args),
+
+    /// List or stop leanckd daemons on this machine.
+    Daemons(crate::commands::daemons::Args),
 }
 
 #[cfg(test)]
@@ -95,6 +98,53 @@ mod tests {
             Cli::try_parse_from(["leanck", "health"]).unwrap().command,
             Cmd::Doctor(_)
         ));
+    }
+
+    #[test]
+    fn daemons_lists_by_default_and_stop_needs_exactly_one_target() {
+        use crate::commands::daemons::Action;
+        let Cmd::Daemons(args) = Cli::try_parse_from(["leanck", "daemons"]).unwrap().command else {
+            unreachable!()
+        };
+        assert!(args.action.is_none() && !args.json);
+        let Cmd::Daemons(args) = Cli::try_parse_from(["leanck", "daemons", "list", "--json"])
+            .unwrap()
+            .command
+        else {
+            unreachable!()
+        };
+        assert!(matches!(args.action, Some(Action::List)) && args.json);
+        let Cmd::Daemons(args) =
+            Cli::try_parse_from(["leanck", "daemons", "stop", "--idle", "--json"])
+                .unwrap()
+                .command
+        else {
+            unreachable!()
+        };
+        let Some(Action::Stop(stop)) = args.action else {
+            unreachable!()
+        };
+        assert!(args.json && stop.idle && !stop.all && stop.worktree.is_none());
+        assert_eq!(stop.wait, 15);
+        let Cmd::Daemons(args) =
+            Cli::try_parse_from(["leanck", "daemons", "stop", "/wt", "--wait", "3"])
+                .unwrap()
+                .command
+        else {
+            unreachable!()
+        };
+        let Some(Action::Stop(stop)) = args.action else {
+            unreachable!()
+        };
+        assert_eq!(stop.worktree.as_deref(), Some(std::path::Path::new("/wt")));
+        assert_eq!(stop.wait, 3);
+        for argv in [
+            vec!["leanck", "daemons", "stop"],
+            vec!["leanck", "daemons", "stop", "--idle", "--all"],
+            vec!["leanck", "daemons", "stop", "/wt", "--all"],
+        ] {
+            assert!(Cli::try_parse_from(argv).is_err());
+        }
     }
 
     #[test]

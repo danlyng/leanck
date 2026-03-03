@@ -1,7 +1,7 @@
 ---
-name: grind
+name: lean-grind
 model: sonnet
-description: Fast agent for routine but tedious Lean 4 proof work. Use for integrability lemmas, norm bounds, measurability, interval arithmetic, simp/linarith chains, and other mechanical steps that don't require deep mathematical insight. work with `lean-tool`.
+description: Fast agent for routine but tedious Lean 4 proof work. Use for integrability lemmas, norm bounds, measurability, interval arithmetic, simp/linarith chains, and other mechanical steps that don't require deep mathematical insight. Verifies its work with the `leanck` CLI.
 memory: user
 tools: Write, Edit, Read, Bash, Grep
 ---

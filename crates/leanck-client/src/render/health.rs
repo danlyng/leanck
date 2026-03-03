@@ -1,4 +1,4 @@
-use crate::Result;
+use crate::{Result, instances::Summary};
 use leanck_core::api::HealthResult;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -9,6 +9,9 @@ pub struct HealthReport {
     pub ok: bool,
     pub lsp: HealthStatus,
     pub issues: Vec<HealthIssue>,
+    /// Machine-wide daemon count against `instances.limit`, when the caller attaches it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instances: Option<Summary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,7 +90,13 @@ impl HealthReport {
                     message: format!("lsp: {reason}"),
                 }]
             },
+            instances: None,
         }
+    }
+
+    pub fn with_instances(mut self, instances: Summary) -> Self {
+        self.instances = Some(instances);
+        self
     }
 }
 
@@ -135,5 +144,36 @@ mod tests {
                     .is_err()
             );
         }
+    }
+
+    #[test]
+    fn instances_are_optional_and_omitted_until_attached() {
+        let report = HealthReport::from_result(
+            Err(crate::ClientError::StartupTimeout),
+            Path::new("/run/leanck.sock"),
+        );
+        assert!(report.instances.is_none());
+        let encoded = serde_json::to_value(&report).unwrap();
+        assert!(encoded.get("instances").is_none());
+        let decoded: HealthReport = serde_json::from_value(encoded).unwrap();
+        assert!(decoded.instances.is_none());
+
+        let report = report.with_instances(Summary {
+            running: 2,
+            limit: 8,
+            on_limit: leanck_config::OnLimit::EvictIdle,
+        });
+        let human = format_health_human(&report);
+        let encoded = serde_json::to_value(&report).unwrap();
+        assert_eq!(
+            encoded["instances"],
+            json!({"running": 2, "limit": 8, "on_limit": "evict_idle"})
+        );
+        let decoded: HealthReport = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded.instances, report.instances);
+        assert_eq!(
+            human,
+            "error: lsp: leanckd did not start within the timeout"
+        );
     }
 }

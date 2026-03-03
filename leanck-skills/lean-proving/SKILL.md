@@ -18,7 +18,7 @@ You have been provided the `leanck` CLI, which exposes several subcommands that 
 
 ## Workflow
 
-1. **Search before you write.** Use `leanck loogle` for queries by constant, name substring, subexpression, or conclusion type. Use `grep` for discovery in project and Mathlib source. Inspect each candidate's full signature.
+1. **Search before you write.** Use `leanck loogle` for queries by constant, name substring, subexpression, or conclusion type. Use `grep` for discovery in project and Mathlib source. Inspect each candidate's full signature. See [search queries](reference/search-queries.md).
 2. **State the theorem first.** Write the theorem signature and confirm the statement is faithful to the request. Make sure:
 
 * The theorem is *complete*. If asked to prove an iff, ensure both directions are present. If a uniqueness claim is made, ensure that you demonstrate uniqueness, not just existence.

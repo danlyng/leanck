@@ -1,139 +1,132 @@
-# leanck - the Lean infoview for agents
+# leanck — the Lean infoview for agents
 
-`leanck` provides utilities for accelerating agentic Lean 4 development. The motivation is a faster feedback loop: Agents write lean and can quickly inspect the proof state and file diagnostics without having to run `lake env lean` or `lake build`. If you've noticed that your infoview gives you feedback far faster than your agents are able to get it, `leanck` is for you!
+`leanck` provides utilities for accelerating agentic Lean 4 development. The motivation is a faster feedback loop: agents write Lean and can immediately inspect proof states and file diagnostics without needing `lake env lean` or running a full `lake build` on every edit. If you've noticed that your editor's infoview gives you feedback far faster than your agents are able to get it, `leanck` is for you.
+
+`leanck` is also attentive to minimizing token usage. Agents can request diagnostics for specific declarations and all output is limited to essential information by default (for example, linter warnings are suppressed by default with the expectation that they will be cheap to clean up later).
+
+It exposes the same capabilities through a command-line interface (`leanck`) and a Model Context Protocol server (`leanck-mcp`), along with skills, subagents, and hooks packaged as a plugin for Claude Code and Codex.
 
 ## Features
-- **Live proof information:** Get proof state and diagnostics quickly.
-- **Project builds:** Save tokens by using `leanck build`, which filters out unwanted noise.
-- **Loogle search:** Look up declarations in Loogle (custom endpoints are supported).
-- **Source normalization:** Normalize Lean source files according to configurable rules.
+
+- **Live proof information:** Query file or declaration diagnostics (`leanck diagnostics`), inspect tactic goals (`leanck goal`), list declarations (`leanck list`), and locate unfinished proofs (`leanck sorry`) against a warm Lean elaborator.
+- **Token-efficient builds:** Run `leanck build` to wrap `lake build` in a compact pass/fail summary that strips progress noise and surfaces only the failing modules and errors (with optional `--warnings` and `--strict` modes).
+- **Loogle search:** Search Lean and Mathlib declarations by constant, name substring, subexpression, or conclusion pattern via `leanck loogle` (with configurable custom endpoints).
+- **Source normalization:** Format comments, reflow Markdown prose, sort imports, standardize attribute placement, and maintain file headers and frontmatter with `leanck normalize`.
 
 ## Quickstart
-Install prebuilt `leanck`:
+
+Install prebuilt `leanck` *(install script coming soon)*:
+
 ```bash
-<some kind of curl command lean4.party/leanck-install.sh>
+curl -fsSL https://lean4.party/leanck-install.sh | sh
 ```
 
-Or build from source by cloning this directory and running `just install`.
+Or build and install from source (requires Rust 1.89+ and [`just`](https://github.com/casey/just)):
 
-## Details
-
-`leanck` sets up a background daemon per Lean workspace.
-
-| Directory | Purpose |
-|---|---|
-| `leanck-cli/` | The `leanck` command-line interface. |
-| `leanck-config/` | Shared versioned TOML configuration, discovery, validation, and inspection. |
-| `leanck-core/` | Shared identity, runtime paths, typed daemon requests/results, and version 4 protocol data. |
-| `leanck-client/` | Workspace-bound daemon client, discovery, startup, validated transport, retry policy, and shared live-query rendering. |
-| `leanckd/` | One warm `lake serve` per worktree, shared over a Unix socket. |
-| `leanck-lake/` | Independent project-toolchain build, parsing/rendering, Mathlib cache utilities, and source-root discovery. |
-| `leanck-mcp/` | MCP server over stdio for live Lean tools, builds, and Loogle. |
-| `leanck-loogle/` | Shared structured Loogle search, reusable HTTP client, fallback, and endpoint provenance. |
-| `leanck-normalize/` | Pure source normalization and an optional command adapter shared by both binary entry points. |
-| `packaging/plugin/` | Claude Code and Codex plugin manifests, MCP configurations, and plugin README. |
-| `leanck-skills/`, `leanck-subagents/` | CLI-oriented skills and agent definitions. |
-| `leanck-hooks/` | Plugin hooks shared by Claude Code and Codex. |
-
-```text
-CLI / MCP ── live queries ──► leanck-client ──► leanckd ──► lake serve
-          ├─ build ────────► leanck-lake ──► project's lake build
-          └─ loogle ───────► leanck-loogle ──► Loogle over HTTP
-
-CLI ── normalize ──► leanck-normalize ──► markdown-reflow (Git dependency)
+```bash
+git clone https://github.com/danlyng/leanck.git
+cd leanck
+just install-cli
 ```
 
-The CLI and MCP server automatically start `leanckd` on the first live query. All clients in a worktree share that daemon. An idle daemon exits after an hour and starts again when needed.
+To also package the Claude Code / Codex plugin into `./leanck-plugin`:
 
-`leanck-core` owns shared identity and typed protocol data and has no dependency on the daemon or frontends. Its optional `wire` feature supplies framing for client and daemon. `leanck-client` owns connection policy and live-query rendering; each operation captures one canonical workspace and receives its own timeout options. Responses must match the dispatched request and its result model. A failed connection can trigger startup and one retry; uncertain writes, reads, or protocol failures are never automatically replayed. Both frontends depend on the shared client and independent utilities. The completed [staged refactor plan](REFACTOR_PLAN.md) links the baseline and every implementation record; [stage 9](docs/refactor/STAGE_9.md) records distribution verification and timing comparisons.
-
-## Build and install
-
-Install Rust 1.89 or newer and a Lean toolchain through elan. Each Lean project supplies its own `lean-toolchain` and Lake configuration.
-
-```sh
-cargo build --release --workspace --locked
-cargo install --path leanck-cli --locked
-cargo install --path leanckd --locked
-
-# Optional standalone normalizer
-cargo install --path leanck-normalize --locked
+```bash
+just package-plugin
 ```
 
-For the plugin, `just package-plugin` assembles `leanck-plugin/` for Claude Code and Codex from these sources and fresh release binaries. See [plugin setup](packaging/plugin/README.md). Cargo fetches the Markdown reflow engine from its [Git repository](https://github.com/danlyng/markdown-reflow), pinned to a commit in `leanck-normalize/Cargo.toml`. No sibling checkout is required to build.
+## Usage
 
-## Use
+From any Lean 4 project directory:
 
-From a Lean project:
+```bash
+# Check workspace and daemon status
+leanck doctor
 
-```sh
-leanck health
+# List leanckd daemons on this machine, or stop the idle ones
+leanck daemons
+leanck daemons stop --idle
+
+# Wait for elaboration and report errors (or add --severity error,warning / --all-severities)
 leanck diagnostics Main.lean
-leanck diagnostics Main.lean --severity error,warning
-leanck diagnostics Main.lean --all-severities
+leanck diagnostics Main.lean --ident my_theorem
+
+# Inspect the proof goal at a 0-indexed (line, column) position
 leanck goal Main.lean 10 4
+
+# Find `sorry` occurrences in a file or directory
 leanck sorry .
+
+# List declarations in a file (optionally filtered by kind)
 leanck list Main.lean
-leanck list Main.lean --kind theorem,def --kind enum_member
+leanck list Main.lean --kind theorem,def
+
+# Restart elaboration for a single file
+leanck restart-file Main.lean
+
+# Run a workspace build with compact output
 leanck build
-leanck loogle --constant Nat.add
+
+# Search Mathlib / Lean declarations with Loogle
+leanck loogle --constant Nat.add --conclusion "_ <= _"
+
+# Normalize comments, imports, and frontmatter
 leanck normalize Main.lean
 ```
 
-Run `leanck <command> --help` for options. Restart a file with `leanck restart-file Main.lean`; the hidden `restart_file` CLI alias is removed. MCP still uses `restart_file`, while MCP `sorry` accepts only `path`, not the former `file` alias. Goal coordinates are zero-indexed; columns count UTF-16 code units. `doctor` (alias `health`) checks the workspace and probes an existing daemon without starting it; an idle project is healthy. Use `--verbose` for all checks or `--json` for structured output. MCP `health` starts the daemon if needed and checks reachability.
+## How it works
 
-Diagnostics default to errors only. `--severity` accepts the typed names `error`, `warning`, `information`, and `hint`, with comma-separated values or repeated flags (for example, `--severity error --severity warning`). Use `--all-severities` instead of the old `--severity all`; it cannot be combined with `--severity`. MCP uses a severity object rather than an array; see [current semantics and migration](leanck-mcp/README.md#diagnostic-severity-and-migration).
+`leanck` runs a background daemon (`leanckd`) per Lean worktree that manages a single persistent `lake serve` process over a local Unix socket. When an agent runs a live query through the `leanck` CLI or `leanck-mcp`, the client connects to the workspace's daemon (starting it automatically on first use, including fetching the Mathlib cache when applicable) and queries the running Lean server.
 
-Declaration filters use typed, canonical snake_case selectors: `--kind theorem,def` or repeated `--kind` flags; invalid names are rejected. Omitting the filter selects all declarations (MCP also accepts `"kind":[]`). `def` and `definition` are synonyms. Lexical Lean kinds take priority over coarse LSP kinds. List JSON now carries a tagged kind, such as `{"source":"lean","kind":"theorem"}` or `{"source":"lsp","kind":"enum_member"}`, instead of a string; human display is unchanged. See [selectors and migration](leanck-mcp/README.md#declaration-kinds-and-migration).
+This mirrors how an editor uses the Lean LSP: in both cases, the server process keeps imported `.olean` artifacts and elaborated file states warm in memory, re-elaborating only what changed instead of re-initializing the environment from scratch on each invocation. Because `leanckd` owns and coordinates access to the single `lake serve` instance, multiple concurrent agents and CLI invocations can query the same workspace safely without editor dependencies or multi-client deadlocks. An idle daemon shuts down automatically after an hour. To bound memory, at most `instances.limit` daemons (8 by default) run on a machine; when the limit is reached, starting a daemon for another worktree first stops the longest-idle one. The daemon is asked to stop only if it is still idle, so a daemon that has accepted work in the meantime stays up. `leanck daemons` lists and stops them.
 
-The private daemon protocol is version 4. To migrate from version 3, upgrade CLI, MCP server, and daemon together and explicitly shut down any running older daemon; incompatible peers are rejected, not translated. Sorry quality notes are always included (no `include_notes` parameter), `DiagnosticsResult.source` is a required pinned `String`, and `HealthResult.lifecycle` is required. Typed declaration kinds and diagnostic severity representations are unchanged.
+By default, `leanck` also enables Lake's local artifact cache (`LAKE_ARTIFACT_CACHE=true`), allowing worktrees and projects on the same machine to reuse compiled build outputs instead of rebuilding dependencies from scratch (disable with `cache.shared = false`).
 
-Live operation timeouts cover queueing, document synchronization, elaboration, and Lean requests after startup. Cold daemon startup has its own 30-minute cap; health probes default to a 2-second socket budget. CLI Ctrl-C cancels the current live operation, and MCP cancellation follows the same shared client path. Normal queries check the daemon's protocol version first; an incompatible daemon returns an error and stays running until explicitly shut down. The daemon keeps its lifetime lock file in place and removes socket/PID files on graceful shutdown or failed startup.
-
-Loogle tries the local endpoint at `localhost:8118/loogle/json`, then the main Loogle server. Configure `loogle.endpoints` or use `--endpoint` to select custom endpoints. Both frontends report the endpoint that answered; CLI JSON includes a `provenance` object. Search coverage depends on the server's index. The core tools require no embedding or LLM credentials.
-
-`leanck build --warnings` includes dependency diagnostics and configuration warnings emitted by Lake. `--strict` also makes warnings fail the build, including when Lake exits zero. Builds run independently of the daemon and share a workspace lock with leanck cache fetching. Their default 30-minute budget includes waiting for another build/cache job; override it with `--timeout SECS` (MCP: `timeout_ms`). Capture defaults to 8 MiB per stream; `--max-output-bytes BYTES` (MCP: `max_output_bytes`) raises that limit for large logs. Ctrl-C/MCP cancellation stops the process group and reaps Lake. JSON reports include execution provenance. See [stage 8](docs/refactor/STAGE_8.md) for ownership, coordination scope, and verification.
-
-For Rust callers, `LakeError::kind()` returns `LakeErrorKind` rather than a string; frontend JSON category strings are unchanged. `HealthIssue.level` is typed while retaining its existing JSON strings.
-
-Normalization uses `leanck normalize [OPTIONS] [PATH]` or standalone `leanck-normalize [OPTIONS] [PATH]`. Set width with `--width N`, for example `leanck normalize --width 100 Main.lean`; positional numbers are paths, not widths.
-
-For programmatic normalization, `leanck_normalize::normalize(source, width, options, copyright_year)` returns transformed source and statistics without reading files or the clock. The legacy year argument is retained but no longer supplies attribution. Use `normalize_with_context(source, width, options, rules, context)` with explicit file history and optional compiled dictionaries to create missing headers. Existing headers retain their author, date, and license text by default. `normalize.rules.frontmatter.invalid_existing` controls template mismatches: `"warn"` (default), `"ignore"`, or `"replace"` using the template and author history. New headers use one combined copyright notice and exclude configured `ignore_authors` identities (common AI agents by default). Failures are structured `NormalizeError` variants: `InvalidWidth`, `InvalidConfiguration`, `UnmatchedOpeningDelimiter { kind: CommentKind, line }`, and `Reflow(String)`. Match variants instead of parsing error text; delimiter lines are one-based after frontmatter, attribute, and heading normalization. Disable the crate's default features to omit Clap and command I/O; the default `command` feature provides the installed commands.
-
-The daemon library exposes only its `run` entry point and error/result types; document, state, transport, and query modules stay private. The daemon uses a typed Lean session backed by `lsp-server` message parsing, framing, and request queues. Its adapter keeps cancellation and child-process ownership explicit. Private socket frames use Tokio's length-delimited codec with a symmetric 16 MiB limit. The library assessment and preserved contracts are recorded in [stage 6](docs/refactor/STAGE_6.md).
-
-Live queries pin one source version and Lean session while they run. Edits and explicit restarts wait behind those queries, and recovery isolates old-session notifications. Diagnostic JSON always includes the pinned source so excerpts stay consistent with ranges after disk edits, without a filesystem fallback. Listing and lookup share one declaration catalog and identify heuristic fallbacks. Directory sorry reports scan text; file reports also use diagnostics from their pinned version. Sorry reports always include quality notes. The daemon discovers project source roots through Lake and closes idle documents above its retention targets. See [stage 7](docs/refactor/STAGE_7.md) for behavior, compatibility, and verification.
+```text
+CLI (leanck) / MCP (leanck-mcp)
+  ├── live queries ──► leanck-client ──► leanckd (per worktree) ──► lake serve
+  ├── build ─────────► leanck-lake ────► project's lake build
+  ├── loogle ────────► leanck-loogle ──► Loogle HTTP endpoint(s)
+  └── normalize ─────► leanck-normalize
+```
 
 ## Configuration
 
-All executables share optional TOML settings for normalization rules and exclusions, Loogle endpoints, builds, diagnostics, client timeouts, daemon limits, and cache fetching. Use `$XDG_CONFIG_HOME/leanck/config.toml` (default `~/.config/leanck/config.toml`) for personal settings and `leanck.toml` for a project. Explicit `--config FILE`, repeatable `--set KEY=VALUE`, and command flags override defaults; `--no-config` gives a clean invocation.
+`leanck` works out of the box with sensible defaults and supports optional TOML configuration at `~/.config/leanck/config.toml`[^0] (user) and `leanck.toml` (project).
 
-```sh
-leanck config init
-leanck config show --json
-leanck config sources
-leanck config check
-leanck normalize --dry-run .
-leanck --set 'normalize.spelling="off"' normalize Main.lean
+```bash
+leanck config init      # Write a template leanck.toml in the current directory
+leanck config show      # Print the effective configuration
+leanck config check     # Validate configuration files and report warnings
 ```
 
-See the [configuration reference](docs/CONFIGURATION.md) for precedence, every setting, MCP reload behavior, and daemon restart semantics, or the [complete default template](docs/leanck.example.toml). Existing daemons retain their startup settings. MCP's `configuration` tool inspects its captured settings; `set_workspace` reloads project configuration before switching.
+Any command can also take `--config <FILE>`, `--no-config`, or repeatable `--set KEY=VALUE` overrides. See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) for the full configuration reference and [`docs/leanck.example.toml`](docs/leanck.example.toml) for all available options.
 
-## Development
+## Claude Code and Codex plugin
 
-```sh
-cargo test --workspace --locked
-just --list
+`just package-plugin` builds release binaries and assembles a ready-to-use plugin in `leanck-plugin/` containing:
 
-# Stage copied release binaries without installing them
-just stage /absolute/staging/directory
+- The `leanck-mcp` server and `leanck` CLI
+- Skills for theorem proving (`lean-proving`), proof simplification (`lean-simplify`), and style checking (`lean-style`)
+- Subagents (`lean-expert`, `lean-grind`, `lean-style-worker`)
+- A `PostToolUse` hook for `push_neg` migration hints
 
-# Verify temporary staging against a disposable Lean template
-just verify-distribution /absolute/path/to/test-project
-```
+See [`packaging/plugin/README.md`](packaging/plugin/README.md) for setup instructions in Claude Code and Codex, and [`crates/leanck-mcp/README.md`](crates/leanck-mcp/README.md) for the MCP tool reference.
 
-`test-support/contracts/v4.json` is the authoritative protocol fixture; tests consume it directly rather than patching version 1 fixtures.
+## Repository layout
 
-Live Lean integration tests are ignored by default. See [development notes](AGENTS.md) for how to run them, and [MCP documentation](leanck-mcp/README.md) for the tool surface.
+| Path | Description |
+|---|---|
+| `crates/leanck-cli/` | The `leanck` command-line interface. |
+| `crates/leanck-mcp/` | Stdio MCP server (`leanck-mcp`) exposing live Lean queries, builds, and Loogle. |
+| `crates/leanckd/` | Per-worktree background daemon managing `lake serve` over a Unix socket. |
+| `crates/leanck-client/` | Shared workspace-bound daemon client, auto-start, transport, and output rendering. |
+| `crates/leanck-core/` | Shared workspace identity, socket/lock paths, and wire protocol types. |
+| `crates/leanck-lake/` | Bounded `lake build` runner, output parser, and Mathlib cache coordination. |
+| `crates/leanck-loogle/` | Structured Loogle client with endpoint fallback. |
+| `crates/leanck-normalize/` | Lean source and comment normalizer (`leanck normalize` / `leanck-normalize`). |
+| `crates/leanck-config/` | Shared versioned TOML configuration loader and validator. |
+| `packaging/plugin/` | Plugin manifests and MCP configs for Claude Code and Codex. |
+| `leanck-skills/`, `leanck-subagents/`, `leanck-hooks/` | Agent skills, subagent definitions, and hooks bundled into the plugin. |
 
-The distribution check covers configured binaries, sibling and PATH discovery, cold startup, overlapping CLI/MCP requests, MCP workspace switching, and explicit daemon shutdown. On macOS it signs copied executables and verifies their signatures. It never queries or changes the supplied template.
+[^0]: Relax, we use XDG_CONFIG_HOME if it's set

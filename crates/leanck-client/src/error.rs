@@ -75,6 +75,15 @@ pub enum ClientError {
     BinaryNotFound,
     #[error("leanckd did not start within the timeout")]
     StartupTimeout,
+    #[error("leanck daemon instance limit reached ({running} running, limit {limit}){}; list them with `leanck daemons`, free a slot with `leanck daemons stop --idle`, or raise instances.limit in the user configuration", if *busy { ": too few idle daemons could be evicted" } else { "" })]
+    InstanceLimit {
+        running: u64,
+        limit: u64,
+        busy: bool,
+    },
+    /// `code` is the exit status, or 128 plus the signal number.
+    #[error("leanckd exited with status {code} before serving; see {log}")]
+    DaemonExited { code: i32, log: PathBuf },
 }
 
 impl ClientError {

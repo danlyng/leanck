@@ -33,9 +33,15 @@ fn main() -> anyhow::Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(async move {
-        leanckd::run_with_settings(&worktree, settings)
-            .await
-            .map_err(anyhow::Error::from)
-    })
+    let result = runtime.block_on(leanckd::run_with_settings(&worktree, settings));
+    match result {
+        Err(error @ leanckd::Error::InstanceLimit { .. }) => {
+            tracing::error!(%error, "leanckd refused to start");
+            // Both locks were released by the `Err` return; drop the runtime
+            // before `exit`, which skips destructors.
+            drop(runtime);
+            std::process::exit(leanck_core::instances::EXIT_INSTANCE_LIMIT);
+        }
+        result => result.map_err(anyhow::Error::from),
+    }
 }

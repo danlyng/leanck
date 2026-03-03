@@ -36,25 +36,73 @@ impl ConfigArgs {
                 .then(|| std::env::var_os("LEANCK_CONFIG").map(PathBuf::from))
                 .flatten()
         });
-        let mut files = Vec::new();
+        let mut layers = Vec::new();
         if !self.no_config {
             if let Some(user) = user {
-                files.push((user, false));
+                layers.push(Layer::new(user, false));
             }
             if let Some(project) = project_config_path(start)? {
-                files.push((project, true));
+                // The same file is accepted when it is also the explicit layer.
+                let discovered = !explicit
+                    .as_deref()
+                    .is_some_and(|explicit| same_file(&project, explicit));
+                layers.push(Layer {
+                    discovered_project: discovered,
+                    ..Layer::new(project, true)
+                });
             }
             if let Some(explicit) = explicit {
-                files.push((explicit, true));
+                layers.push(Layer::new(explicit, true));
             }
         }
-        let mut loaded = load_files(&files, &[])?;
+        let mut loaded = load_layers(&layers, &[])?;
         for assignment in &self.overrides {
             loaded.apply_assignment(assignment)?;
         }
         loaded.settings.validate()?;
         Ok(loaded)
     }
+}
+
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => std::path::absolute(a).ok() == std::path::absolute(b).ok(),
+    }
+}
+
+/// One configuration file to merge.
+struct Layer {
+    path: PathBuf,
+    required: bool,
+    /// A discovered project `leanck.toml`, which must not set the machine-wide
+    /// `[instances]` table.
+    discovered_project: bool,
+}
+
+impl Layer {
+    fn new(path: PathBuf, required: bool) -> Self {
+        Self {
+            path,
+            required,
+            discovered_project: false,
+        }
+    }
+}
+
+/// Reject `[instances]` in a discovered project file's parsed `patch`.
+fn reject_project_instances(project: &Path, patch: &toml::Value) -> Result<()> {
+    if patch.get("instances").is_some() {
+        let user = user_config_path().map_or_else(
+            || "~/.config/leanck/config.toml".to_owned(),
+            |path| path.display().to_string(),
+        );
+        bail!(
+            "[instances] is machine-wide and cannot be set in project configuration {}; set it in the user configuration {user} (or with --config/LEANCK_CONFIG/--set)",
+            project.display()
+        );
+    }
+    Ok(())
 }
 
 pub fn user_config_path() -> Option<PathBuf> {
@@ -97,11 +145,20 @@ pub fn project_config_path(start: &Path) -> Result<Option<PathBuf>> {
 /// Deterministic loader for embedded clients and tests. Optional files may be
 /// missing; every other I/O error, unknown key, and invalid value is fatal.
 pub fn load_files(files: &[(PathBuf, bool)], overrides: &[String]) -> Result<LoadedConfig> {
+    let layers: Vec<Layer> = files
+        .iter()
+        .map(|(path, required)| Layer::new(path.clone(), *required))
+        .collect();
+    load_layers(&layers, overrides)
+}
+
+fn load_layers(layers: &[Layer], overrides: &[String]) -> Result<LoadedConfig> {
     let mut value = toml::Value::try_from(Settings::default())?;
     let mut sources = BTreeMap::new();
     record_sources(&value, "", "defaults", &mut sources);
     let mut loaded_files = Vec::new();
-    for (path, required) in files {
+    for layer in layers {
+        let (path, required) = (&layer.path, layer.required);
         let text = match std::fs::read_to_string(path) {
             Ok(text) => text,
             Err(e) if !required && e.kind() == std::io::ErrorKind::NotFound => continue,
@@ -112,6 +169,9 @@ pub fn load_files(files: &[(PathBuf, bool)], overrides: &[String]) -> Result<Loa
         };
         let mut patch: toml::Value =
             toml::from_str(&text).with_context(|| format!("invalid TOML in {}", path.display()))?;
+        if layer.discovered_project {
+            reject_project_instances(path, &patch)?;
+        }
         // Validate each layer's shape before merging so an override cannot hide typos.
         let _: Settings = patch
             .clone()
@@ -297,6 +357,12 @@ impl Command {
             let defaults = Settings::default();
             let text = toml::to_string_pretty(&defaults)?;
             if let Action::Init { path } = &self.action {
+                // Project files may not set the machine-wide [instances] table.
+                let text = if path.file_name() == Some(std::ffi::OsStr::new("leanck.toml")) {
+                    without_table(&text, "instances")
+                } else {
+                    text
+                };
                 use std::io::Write;
                 let mut file = std::fs::OpenOptions::new()
                     .write(true)
@@ -369,13 +435,33 @@ impl Command {
     }
 }
 
+/// Remove one leaf `[name]` table (header through the line before the next header)
+/// from pretty-printed TOML, preserving the order of everything else.
+fn without_table(text: &str, name: &str) -> String {
+    let header = format!("[{name}]");
+    let mut skipping = false;
+    let mut out = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            skipping = trimmed == header;
+        }
+        if !skipping {
+            out.push_str(line);
+        }
+    }
+    out
+}
+
 impl Settings {
     /// Pass only daemon-owned settings to a detached child, frozen at launch.
+    /// `[instances]` is included because auto-spawned daemons run with `--no-config`.
     pub fn daemon_assignments(&self) -> Vec<String> {
         let mut assignments = Vec::new();
         for (section, value) in [
             ("daemon", toml::Value::try_from(&self.daemon).unwrap()),
             ("cache", toml::Value::try_from(&self.cache).unwrap()),
+            ("instances", toml::Value::try_from(&self.instances).unwrap()),
         ] {
             for (key, value) in value.as_table().unwrap() {
                 assignments.push(format!("{section}.{key}={value}"));

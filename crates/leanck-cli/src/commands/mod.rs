@@ -1,4 +1,5 @@
 pub(crate) mod build;
+pub(crate) mod daemons;
 pub(crate) mod diagnostics;
 pub(crate) mod doctor;
 pub(crate) mod goal;

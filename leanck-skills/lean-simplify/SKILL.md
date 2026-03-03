@@ -1,7 +1,7 @@
 ---
 name: "lean-simplify"
 description: "Aggressively simplify and restructure a Lean 4 proof without changing its statement or used hypotheses. Use when the user asks to shorten, clean up, refactor, or de-duplicate an existing proof. Not for original proof writing — use lean-proving for that."
-allowed-tools: mcp__leanck__* mcp__plugin_leanck_leanck__*
+allowed-tools: Bash(leanck*)
 ---
 
 # Lean Simplify
@@ -18,7 +18,7 @@ The work product is a smaller, flatter, more idiomatic proof body. The input/out
 
 Before starting, confirm the workspace is operational:
 
-* `leanck:health` returns `{ok: true}`. If not, the Lean server daemon couldn't start — it auto-starts on first use, so this usually means the project doesn't build. Stop and confirm the project is a valid Lake project (`lake build` succeeds).
+* `leanck health` reports no errors. If the `leanck` CLI is unavailable, stop and inform the user. If health reports a problem, the project usually doesn't build. Stop and confirm the project is a valid Lake project (`lake build` succeeds).
 * The target file builds **clean** (no errors). Run `leanck diagnostics <file> --severity error` (errors are also the default). If there are errors, refuse — this is the wrong skill. The user wants `lean-proving` to *fix* the proof first.
 * Capture the pre-existing warning count so post-edit drift can be distinguished from new issues. Either `lake env lean <file> 2>&1 | grep -c
   warning` or `git stash && lake env lean <file> 2>&1 | grep -c warning && git
@@ -195,7 +195,7 @@ shorter, sharper catalogue beats a long one with weak entries.
   the simplification the user asked for.
 - **Don't rename hypotheses or `have`s for "consistency."** Out of scope.
   Renaming is a separate request.
-- **Don't run `lake build` after every edit.** Use `leanck:diagnostics`
+- **Don't run `lake build` after every edit.** Use `leanck diagnostics`
   scoped to the declaration for fast feedback; reserve `lake build` for the
   end of the pass.
 - **Don't trust a single per-module build.** Helper-extraction edits can

@@ -390,3 +390,30 @@ fn legacy_setting_environment_variables_do_not_change_settings_or_sources() {
             .ends_with("/configured-daemon")
     );
 }
+
+#[test]
+fn project_configuration_cannot_set_machine_wide_instances() {
+    let dir = Scratch::new();
+    fs::write(
+        dir.0.join("project/leanck.toml"),
+        "[instances]\nlimit = 2\n",
+    )
+    .unwrap();
+    let output = dir.run(&["config", "check"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("[instances]"), "{stderr}");
+    assert!(
+        stderr.contains(&dir.0.join("user/leanck/config.toml").display().to_string()),
+        "{stderr}"
+    );
+    fs::write(
+        dir.0.join("user/leanck/config.toml"),
+        "[instances]\nlimit = 2\n",
+    )
+    .unwrap();
+    fs::write(dir.0.join("project/leanck.toml"), "").unwrap();
+    let report = json(&dir.run(&["config", "show", "--json"]));
+    assert_eq!(report["settings"]["instances"]["limit"], 2);
+    assert_eq!(report["settings"]["instances"]["on_limit"], "evict_idle");
+}

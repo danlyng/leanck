@@ -74,7 +74,8 @@ fn operations_bind_their_parameters_in_both_directions() {
     for command in [
         Command::Health,
         Command::Status,
-        Command::Shutdown,
+        Command::Shutdown(ShutdownParams::default()),
+        Command::Shutdown(ShutdownParams { if_idle: true }),
         Command::Diagnostics(DiagnosticsParams {
             file: "Basic.lean".into(),
             ..Default::default()
@@ -132,6 +133,41 @@ fn operations_bind_their_parameters_in_both_directions() {
             .is_err()
         );
     }
+}
+
+#[test]
+fn shutdown_parameters_default_to_unconditional_and_stay_compatible() {
+    let request = |params: Value| Request {
+        id: "x".into(),
+        op: "shutdown".into(),
+        timeout_ms: None,
+        params,
+    };
+    // Old clients send `{}` (or nothing); both mean an unconditional shutdown.
+    for params in [json!({}), Value::Null] {
+        let Command::Shutdown(parsed) = request(params).command().unwrap() else {
+            panic!("expected shutdown");
+        };
+        assert_eq!(parsed, ShutdownParams::default());
+    }
+    let Command::Shutdown(parsed) = request(json!({"if_idle": true})).command().unwrap() else {
+        panic!("expected shutdown");
+    };
+    assert!(parsed.if_idle);
+    assert!(
+        request(json!({"if_idle": true, "force": true}))
+            .command()
+            .is_err()
+    );
+    // The default still serializes as `{}`, so old daemons see no change.
+    let unconditional = Command::Shutdown(ShutdownParams::default())
+        .into_request("x".into(), None)
+        .unwrap();
+    assert_eq!(unconditional.params, json!({}));
+    let conditional = Command::Shutdown(ShutdownParams { if_idle: true })
+        .into_request("x".into(), None)
+        .unwrap();
+    assert_eq!(conditional.params, json!({"if_idle": true}));
 }
 
 #[test]

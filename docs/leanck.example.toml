@@ -1,5 +1,6 @@
 #! Complete configuration example. Active values below match built-in defaults.
-#! Copy to leanck.toml in a project, or ~/.config/leanck/config.toml for user defaults.
+#! Copy to leanck.toml in a project (omit [instances]), or ~/.config/leanck/config.toml
+#! for user defaults.
 #! Precedence: defaults < user file < nearest project file < --config/LEANCK_CONFIG
 #! < --set < explicit command flags/MCP parameters.
 #! Relative file paths resolve from the configuration file; no ~ or $VAR expansion.
@@ -207,6 +208,12 @@ sorry_timeout_ms = 5000 # File-sorry elaboration gate before falling back to a t
 enabled = true
 timeout_ms = 1200000 # 20-minute fetch budget, including execution-lock waiting.
 max_output_bytes = 8388608 # 8 MiB capture limit per stream.
+
+[instances]
+#! Machine-wide daemon cap. User configuration, --config/LEANCK_CONFIG, or --set only;
+#! a project leanck.toml that sets [instances] is rejected.
+limit = 8 # Maximum running leanckd daemons on this machine; 0 disables the cap (at most 4096).
+on_limit = "evict_idle" # At the cap: "evict_idle" stops the longest-idle daemon, "refuse", or "warn".
 
 [diagnostics]
 limit = 5 # Diagnostics to show per page

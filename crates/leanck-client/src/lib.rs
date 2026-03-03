@@ -5,6 +5,7 @@
 //! uncertain are never automatically replayed, including read-only operations.
 mod discovery;
 mod error;
+pub mod instances;
 pub mod render;
 mod startup;
 mod transport;
@@ -127,7 +128,8 @@ impl Client {
 
     /// Explicit cleanup never starts a daemon merely to stop it.
     pub async fn shutdown_existing(&self, options: RequestOptions) -> Result<ShutdownResult> {
-        self.execute(Command::Shutdown, options, false).await
+        self.execute(Command::Shutdown(ShutdownParams::default()), options, false)
+            .await
     }
 
     async fn execute<T: DeserializeOwned>(
@@ -152,7 +154,7 @@ impl Client {
         let mut options = options;
         let control = matches!(
             &command,
-            Command::Health | Command::Status | Command::Shutdown | Command::Cancel(_)
+            Command::Health | Command::Status | Command::Shutdown(_) | Command::Cancel(_)
         );
         if !control {
             for warning in self.request_warnings(&options) {

@@ -78,7 +78,7 @@ pub enum Command {
     References(ReferencesParams),
     RestartFile(RestartFileParams),
     Cancel(CancelParams),
-    Shutdown,
+    Shutdown(ShutdownParams),
 }
 
 impl Command {
@@ -93,7 +93,7 @@ impl Command {
             Self::References(_) => Operation::References,
             Self::RestartFile(_) => Operation::RestartFile,
             Self::Cancel(_) => Operation::Cancel,
-            Self::Shutdown => Operation::Shutdown,
+            Self::Shutdown(_) => Operation::Shutdown,
         }
     }
 
@@ -104,7 +104,8 @@ impl Command {
     ) -> Result<Request, serde_json::Error> {
         let operation = self.operation();
         let params = match self {
-            Self::Health | Self::Status | Self::Shutdown => json!({}),
+            Self::Health | Self::Status => json!({}),
+            Self::Shutdown(params) => serde_json::to_value(params)?,
             Self::Diagnostics(params) => serde_json::to_value(params)?,
             Self::Goal(params) => serde_json::to_value(params)?,
             Self::Sorry(params) => serde_json::to_value(params)?,
@@ -130,7 +131,11 @@ impl Request {
         self.op.parse::<Operation>().and_then(|op| match op {
             Operation::Health => Ok(Command::Health),
             Operation::Status => Ok(Command::Status),
-            Operation::Shutdown => Ok(Command::Shutdown),
+            // Absent parameters mean an unconditional shutdown.
+            Operation::Shutdown if self.params.is_null() => {
+                Ok(Command::Shutdown(ShutdownParams::default()))
+            }
+            Operation::Shutdown => parse(&self.params).map(Command::Shutdown),
             Operation::Diagnostics => parse(&self.params).map(Command::Diagnostics),
             Operation::Goal => parse(&self.params).map(Command::Goal),
             Operation::Sorry => parse(&self.params).map(Command::Sorry),

@@ -235,6 +235,19 @@ pub struct HealthResult {
     pub lifecycle: LifecycleHealth,
 }
 
+/// Parameters for `shutdown`. The default (`{}` on the wire) is unconditional,
+/// which is also what daemons that predate the field do with any parameters.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ShutdownParams {
+    /// Shut down only when no request is queued or running. The check and the
+    /// closing of admission are atomic, so admitted work is never cancelled; a
+    /// busy daemon answers `shutting_down: false` and keeps running.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub if_idle: bool,
+}
+
+/// `shutting_down` is false only when a conditional shutdown found the daemon busy.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ShutdownResult {
     pub shutting_down: bool,

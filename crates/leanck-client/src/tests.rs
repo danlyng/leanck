@@ -10,7 +10,7 @@ use std::time::Duration;
 #[path = "../../../test-support/fake_daemon.rs"]
 mod fake_daemon;
 pub(crate) use fake_daemon::Scratch;
-use fake_daemon::{request, respond};
+pub(crate) use fake_daemon::{request, respond};
 
 impl Scratch {
     pub(crate) fn client(&self) -> Client {
@@ -486,6 +486,8 @@ async fn assert_incompatible_protocol_is_not_dispatched(version: u64) {
     let peer = tokio::spawn(async move {
         let (mut stream, req) = request(&listener).await;
         assert_eq!(req.op, op::SHUTDOWN);
+        // Explicit cleanup is unconditional and keeps the `{}` wire form.
+        assert_eq!(req.params, json!({}));
         respond(
             &mut stream,
             Response::ok(req.id, json!({"shutting_down":true})),

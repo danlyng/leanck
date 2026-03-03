@@ -13,6 +13,7 @@ pub struct Settings {
     pub client: Client,
     pub daemon: Daemon,
     pub cache: Cache,
+    pub instances: Instances,
     pub diagnostics: Diagnostics,
     pub output: Output,
 }
@@ -26,6 +27,7 @@ impl Default for Settings {
             client: Client::default(),
             daemon: Daemon::default(),
             cache: Cache::default(),
+            instances: Instances::default(),
             diagnostics: Diagnostics::default(),
             output: Output::default(),
         }
@@ -184,6 +186,48 @@ impl Default for Cache {
         }
     }
 }
+/// Machine-wide daemon cap. Read from user-level configuration only; project
+/// `leanck.toml` files are rejected if they set it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Instances {
+    /// Maximum concurrently running daemons on this machine; 0 disables the cap.
+    pub limit: u64,
+    pub on_limit: OnLimit,
+}
+impl Instances {
+    /// The largest accepted `limit`; `leanckd` asserts it equals the slot scan
+    /// ceiling `leanck_core::instances::MAX_SLOTS`.
+    pub const MAX_LIMIT: u64 = 4096;
+}
+impl Default for Instances {
+    fn default() -> Self {
+        Self {
+            limit: 8,
+            on_limit: OnLimit::EvictIdle,
+        }
+    }
+}
+/// What starting a daemon does when `instances.limit` daemons are already running.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OnLimit {
+    /// Start anyway and print a warning.
+    Warn,
+    /// Refuse to start another daemon.
+    Refuse,
+    /// Stop the longest-idle daemon, then start.
+    EvictIdle,
+}
+impl OnLimit {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Warn => "warn",
+            Self::Refuse => "refuse",
+            Self::EvictIdle => "evict_idle",
+        }
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Diagnostics {
@@ -265,6 +309,11 @@ impl Settings {
                 validate_duration(key, ms)?;
             }
         }
+        ensure!(
+            self.instances.limit <= Instances::MAX_LIMIT,
+            "instances.limit must be at most {} (0 disables the limit)",
+            Instances::MAX_LIMIT
+        );
         if self.daemon.idle_timeout_ms != 0 {
             validate_duration("daemon.idle_timeout_ms", self.daemon.idle_timeout_ms)?;
         }

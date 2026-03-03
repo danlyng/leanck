@@ -123,8 +123,20 @@ impl Workspace {
     pub fn idle_for(&self) -> Duration {
         self.activity.idle_for()
     }
-    pub(crate) fn begin_request(&self) -> crate::activity::Lease {
+    /// Admit one query, or `None` once admission is closed for shutdown.
+    pub(crate) fn begin_request(&self) -> Option<crate::activity::Lease> {
         self.activity.begin()
+    }
+    /// Close admission unconditionally; admitted work keeps its lease.
+    pub fn close(&self) {
+        self.activity.close();
+    }
+    /// Atomically close admission only when no query is queued or running.
+    pub fn close_if_idle(&self) -> bool {
+        self.activity.close_if_idle()
+    }
+    pub fn admission_closed(&self) -> bool {
+        self.activity.is_closed()
     }
     pub fn active_requests(&self) -> u64 {
         self.activity.active()

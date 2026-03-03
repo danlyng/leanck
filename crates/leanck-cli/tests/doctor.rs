@@ -29,6 +29,9 @@ fn doctor_accepts_all_lake_markers_without_registry_or_daemon() {
         assert_eq!(body["ok"], true);
         assert_eq!(body["issues"], serde_json::json!([]));
         assert!(body.get("registry").is_none());
+        assert_eq!(body["instances"]["running"], 0);
+        assert!(body["instances"]["limit"].is_u64());
+        assert!(body["instances"]["on_limit"].is_string());
         assert!(
             body["socket_path"]
                 .as_str()

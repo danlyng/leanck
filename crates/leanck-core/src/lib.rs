@@ -3,6 +3,7 @@
 pub mod api;
 pub mod document;
 pub mod error;
+pub mod instances;
 pub mod paths;
 pub mod workspace;
 

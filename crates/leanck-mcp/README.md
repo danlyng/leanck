@@ -11,7 +11,7 @@ An MCP server over stdio for standalone Lean 4 tooling.
 | `restart_file` | Restart a file's elaborator worker. |
 | `build` | Run the project's `lake build`; optional targets, warnings/strict policy, JSON, timeout_ms, and max_output_bytes. |
 | `loogle` | Search declarations by constant, substring, expression, or conclusion. |
-| `health` | Check daemon reachability; compact text or `{ok, lsp, issues}` JSON. |
+| `health` | Check daemon reachability; compact text or `{ok, lsp, issues, instances}` JSON, where `instances` is `{running, limit, on_limit}` for daemons machine-wide. |
 | `set_workspace` | Switch subsequent calls to another Lake project. |
 
 Live queries go over a Unix socket to `leanckd`, which keeps one warm `lake serve` per worktree. Builds run the project's own Lake toolchain. Loogle uses HTTP, trying the local endpoint and then the main endpoint. Configure `loogle.endpoints` to select custom endpoints.
@@ -92,6 +92,8 @@ The workspace defaults to the nearest ancestor of the current directory with `la
 ## Daemon discovery
 
 The CLI and MCP server derive the same socket path for a worktree (see `leanck-core/src/paths.rs`). On first use, MCP connects or starts `leanckd`, using `client.daemon_bin` when configured, then sibling/PATH discovery otherwise. The daemon exits after an hour idle. MCP `health` also starts the daemon when necessary; CLI `doctor` only probes an existing daemon.
+
+Starting a daemon respects the machine-wide `instances.limit` (see [configuration](../../docs/CONFIGURATION.md#instance-limit)). Startup failures carry structured MCP error data: `{"kind":"instance_limit","running","limit"}` when the limit is reached and no idle daemon could be stopped, and `{"kind":"daemon_exited","code","log"}` when `leanckd` exits before serving, with the path of its log. `set_workspace` leaves the previous daemon running; under `evict_idle` it becomes an eviction candidate once idle, and it is stopped only if it is still idle when asked, so work it has accepted is never cancelled.
 
 Builds remain independent of the daemon and share a workspace lock with leanck cache fetching. The default budget is 30 minutes including queueing; capture defaults to 8 MiB per stream. MCP cancellation stops and reaps Lake. JSON build reports include execution provenance; strict mode rejects dependency and configuration warnings even when Lake exits zero. See [stage 8](../docs/refactor/STAGE_8.md).
 

@@ -4,7 +4,7 @@
 
 ## Getting started
 
-Create a project configuration with `leanck config init`, which writes `leanck.toml` in the current directory. You can specify another destination: `leanck config init /path/to/config.toml`. The generated file contains defaults; remove settings you want to inherit from your user configuration.
+Create a project configuration with `leanck config init`, which writes `leanck.toml` in the current directory. You can specify another destination: `leanck config init /path/to/config.toml`. The generated file contains defaults; remove settings you want to inherit from your user configuration. When the destination is named `leanck.toml`, `init` omits the machine-wide `[instances]` table, which project files cannot set.
 
 A small project configuration might contain:
 
@@ -52,6 +52,8 @@ Settings are resolved in this order:
 4. The file specified in `LEANCK_CONFIG`.
 5. The file specified in `--config FILE`.
 6. Repeatable `--set KEY=VALUE` overrides, in command-line order.
+
+The machine-wide `[instances]` table is never read from a discovered `leanck.toml`; a project file that sets it is rejected with an error naming the user configuration path. It may come from any other layer, including a `leanck.toml` passed explicitly with `--config` or `LEANCK_CONFIG`.
 
 Tables merge by field. Arrays replace earlier arrays, including empty arrays. Unknown keys, unsupported schema versions, malformed TOML, invalid types, invalid URLs/globs, and invalid resource limits are errors.
 
@@ -297,9 +299,26 @@ Builds use the project's Lake toolchain and the existing shared execution lock. 
 | `cache.enabled` | `true` | Attempt Mathlib cache fetching before Lean startup. |
 | `cache.timeout_ms` | `1200000` | Cache-fetch budget, including execution-lock waiting. |
 | `cache.max_output_bytes` | `8388608` | Positive per-stream cache output capture limit. |
+| `instances.limit` | `8` | Maximum running `leanckd` daemons on this machine, at most 4096; `0` disables the limit. |
+| `instances.on_limit` | `"evict_idle"` | At the limit: `"evict_idle"` stops the longest-idle daemon and then starts, `"refuse"` fails, `"warn"` starts anyway with a warning. |
 
 Durations must be between 1 millisecond and one year (31,536,000,000 ms), except `daemon.idle_timeout_ms`, which also accepts `0`. `daemon.max_documents` and `daemon.max_source_bytes` are soft limits: when the daemon exceeds either threshold, it closes and evicts least-recently-used idle documents, but it never evicts documents with active or queued queries.
 
 Set `client.daemon_bin` to select an explicit executable; otherwise discovery checks a sibling executable and then PATH. Set `cache.enabled=false` to skip cache fetching. Directly launched `leanckd WORKSPACE` loads settings for that workspace. Auto-start passes resolved daemon/cache settings to the child with configuration-file discovery disabled, preventing it from resolving a different configuration from the parent's working directory.
 
 Daemon settings apply at startup. An existing daemon keeps its settings until shut down.
+
+### Instance limit
+
+`[instances]` is machine-wide: every daemon started by any worktree counts against one limit. Each daemon holds an exclusive lock on a numbered slot file, `$XDG_CACHE_HOME/leanck/leanck-slot-N.lock` (falling back to `$HOME/.cache`), for its whole life. The file records its pid, canonical worktree, socket, and start time; the lock is released when the process exits, including on a crash, so stale files are harmless. A daemon refused by the limit exits with status 75. Daemons do not stop each other: under `evict_idle`, the client that is starting a daemon stops the longest-idle ready daemons with no active requests, as many as one more daemon needs, and retries. Clients starting the same worktree at once take turns, so only one of them makes room. It asks that daemon to stop only if it is still idle, and the daemon decides atomically with accepting work, so a daemon that has accepted a request since the listing keeps running and the client tries the next candidate. Listing or probing a daemon does not reset its idle time. When every daemon is busy, or under `refuse`, the client reports an instance-limit error. Set the limit in the user configuration, an explicit `--config`/`LEANCK_CONFIG` file, or `--set`; auto-start forwards it to the daemon. Daemons started before this feature, or from a fallback temporary runtime directory (including when neither `XDG_CACHE_HOME` nor a home directory is available), hold no slot and are not counted.
+
+Inspect and free slots with `leanck daemons`:
+
+```sh
+leanck daemons # List running daemons with uptime, idle time, state, and active requests
+leanck daemons stop --idle # Stop every ready daemon with no active requests; one that accepts work first keeps running
+leanck daemons stop --all # Stop every daemon that is serving its socket
+leanck daemons stop /path/to/worktree --wait 30
+```
+
+`stop` asks each daemon to shut down and waits (15 seconds by default) for it to exit, so its slot is free when the command returns. Both subcommands accept `--json`. `leanck doctor` reports the count against the limit and warns when it is reached. Upgrade the client and daemon together: an older `leanckd` rejects the forwarded `instances.*` settings and exits at startup.

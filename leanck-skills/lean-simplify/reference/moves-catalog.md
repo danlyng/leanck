@@ -391,7 +391,7 @@ exact congrArg R.stage.Action (R.stageJointNode.iPosition_player i hm)
 
 The largest wins come when a long proof is *entirely* defeq narration: every `change` is just unfolding-by-hand for the reader, and the closing `exact`/`simpa` would have unified anyway. `jointBehavior_HEq_atHistory` dropped from 40 lines to 2 (`simplexTransport_heq _ _` twice) this way. `change … at h` followed by `exact`/`HEq.trans`/`eq_of_heq h` is the hypothesis-side analogue and removes identically.
 
-**Detection signal.** A line `change <expr>` or `change <expr> at h` (grep `^\s*change `) immediately followed by `rw`/`exact`/`apply`/`rfl`/ `simp`/`congr`/`simpa` or term mode. The mechanical test is uniform and fully reversible: **delete the line, re-run `leanck:diagnostics` on the declaration; if it stays green the `change` was dead.** Because it's a pure deletion with an immediate local check, sweep every `change` in the file this way — keep only the ones whose deletion breaks elaboration.
+**Detection signal.** A line `change <expr>` or `change <expr> at h` (grep `^\s*change `) immediately followed by `rw`/`exact`/`apply`/`rfl`/ `simp`/`congr`/`simpa` or term mode. The mechanical test is uniform and fully reversible: **delete the line, re-run `leanck diagnostics <file> --ident <declaration>`; if it stays green the `change` was dead.** Because it's a pure deletion with an immediate local check, sweep every `change` in the file this way — keep only the ones whose deletion breaks elaboration.
 
 **Caveat — when `change` is load-bearing (keep it).** Deleting it will fail the diagnostics check in exactly these cases, so the test catches them, but recognize them up front to save round-trips:
 

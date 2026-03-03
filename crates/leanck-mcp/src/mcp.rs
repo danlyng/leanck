@@ -484,7 +484,7 @@ impl LeanckServer {
     }
 
     #[tool(
-        description = "Report Lean server (leanckd) reachability and status. Returns compact text; pass `json: true` for the full payload.",
+        description = "Report Lean server (leanckd) reachability and status. Returns compact text; pass `json: true` for the full payload, which includes `instances`: the machine-wide count of running daemons against `instances.limit`.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,
@@ -506,7 +506,8 @@ impl LeanckServer {
                 })
                 .await,
             &client.socket(),
-        );
+        )
+        .with_instances(leanck_client::instances::summary(client.settings()));
         if p.json.unwrap_or(client.settings().output.json) {
             Content::json(report)
         } else {
@@ -630,6 +631,14 @@ fn to_mcp_error(error: ClientError) -> ErrorData {
                 "phase": match phase { TransportPhase::Connect => "connect", TransportPhase::Write => "write", TransportPhase::Read => "read" },
                 "delivery_uncertain": phase != TransportPhase::Connect,
             })),
+        ),
+        ClientError::InstanceLimit { running, limit, .. } => ErrorData::internal_error(
+            message,
+            Some(serde_json::json!({"kind": "instance_limit", "running": running, "limit": limit})),
+        ),
+        ClientError::DaemonExited { code, log } => ErrorData::internal_error(
+            message,
+            Some(serde_json::json!({"kind": "daemon_exited", "code": code, "log": log})),
         ),
         _ => ErrorData::internal_error(message, None),
     }

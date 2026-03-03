@@ -49,6 +49,16 @@ pub enum Error {
     #[error("bad request: {0}")]
     BadRequest(String),
 
+    /// Starting would exceed the machine-wide `instances.limit` under `refuse`
+    /// or `evict_idle`. The daemon never evicts; the binary exits with
+    /// [`leanck_core::instances::EXIT_INSTANCE_LIMIT`].
+    #[error("instance limit reached: {running} leanck daemons running, limit {limit}")]
+    InstanceLimit { running: u64, limit: u64 },
+
+    /// Admission is closed because the daemon is shutting down.
+    #[error("leanckd is shutting down")]
+    ShuttingDown,
+
     /// Failed to spawn `lake serve`.
     #[error("failed to spawn lake serve: {0}")]
     Spawn(String),

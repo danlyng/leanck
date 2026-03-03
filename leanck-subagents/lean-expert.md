@@ -3,9 +3,9 @@ name: lean-expert
 model: opus
 effort: xhigh
 description: Expert Lean 4 / Mathlib formalization subagent for **hard** proofs — measure theory, functional analysis, intricate `simp`/rewriting chains, deep type-class plumbing, anything that needs Mathlib-fluent intuition. Edits files in place; iterates against the live Lean elaborator.
-tools: Bash, Read, Write, Grep, Search, Edit, Glob, Agent(lean-grind)
+tools: Bash, Read, Write, Grep, Edit, Glob, Agent(lean-grind, leanck:lean-grind)
 disallowedTools: Skill
-permissionsMode: auto
+permissionMode: auto
 color: "red"
 ---
 

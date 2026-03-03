@@ -48,6 +48,28 @@ fn daemon_categories_map_deliberately_to_mcp_errors() {
         error.data,
         Some(serde_json::json!({"kind":"protocol_error","delivery_uncertain":true}))
     );
+    let error = to_mcp_error(ClientError::InstanceLimit {
+        running: 8,
+        limit: 8,
+        busy: true,
+    });
+    assert_eq!(error.code, ErrorCode::INTERNAL_ERROR);
+    assert!(error.message.contains("leanck daemons stop --idle"));
+    assert_eq!(
+        error.data,
+        Some(serde_json::json!({"kind":"instance_limit","running":8,"limit":8}))
+    );
+    let error = to_mcp_error(ClientError::DaemonExited {
+        code: 1,
+        log: "/cache/leanck/leanck-abc.log".into(),
+    });
+    assert_eq!(error.code, ErrorCode::INTERNAL_ERROR);
+    assert_eq!(
+        error.data,
+        Some(
+            serde_json::json!({"kind":"daemon_exited","code":1,"log":"/cache/leanck/leanck-abc.log"})
+        )
+    );
 }
 
 #[tokio::test]
@@ -240,6 +262,13 @@ async fn malformed_health_is_reported_as_unhealthy() {
     assert!(!report.ok);
     assert_eq!(report.issues.len(), 1);
     assert!(report.issues[0].message.contains("invalid health result"));
+    let instances = report
+        .instances
+        .expect("health attaches the instance summary");
+    assert_eq!(
+        (instances.limit, instances.on_limit),
+        (8, leanck_config::OnLimit::EvictIdle)
+    );
     daemon.await.unwrap();
 }
 
