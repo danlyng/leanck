@@ -1,6 +1,6 @@
 [package]
 name = "leanck-cli"
-version = "0.27.0"
+version = "0.31.0"
 edition.workspace = true
 
 [[bin]]
@@ -24,6 +24,7 @@ leanck-lake.workspace = true
 leanck-config = { workspace = true, default-features = true }
 leanck-mcp = { version = "0.21.0", path = "../leanck-mcp" }
 leanckd = { version = "0.16.0", path = "../leanckd" }
+clap_complete = "4.5.59"
 
 [dev-dependencies]
 libc.workspace = true

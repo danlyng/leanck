@@ -13,6 +13,10 @@ build: build-plugin-bin install-cli
 test:
     cargo test --workspace --locked
 
+# Verify release packaging and curl-style installs without network or user config changes (Python 3.11+).
+test-installer python="python3":
+    {{python}} -m unittest discover -s test-support -p test_installer.py -v
+
 # Compile and stage the CLI, MCP server, and daemon as one executable.
 build-plugin-bin:
     cargo build --release -p leanck-cli --locked

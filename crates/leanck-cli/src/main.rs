@@ -3,6 +3,7 @@
 mod args;
 mod cli;
 mod commands;
+mod completions;
 mod configuration;
 mod serve;
 mod telemetry;
@@ -67,6 +68,9 @@ fn main() {
 fn run(json: &mut bool) -> anyhow::Result<()> {
     let matches = Cli::command().get_matches();
     let mut cli = Cli::from_arg_matches(&matches)?;
+    if let Cmd::Completions(args) = cli.command {
+        return completions::run(args);
+    }
     if let Cmd::Serve(args) = cli.command {
         return serve::run(args, cli.config);
     }
@@ -111,7 +115,7 @@ fn run(json: &mut bool) -> anyhow::Result<()> {
         Cmd::Normalize(args) => {
             leanck_normalize::command::run_with_settings(args, &loaded.settings.normalize)
         }
-        Cmd::Config(_) | Cmd::Serve(_) => unreachable!(),
+        Cmd::Config(_) | Cmd::Serve(_) | Cmd::Completions(_) => unreachable!(),
 
         // Loogle search.
         Cmd::Loogle(args) => block_on(commands::loogle::run(args)),

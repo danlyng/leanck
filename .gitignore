@@ -10,6 +10,12 @@ out/
 *.tsbuildinfo
 *.vsix
 
+# Python packaging/test scripts
+__pycache__/
+
+# Generated release archives
+/dist/
+
 # Lake (Lean) build artifacts
 .lake/
 build/

@@ -35,7 +35,10 @@ pub(crate) struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum Cmd {
+    #[command(name = "_completions", hide = true)]
+    Completions(crate::completions::Args),
     /// Run the MCP server or a workspace daemon.
+    #[command(hide = true)]
     Serve(crate::serve::Args),
     /// Inspect, validate, or initialize leanck configuration.
     Config(leanck_config::Command),

@@ -15,11 +15,72 @@ It exposes the same capabilities through a command-line interface (`leanck`) and
 
 ## Quickstart
 
-Install prebuilt `leanck` *(install script coming soon)*:
+Install prebuilt `leanck` (macOS or Linux, Apple Silicon/ARM64 or x86-64):
 
 ```bash
 curl -fsSL https://lean4.party/leanck-install.sh | sh
 ```
+
+The installer welcomes you with the release version and detected coding agents, then offers **Plugin (recommended)** and **Standalone**, with Plugin selected by default. Use the arrow keys and Enter to select. Plugin mode installs the Claude Code and Codex plugin forms under `~/.local/share/leanck`, including skills, agents, hooks, and MCP, and registers the plugin with detected hosts. The executable goes in `~/.local/share/leanck/bin/leanck`; Codex's MCP configuration pins its full path. Codex custom agents live in `~/.local/share/leanck/agents/` and are linked into `~/.codex/agents/leanck/` (or `$CODEX_HOME/agents/leanck/` when `CODEX_HOME` is set). Plugin mode skips the standalone component prompts.
+
+The final prompt is “Installing `leanck` as a plugin. Continue?” with **Cancel**, **Continue**, and **Edit advanced config...**; Cancel is selected by default. The advanced option opens an inline form for plugin and executable directories, skill and agent locations, shell completions, adding `leanck` to PATH, and plugin registration. Plugin skills and Claude agents are marked `[bundled with plugin]`; Codex agents show their installation directory. Add additional skill, Claude agent, or Codex agent locations in the form; clear a location to remove it from the draft. Shell and shell profile fields appear only when **Add leanck to PATH** is enabled. Installer state and command timeout remain configurable through flags. Up and Down select a field. Enter cycles settings with fixed choices, including yes/no switches, hosts, completion shells, and the PATH shell; Left and Right cycle backward and forward. Enter on a path starts text editing. During a text edit, Enter saves the field to the form’s draft and Escape discards that edit. The cursor appears only while editing. Save changes applies the draft and returns to confirmation. Cancel discards the draft; if any settings differ from their original values, it first asks whether to Keep editing or Discard changes, with Keep editing selected by default. Destination checks and the installation plan are refreshed after changes. The installer verifies the release archive's SHA-256 checksum before approval; installation and host registration happen afterward. It requires neither Rust nor `sudo`; interactive prompts use Bash. Live queries still need your project's Lean toolchain and Lake, usually installed through elan.
+
+Terminal output is colorized by default: prompts are bold cyan, selected menu options are bold green, and typed input uses the terminal’s default color. `--no-color`, nonempty `NO_COLOR`, and `TERM=dumb` disable color; redirected streams use plain text. Prompts read from the controlling terminal so the piped quickstart remains interactive. Without a terminal, pass `--yes` to approve the selected settings or `--dry-run` to preview them. `--force` permits backing up and replacing conflicts and does not imply approval. Use `--json` for a structured result or error (`--json --yes` to install), `--quiet` to suppress routine output, and `-v`/`-vv` for detail.
+
+Choose additional components with flags passed after `sh -s --`:
+
+```sh
+# Standalone CLI plus skills for both hosts
+curl -fsSL https://lean4.party/leanck-install.sh | sh -s -- --standalone --skills both
+
+# CLI plus the full Claude Code plugin (skills, agents, MCP, hooks)
+curl -fsSL https://lean4.party/leanck-install.sh | sh -s -- --plugin claude
+
+# CLI plus the Codex plugin and custom agents
+curl -fsSL https://lean4.party/leanck-install.sh | sh -s -- --plugin codex
+
+# CLI, both plugins, and Codex custom agents
+curl -fsSL https://lean4.party/leanck-install.sh | sh -s -- --all
+
+# Validate the release and preview a full installation
+curl -fsSL https://lean4.party/leanck-install.sh | sh -s -- --all --dry-run
+
+# Noninteractive installation with explicit approval
+curl -fsSL https://lean4.party/leanck-install.sh | sh -s -- --yes --plugin codex
+
+# Only skills, using an existing CLI; pin a published release
+curl -fsSL https://lean4.party/leanck-install.sh | sh -s -- --no-cli --skills codex --version v0.30.0
+```
+
+Use `--standalone` for the standalone CLI and optional skills and custom agents. `--skills` and `--agents` also select standalone mode unless `--plugin` or `--all` explicitly selects plugin mode. Each host flag accepts `none`, `claude`, `codex`, or `both`; repeated flags combine hosts, and `none` clears the selection. `--plugin none` selects standalone mode. Plugin mode includes all skills and agents automatically. `--plugin HOST` chooses which hosts to register; `--all` registers both. Registration requires the corresponding host CLI, and plugin installation requires `python3` for configuration and hooks. If no host is detected, plugin mode still installs both forms for later registration. Restart the host afterward and review the Codex hook with `/hooks`.
+
+| Component | Default installation location |
+|---|---|
+| Plugin executable | `~/.local/share/leanck/bin/leanck` (`--bin-dir DIR` overrides) |
+| Standalone executable | `~/.local/bin/leanck` (`--bin-dir DIR` overrides) |
+| Claude standalone skills / agents | `~/.claude/skills/`, `~/.claude/agents/` (honors `CLAUDE_CONFIG_DIR`) |
+| Codex standalone skills | `~/.agents/skills/` |
+| Codex plugin agents | `~/.local/share/leanck/agents/`, linked from `~/.codex/agents/leanck/` (honors `CODEX_HOME`) |
+| Codex standalone agents | `~/.codex/agents/leanck/` (honors `CODEX_HOME`) |
+| Plugin marketplace and bundle | `~/.local/share/leanck/bundle/` (honors `XDG_DATA_HOME`; `--data-dir DIR` overrides the `leanck/` directory) |
+| Installer choices and backups | `~/.local/state/leanck/installer/` (honors `XDG_STATE_HOME`; `--state-dir DIR` overrides) |
+| Fish completions | `~/.config/fish/completions/leanck.fish` |
+| Bash completions | `~/.local/share/bash-completion/completions/leanck` |
+| Zsh completions | `~/.local/share/zsh/site-functions/_leanck` |
+| PowerShell completions | `~/.config/powershell/Completions/leanck.ps1` |
+| Elvish completions | `~/.config/elvish/lib/leanck.elv` |
+
+Codex agent definitions use the `leanck/` subdirectory in both modes by default; advanced config or `--codex-agents-dir DIR` overrides the agent destination. Additional locations can also be selected with repeatable `--extra-skills-dir DIR`, `--extra-claude-agents-dir DIR`, and `--extra-codex-agents-dir DIR` flags. The installer honors [`CODEX_HOME`](https://learn.chatgpt.com/docs/config-file/config-advanced#config-and-state-locations), which defaults to `~/.codex`; `--codex-dir DIR` explicitly overrides that location. Unchanged installer-managed definitions from the former flat `agents/` layout are backed up and migrated into `agents/leanck/`. Unrelated files and local edits are preserved.
+
+Plugin remains the default on each run. Standalone mode reuses previous component and destination choices; command-line flags override them. A pinned `--version` remains pinned until you choose `latest`. After upgrading, run `leanck daemons stop --all` to retire daemons using the previous executable. Existing files from another source and locally edited managed components require a keep/replace/cancel choice, or `--force` in automation. Older managed copies without content fingerprints are treated as conflicts. Replacements retain numbered backups with a `manifest.tsv` mapping original paths to backup paths. File installation failures restore prior files; host plugin registration can leave partial external changes, which the installer reports so the same selections can be rerun.
+
+Shell completions support Bash, Zsh, Fish, PowerShell, and Elvish; select a shell in advanced config or with `--completions SHELL`, or disable them with `--completions none`. Completion directories honor `XDG_CONFIG_HOME` or `XDG_DATA_HOME` as appropriate; `--completions-dir DIR` overrides the selected destination, and `--fish-completions-dir DIR` sets the Fish default. Bash and Fish use their standard completion directories. For Zsh, include the completion directory in `fpath` before calling `compinit`; for PowerShell, load the generated script from your profile; for Elvish, load it with `use leanck`. These completion choices do not edit startup files. In standalone mode, Fish completions default on when `SHELL` is fish. PATH changes are opt-in through a prompt or `--add-to-path`; `--verbose` includes the exact profile and command after advanced configuration, and the installer preserves the rest of the profile. Use `--shell fish|bash|zsh` and `--path-file FILE` to customize it. Shell startup files are otherwise untouched. `--no-add-to-path` disables a remembered profile update, and `--cli` enables the executable after a previous `--no-cli` selection.
+
+Use `--help` for all options, including an HTTPS release mirror via `--release-url`, configurable download and command timeouts via `--timeout SECONDS`, host-directory overrides, and `--no-pager` for long plans.
+
+`--dry-run` checks prerequisites, downloads and verifies the release in a temporary directory, checks destination conflicts, and prints the files and plugin commands that would be installed or run. It leaves installation directories, existing files, and host configuration unchanged, including when combined with `--force`. Temporary downloads are removed on exit. It does not execute downloaded binaries or host CLIs, so binary execution and host plugin-command compatibility are checked only during a real installation.
+
+If the archive or checksum returns HTTP 404 (for example, before the first release is published), `--dry-run` continues with an explicitly unverified preview using the expected skill and agent names. Destination checks still apply, but release contents, checksum, and version cannot be verified. Other download errors and available-but-invalid releases still fail; real installations always fail on missing assets.
 
 Or build and install from source (requires Rust 1.89+ and [`just`](https://github.com/casey/just)):
 
@@ -114,6 +175,31 @@ Any command can also take `--config <FILE>`, `--no-config`, or repeatable `--set
 - A `PostToolUse` hook for `push_neg` migration hints
 
 See [`packaging/plugin/README.md`](packaging/plugin/README.md) for setup instructions in Claude Code and Codex, and [`crates/leanck-mcp/README.md`](crates/leanck-mcp/README.md) for the MCP tool reference.
+
+## Installer and release packaging
+
+Preview the interactive installer directly from this checkout, entirely offline:
+
+```sh
+sh ./install.sh --from-repo . --dry-run
+```
+
+This walks through configuration, conflict choices, review, and the approval prompt. Choosing Edit advanced config... opens the editable configuration; choosing Continue only completes the preview. It reads skill and agent names and the CLI version from the source checkout, creates a temporary inventory, and removes it on exit. It needs no build, release archive, network access, or installed agent host. Installation directories, shell profiles, host configuration, and saved installer choices are unchanged. The preview explicitly labels release artifacts as unverified. `--from-repo` requires `--dry-run` and never installs from source.
+
+Dry runs are interactive when a terminal is available. Add `--yes` to skip prompts, or use `--json` for a noninteractive preview. Without `--from-repo`, dry runs continue to download and verify release archives.
+
+[`install.sh`](install.sh) is the standalone POSIX shell installer to serve as `https://lean4.party/leanck-install.sh`. Its default download source is `https://github.com/danlyng/leanck/releases`; it selects the latest published release unless `--version` pins a tag. Archives and checksums come from the same release, so checksum verification detects corruption but does not provide an independent signature.
+
+The [`Release` workflow](.github/workflows/release.yml) builds native macOS ARM64/x86-64 and static musl Linux ARM64/x86-64 archives. A `v<VERSION>` tag matching `leanck --version` creates a **draft** GitHub release with all archives, their `.sha256` files, and `install.sh`. A manual workflow run only builds downloadable CI artifacts. To enable the public curl command, publish a reviewed draft release and serve this repository's `install.sh` at the `lean4.party` URL; neither happens as part of local packaging.
+
+To package an already-built native executable locally (Python 3.11+):
+
+```sh
+python3 packaging/package_release.py --bin-dir target/release --output dist \
+  --target aarch64-apple-darwin --version v0.30.0
+```
+
+Supported target names are `aarch64-apple-darwin`, `x86_64-apple-darwin`, `aarch64-unknown-linux-musl`, and `x86_64-unknown-linux-musl`. Each archive is named `leanck-<TARGET>.tar.gz` and contains a `leanck/` root with the plugin, local marketplace catalogs, and release marker. Release packaging sets the generated plugin versions to the release version. `just test-installer` exercises the actual packager and piped installer with temporary homes, offline downloads, and host CLI stubs. If your default Python is older than 3.11, specify a newer interpreter, for example `just test-installer python3.13`.
 
 ## Repository layout
 
