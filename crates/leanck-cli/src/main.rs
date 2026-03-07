@@ -4,6 +4,7 @@ mod args;
 mod cli;
 mod commands;
 mod configuration;
+mod serve;
 mod telemetry;
 
 use clap::{CommandFactory, FromArgMatches};
@@ -43,6 +44,10 @@ where
 fn main() {
     let mut json = std::env::args_os().any(|arg| arg == "--json");
     if let Err(error) = run(&mut json) {
+        let instance_limit = matches!(
+            error.downcast_ref::<leanckd::Error>(),
+            Some(leanckd::Error::InstanceLimit { .. })
+        );
         if json {
             eprintln!(
                 "{}",
@@ -51,15 +56,21 @@ fn main() {
         } else {
             eprintln!("error: {error:#}");
         }
-        std::process::exit(1);
+        std::process::exit(if instance_limit {
+            leanck_core::instances::EXIT_INSTANCE_LIMIT
+        } else {
+            1
+        });
     }
 }
 
 fn run(json: &mut bool) -> anyhow::Result<()> {
-    telemetry::init_tracing();
-
     let matches = Cli::command().get_matches();
     let mut cli = Cli::from_arg_matches(&matches)?;
+    if let Cmd::Serve(args) = cli.command {
+        return serve::run(args, cli.config);
+    }
+    telemetry::init_tracing();
     if let Cmd::Config(command) = &cli.command {
         return command.run(&cli.config);
     }
@@ -100,7 +111,7 @@ fn run(json: &mut bool) -> anyhow::Result<()> {
         Cmd::Normalize(args) => {
             leanck_normalize::command::run_with_settings(args, &loaded.settings.normalize)
         }
-        Cmd::Config(_) => unreachable!(),
+        Cmd::Config(_) | Cmd::Serve(_) => unreachable!(),
 
         // Loogle search.
         Cmd::Loogle(args) => block_on(commands::loogle::run(args)),

@@ -44,8 +44,10 @@ pub(crate) struct LiveArgs {
 }
 
 impl LiveArgs {
-    pub(crate) fn client(&self) -> Result<Client, WorkspaceError> {
-        Ok(Client::new(self.workspace.resolve()?).with_settings(self.settings.clone()))
+    pub(crate) fn client(&self) -> anyhow::Result<Client> {
+        Ok(Client::new(self.workspace.resolve()?)
+            .with_settings(self.settings.clone())
+            .with_daemon_binary(std::env::current_exe()?))
     }
     pub(crate) fn request_options(&self) -> RequestOptions {
         RequestOptions {

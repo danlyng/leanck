@@ -1045,7 +1045,7 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
 name = "leanck-cli"
-version = "0.26.0"
+version = "0.27.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1055,7 +1055,10 @@ dependencies = [
  "leanck-core",
  "leanck-lake",
  "leanck-loogle",
+ "leanck-mcp",
  "leanck-normalize",
+ "leanckd",
+ "libc",
  "serde",
  "serde_json",
  "tokio",
@@ -1065,7 +1068,7 @@ dependencies = [
 
 [[package]]
 name = "leanck-client"
-version = "0.11.0"
+version = "0.11.1"
 dependencies = [
  "leanck-config",
  "leanck-core",
@@ -1136,7 +1139,7 @@ dependencies = [
 
 [[package]]
 name = "leanck-mcp"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1170,10 +1173,9 @@ dependencies = [
 
 [[package]]
 name = "leanckd"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "anyhow",
- "clap",
  "leanck-client",
  "leanck-config",
  "leanck-core",

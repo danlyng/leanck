@@ -35,6 +35,8 @@ pub(crate) struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum Cmd {
+    /// Run the MCP server or a workspace daemon.
+    Serve(crate::serve::Args),
     /// Inspect, validate, or initialize leanck configuration.
     Config(leanck_config::Command),
     // ── Live Lean state (same `leanckd` daemon the MCP server uses) ──────────

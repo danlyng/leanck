@@ -12,7 +12,7 @@ use leanck_core::{
     paths::RuntimePaths,
 };
 use std::fs::{File, TryLockError};
-use std::os::unix::process::ExitStatusExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::Path;
 use std::time::{Duration, Instant};
 use tokio::process::Child;
@@ -65,7 +65,10 @@ fn spawn_daemon(
     })?;
 
     let mut cmd = tokio::process::Command::new(bin);
-    cmd.arg(worktree).arg("--no-config");
+    cmd.as_std_mut().arg0("leanckd");
+    cmd.args(["serve", "daemon"])
+        .arg(worktree)
+        .arg("--no-config");
     for assignment in settings.daemon_assignments() {
         cmd.arg("--set").arg(assignment);
     }
@@ -193,6 +196,7 @@ pub(crate) async fn ensure_running(
     worktree: &Path,
     runtime: RuntimePaths,
     settings: &Settings,
+    default_binary: Option<&Path>,
 ) -> Result<RuntimePaths> {
     if can_connect(&runtime.socket()).await {
         return Ok(runtime);
@@ -204,9 +208,9 @@ pub(crate) async fn ensure_running(
     if can_connect(&runtime.socket()).await {
         return Ok(runtime);
     }
-    let binary = match &settings.client.daemon_bin {
-        Some(path) if path.is_file() => path.clone(),
-        Some(path) => return Err(ClientError::InvalidBinary(path.clone())),
+    let binary = match settings.client.daemon_bin.as_deref().or(default_binary) {
+        Some(path) if path.is_file() => path.to_path_buf(),
+        Some(path) => return Err(ClientError::InvalidBinary(path.to_path_buf())),
         None => resolve_binary()?,
     };
     let policy = StartupPolicy {
@@ -428,12 +432,12 @@ mod tests {
             .prepare()
             .unwrap();
         let binary = scratch.0.join("fake-leanckd");
-        std::fs::write(&binary, "#!/bin/sh\nprintf '%s' \"$1\" > \"$1/started\"\nprintf 'stdout\\n'\nprintf 'stderr\\n' >&2\nprintf '%s' \"$$\" > \"$1/child-pid\"\nprintf 'done' > \"$1/finished\"\n").unwrap();
+        std::fs::write(&binary, "#!/bin/sh\n[ \"$1\" = serve ] && [ \"$2\" = daemon ] || exit 99\nshift 2\nprintf '%s' \"$1\" > \"$1/started\"\nprintf 'stdout\\n'\nprintf 'stderr\\n' >&2\nprintf '%s' \"$$\" > \"$1/child-pid\"\nprintf 'done' > \"$1/finished\"\n").unwrap();
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut settings = leanck_config::Settings::default();
         settings.client.daemon_bin = Some(scratch.0.join("missing"));
         assert!(matches!(
-            ensure_running(&scratch.0, runtime.clone(), &settings).await,
+            ensure_running(&scratch.0, runtime.clone(), &settings, None).await,
             Err(ClientError::InvalidBinary(_))
         ));
         settings.client.daemon_bin = Some(binary);
@@ -447,7 +451,12 @@ mod tests {
         });
         tokio::time::timeout(
             Duration::from_secs(2),
-            ensure_running(&scratch.0, runtime.clone(), &settings),
+            ensure_running(
+                &scratch.0,
+                runtime.clone(),
+                &settings,
+                Some(&scratch.0.join("unused-host-binary")),
+            ),
         )
         .await
         .unwrap()
@@ -482,7 +491,13 @@ mod tests {
     fn fake_binary(scratch: &Scratch, body: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let binary = scratch.0.join("fake-leanckd");
-        std::fs::write(&binary, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::write(
+            &binary,
+            format!(
+                "#!/bin/sh\n[ \"$1\" = serve ] && [ \"$2\" = daemon ] || exit 99\nshift 2\n{body}\n"
+            ),
+        )
+        .unwrap();
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
         binary
     }
@@ -603,7 +618,7 @@ mod tests {
         let settings = limited(fake_binary(&scratch, "exit 75"), 1, OnLimit::Refuse);
         let result = tokio::time::timeout(
             Duration::from_secs(3),
-            ensure_running(&scratch.0, runtime, &settings),
+            ensure_running(&scratch.0, runtime, &settings, None),
         )
         .await
         .expect("refusal is noticed without waiting for the startup grace");
@@ -628,7 +643,7 @@ mod tests {
             let settings = limited(fake_binary(&scratch, body), 8, OnLimit::EvictIdle);
             let result = tokio::time::timeout(
                 Duration::from_secs(3),
-                ensure_running(&scratch.0, runtime.clone(), &settings),
+                ensure_running(&scratch.0, runtime.clone(), &settings, None),
             )
             .await
             .expect("early exit is noticed without waiting for the startup grace");
@@ -654,7 +669,7 @@ mod tests {
         );
         let binary = fake_binary(&scratch, MARKING);
         let refuse = limited(binary.clone(), 1, OnLimit::Refuse);
-        let result = ensure_running(&scratch.0, runtime.clone(), &refuse).await;
+        let result = ensure_running(&scratch.0, runtime.clone(), &refuse, None).await;
         assert!(
             matches!(
                 result,
@@ -672,7 +687,7 @@ mod tests {
         let binder = bind_when_finished(&scratch, &runtime);
         tokio::time::timeout(
             Duration::from_secs(3),
-            ensure_running(&scratch.0, runtime.clone(), &warn),
+            ensure_running(&scratch.0, runtime.clone(), &warn, None),
         )
         .await
         .unwrap()
@@ -697,7 +712,7 @@ mod tests {
         let binder = bind_when_finished(&scratch, &runtime);
         tokio::time::timeout(
             Duration::from_secs(10),
-            ensure_running(&scratch.0, runtime.clone(), &settings),
+            ensure_running(&scratch.0, runtime.clone(), &settings, None),
         )
         .await
         .unwrap()
@@ -736,7 +751,7 @@ mod tests {
         let binder = bind_when_finished(&scratch, &runtime);
         tokio::time::timeout(
             Duration::from_secs(10),
-            ensure_running(&scratch.0, runtime.clone(), &settings),
+            ensure_running(&scratch.0, runtime.clone(), &settings, None),
         )
         .await
         .unwrap()
@@ -781,7 +796,7 @@ mod tests {
         let binder = bind_when_finished(&scratch, &runtime);
         tokio::time::timeout(
             Duration::from_secs(10),
-            ensure_running(&scratch.0, runtime.clone(), &settings),
+            ensure_running(&scratch.0, runtime.clone(), &settings, None),
         )
         .await
         .unwrap()
@@ -827,8 +842,8 @@ mod tests {
         let binder = bind_when_finished(&scratch, &runtime);
         let (first, second) = tokio::time::timeout(Duration::from_secs(10), async {
             tokio::join!(
-                ensure_running(&scratch.0, runtime.clone(), &settings),
-                ensure_running(&scratch.0, runtime.clone(), &settings),
+                ensure_running(&scratch.0, runtime.clone(), &settings, None),
+                ensure_running(&scratch.0, runtime.clone(), &settings, None),
             )
         })
         .await
@@ -861,7 +876,7 @@ mod tests {
         let settings = limited(fake_binary(&scratch, MARKING), 2, OnLimit::EvictIdle);
         let result = tokio::time::timeout(
             Duration::from_secs(5),
-            ensure_running(&scratch.0, runtime, &settings),
+            ensure_running(&scratch.0, runtime, &settings, None),
         )
         .await
         .unwrap();

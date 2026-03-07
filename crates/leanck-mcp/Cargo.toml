@@ -1,11 +1,7 @@
 [package]
 name = "leanck-mcp"
-version = "0.20.0"
+version = "0.21.0"
 edition = "2024"
-
-[[bin]]
-name = "leanck-mcp"
-path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true

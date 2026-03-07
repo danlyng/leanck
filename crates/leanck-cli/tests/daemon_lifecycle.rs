@@ -1,4 +1,6 @@
 //! Real daemon processes with a local fake Lake; these tests never require Lean.
+#[path = "../../../test-support/mcp.rs"]
+mod mcp;
 use leanck_client::{
     CancellationToken, Client, ClientError, RequestOptions,
     instances::{self, StopMode, Stopped},
@@ -56,6 +58,7 @@ struct Fixture {
     lean_pids: Vec<u32>,
     /// `XDG_CACHE_HOME` for an isolated fixture; `None` uses the real cache directory.
     cache: Option<PathBuf>,
+    daemon_identity: Option<(u32, Option<u64>)>,
 }
 impl Fixture {
     fn new(script: &str) -> Self {
@@ -91,6 +94,7 @@ impl Fixture {
             root,
             lean_pids: Vec::new(),
             cache: None,
+            daemon_identity: None,
         }
     }
     fn silent() -> Self {
@@ -126,10 +130,13 @@ impl Fixture {
             self.root.join("bin").display(),
             std::env::var("PATH").unwrap()
         );
-        let mut command = Command::new(env!("CARGO_BIN_EXE_leanckd"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_leanck"));
         command
+            .args(["serve", "daemon"])
             .arg(&self.root)
             .env("PATH", path)
+            .env("XDG_CONFIG_HOME", self.root.join("empty-config"))
+            .env_remove("LEANCK_CONFIG")
             .args(["--set", "cache.enabled=false", "--set", "instances.limit=0"])
             .args(extra);
         if let Some(cache) = &self.cache {
@@ -172,18 +179,19 @@ impl Fixture {
         .await
         .expect("fake daemon ready");
         self.lean_pids.extend(health.server.pid);
+        let pid = std::fs::read_to_string(self.runtime().pid())
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        self.daemon_identity = Some((pid, leanck_core::instances::process_start_id(pid)));
         assert_eq!(health.lifecycle.state, LifecycleState::Ready);
         health
     }
     async fn active(&self, count: u64) {
         tokio::time::timeout(Duration::from_secs(3), async {
             loop {
-                let health = self
-                    .client()
-                    .probe_existing(RequestOptions::default())
-                    .await
-                    .unwrap()
-                    .unwrap();
+                let health = self.probe().await.unwrap();
                 if health.lifecycle.active_requests == count {
                     break;
                 }
@@ -192,6 +200,33 @@ impl Fixture {
         })
         .await
         .expect("active request count");
+    }
+    /// A real CLI/MCP frontend sharing this fixture's private slot directory.
+    fn frontend(&self) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_leanck"));
+        command
+            .args([
+                "--no-config",
+                "--set",
+                "cache.enabled=false",
+                "--set",
+                "instances.limit=1",
+            ])
+            .env(
+                "XDG_CACHE_HOME",
+                self.cache.as_ref().expect("private cache"),
+            )
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    self.root.join("bin").display(),
+                    std::env::var("PATH").unwrap()
+                ),
+            )
+            .current_dir(&self.root)
+            .kill_on_drop(true);
+        command
     }
     /// Socket-direct shutdown for isolated fixtures, then the usual cleanup checks.
     async fn stop(&self, daemon: &mut Child) {
@@ -230,6 +265,15 @@ impl Fixture {
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
+        // Auto-started daemons outlive their CLI/MCP parent. Panic cleanup is
+        // restricted to this fixture's recorded process identity and group.
+        if let Some((pid, Some(start_id))) = self.daemon_identity
+            && leanck_core::instances::process_start_id(pid) == Some(start_id)
+        {
+            unsafe {
+                libc::kill(-(pid as i32), libc::SIGTERM);
+            }
+        }
         for pid in &self.lean_pids {
             unsafe {
                 libc::kill(-(*pid as i32), libc::SIGKILL);
@@ -866,5 +910,115 @@ async fn evict_idle_stops_the_idle_daemon() {
     assert_eq!(remaining.len(), 1, "{remaining:?}");
     assert_eq!(remaining[0].record.pid, b_pid);
     second.stop(&mut b).await;
+    assert!(live(&cache.slots()).is_empty());
+}
+
+#[tokio::test]
+async fn cli_and_mcp_share_cold_start_and_eviction_spares_busy_work_across_workspace_switches() {
+    use serde_json::json;
+    let cache = CacheDir::new();
+    let mut first = Fixture::isolated(&silent_script(), &cache);
+    let mut second = Fixture::isolated(&silent_script(), &cache);
+    let mut command = first.frontend();
+    command
+        .args(["serve", "mcp", "--workspace"])
+        .arg(&first.root);
+    let mut mcp = mcp::Mcp::start(command).await;
+    assert!(
+        !first.runtime().socket().exists(),
+        "MCP initialization is lazy"
+    );
+
+    // Both frontends cold-start together; only one daemon may acquire a slot.
+    // The silent fake Lean deliberately lets the CLI goal reach its deadline.
+    let (health, goal_result) = tokio::join!(
+        mcp.tool("health", json!({"json": true})),
+        first
+            .frontend()
+            .args(["goal", "Basic.lean", "0", "0", "--timeout", "1"])
+            .output(),
+    );
+    assert_eq!(health["ok"], true, "{health}");
+    assert!(!goal_result.unwrap().status.success());
+    first.ready().await;
+    let first_pid = first.daemon_identity.unwrap().0;
+    assert_eq!(live(&cache.slots()).len(), 1);
+    let args = std::process::Command::new("ps")
+        .args(["-p", &first_pid.to_string(), "-o", "args="])
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&args.stdout).starts_with("leanckd serve daemon "));
+
+    let mut busy = first
+        .frontend()
+        .args(["goal", "Basic.lean", "0", "0", "--timeout", "30"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    first.active(1).await;
+    mcp.tool("set_workspace", json!({"path": second.root}))
+        .await;
+    assert!(
+        !second.runtime().socket().exists(),
+        "switching remains lazy"
+    );
+    let refused = mcp.tool("health", json!({"json": true})).await;
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert!(
+        refused["lsp"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("instance limit")
+    );
+    assert!(!second.runtime().socket().exists());
+    assert_eq!(live(&cache.slots())[0].record.pid, first_pid);
+    first.active(1).await;
+
+    unsafe {
+        libc::kill(busy.id().unwrap() as i32, libc::SIGINT);
+    }
+    assert!(
+        !tokio::time::timeout(Duration::from_secs(5), busy.wait())
+            .await
+            .unwrap()
+            .unwrap()
+            .success()
+    );
+    first.active(0).await;
+    let health = mcp.tool("health", json!({"json": true})).await;
+    assert_eq!(health["ok"], true, "{health}");
+    second.ready().await;
+    let second_pid = second.daemon_identity.unwrap().0;
+    assert_ne!(first_pid, second_pid);
+    assert!(!first.runtime().socket().exists());
+    assert!(!first.runtime().pid().exists());
+    assert!(lock_is_free(&first.runtime().lock()));
+    assert_eq!(live(&cache.slots()).len(), 1);
+    assert_eq!(live(&cache.slots())[0].record.pid, second_pid);
+
+    // Closing MCP must leave its detached daemon available to a later CLI.
+    mcp.close().await;
+    let goal_result = second
+        .frontend()
+        .args(["goal", "Basic.lean", "0", "0", "--timeout", "1"])
+        .output()
+        .await
+        .unwrap();
+    assert!(!goal_result.status.success());
+    assert_eq!(live(&cache.slots())[0].record.pid, second_pid);
+    assert!(second.probe().await.is_some());
+    assert_eq!(
+        instances::stop_socket(
+            &second.runtime().socket(),
+            None,
+            &leanck_config::Settings::default(),
+            Duration::from_secs(7),
+            StopMode::Always,
+        )
+        .await
+        .unwrap(),
+        Stopped::Exited
+    );
     assert!(live(&cache.slots()).is_empty());
 }

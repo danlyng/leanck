@@ -1,4 +1,4 @@
-# leanck-mcp
+# leanck MCP server
 
 An MCP server over stdio for standalone Lean 4 tooling.
 
@@ -14,7 +14,7 @@ An MCP server over stdio for standalone Lean 4 tooling.
 | `health` | Check daemon reachability; compact text or `{ok, lsp, issues, instances}` JSON, where `instances` is `{running, limit, on_limit}` for daemons machine-wide. |
 | `set_workspace` | Switch subsequent calls to another Lake project. |
 
-Live queries go over a Unix socket to `leanckd`, which keeps one warm `lake serve` per worktree. Builds run the project's own Lake toolchain. Loogle uses HTTP, trying the local endpoint and then the main endpoint. Configure `loogle.endpoints` to select custom endpoints.
+Live queries go over a Unix socket to `leanck serve daemon`, which keeps one warm `lake serve` per worktree. Builds run the project's own Lake toolchain. Loogle uses HTTP, trying the local endpoint and then the main endpoint. Configure `loogle.endpoints` to select custom endpoints.
 
 Live operations pin their source version and session. `DiagnosticsResult.source` is a required pinned `String`; diagnostic excerpts never fall back to the filesystem. Restarts wait for active queries. Directory `sorry` is a text scan; file `sorry` also uses matching elaboration diagnostics. Sorry reports always include quality notes without an `include_notes` opt-in; list/reference fallbacks also expose quality notes. The `sorry` tool accepts `path` only; the former `file` alias is removed. MCP file restarts remain `restart_file`; the CLI uses `leanck restart-file <file>`, with no `restart_file` alias. Goal lines and columns are zero-indexed; columns count UTF-16 code units.
 
@@ -84,16 +84,16 @@ When upgrading from protocol 3, remove `SorryParams.include_notes`: quality note
 ## CLI
 
 ```sh
-leanck-mcp [--workspace <PATH>]
+leanck serve mcp [--workspace <PATH>]
 ```
 
 The workspace defaults to the nearest ancestor of the current directory with `lakefile.lean`, `lakefile.toml`, or `lean-toolchain`. `set_workspace` validates those same markers before switching and returns `{ok, workspace, socket_path}`. Selection does not start Lean. Each operation captures its workspace once; switching affects subsequent calls, while previously started calls keep their original workspace and daemon. No project-name field, database, or API credentials are required.
 
 ## Daemon discovery
 
-The CLI and MCP server derive the same socket path for a worktree (see `leanck-core/src/paths.rs`). On first use, MCP connects or starts `leanckd`, using `client.daemon_bin` when configured, then sibling/PATH discovery otherwise. The daemon exits after an hour idle. MCP `health` also starts the daemon when necessary; CLI `doctor` only probes an existing daemon.
+The CLI and MCP server derive the same socket path for a worktree (see `leanck-core/src/paths.rs`). On first use, MCP connects or starts `leanck serve daemon`, using `client.daemon_bin` when configured and otherwise its own executable. Embedded library callers fall back to sibling/PATH discovery of `leanck`. The daemon exits after an hour idle. MCP `health` also starts the daemon when necessary; CLI `doctor` only probes an existing daemon.
 
-Starting a daemon respects the machine-wide `instances.limit` (see [configuration](../../docs/CONFIGURATION.md#instance-limit)). Startup failures carry structured MCP error data: `{"kind":"instance_limit","running","limit"}` when the limit is reached and no idle daemon could be stopped, and `{"kind":"daemon_exited","code","log"}` when `leanckd` exits before serving, with the path of its log. `set_workspace` leaves the previous daemon running; under `evict_idle` it becomes an eviction candidate once idle, and it is stopped only if it is still idle when asked, so work it has accepted is never cancelled.
+Starting a daemon respects the machine-wide `instances.limit` (see [configuration](../../docs/CONFIGURATION.md#instance-limit)). Startup failures carry structured MCP error data: `{"kind":"instance_limit","running","limit"}` when the limit is reached and no idle daemon could be stopped, and `{"kind":"daemon_exited","code","log"}` when the daemon exits before serving, with the path of its log. `set_workspace` leaves the previous daemon running; under `evict_idle` it becomes an eviction candidate once idle, and it is stopped only if it is still idle when asked, so work it has accepted is never cancelled.
 
 Builds remain independent of the daemon and share a workspace lock with leanck cache fetching. The default budget is 30 minutes including queueing; capture defaults to 8 MiB per stream. MCP cancellation stops and reaps Lake. JSON build reports include execution provenance; strict mode rejects dependency and configuration warnings even when Lake exits zero. See [stage 8](../docs/refactor/STAGE_8.md).
 
@@ -102,8 +102,8 @@ Operation timeout_ms values cover queueing and execution after cold startup; the
 ## Build
 
 ```sh
-cargo build --release -p leanck-mcp -p leanckd --locked
-target/release/leanck-mcp --help
+cargo build --release -p leanck-cli --locked
+target/release/leanck serve mcp --help
 ```
 
 The plugin normally launches this server using its MCP configuration. Stdout is reserved for the MCP protocol; logs go to stderr.

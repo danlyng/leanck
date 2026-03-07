@@ -2,11 +2,12 @@
 
 Run through `just verify-distribution /absolute/path/to/test-project` or pass
 --bin-dir and --project directly. --benchmark-only compares CLI query timings
-against an earlier distribution without requiring its MCP tool surface.
+without running the MCP checks.
 """
 
 import argparse
 import asyncio
+import ctypes
 import fcntl
 import json
 import os
@@ -30,7 +31,7 @@ class MCP:
     @classmethod
     async def start(cls, binary, project, env):
         process = await asyncio.create_subprocess_exec(
-            str(binary), "--workspace", str(project), env=env,
+            str(binary), "serve", "mcp", "--workspace", str(project), env=env,
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
@@ -111,7 +112,7 @@ async def cli(binary, project, env, *arguments, success=True):
 
 
 async def control(path, operation):
-    """Test-only version 1 control fixture; frontends use leanck-client."""
+    """Test-only control fixture; frontends use leanck-client."""
     reader, writer = await asyncio.open_unix_connection(str(path))
     try:
         body = json.dumps({"id": "distribution", "op": operation, "params": {}}).encode()
@@ -151,7 +152,17 @@ def stage_copy(source, destination, names):
 def check_daemon_binary(socket_path, expected):
     pid = socket_path.with_suffix(".pid").read_text().strip()
     command = subprocess.check_output(["ps", "-p", pid, "-o", "args="], text=True).strip()
-    assert command.startswith(str(expected) + " "), (expected, command)
+    assert command.startswith("leanckd serve daemon "), command
+    if os.uname().sysname == "Darwin":
+        libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+        libproc.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+        libproc.proc_pidpath.restype = ctypes.c_int
+        buffer = ctypes.create_string_buffer(4096)
+        assert libproc.proc_pidpath(int(pid), buffer, len(buffer)) > 0, ctypes.get_errno()
+        executable = Path(os.fsdecode(buffer.value))
+    else:
+        executable = Path(f"/proc/{pid}/exe").resolve(strict=True)
+    assert executable.resolve() == expected.resolve(), (expected, executable)
     return pid
 
 
@@ -164,12 +175,13 @@ async def verify(args, scratch):
     env = dict(os.environ)
     env.pop("LEANCK_CONFIG", None)
     env["XDG_CACHE_HOME"] = str(scratch / "cache")
+    env["XDG_CONFIG_HOME"] = str(scratch / "config")
     env["LEANCKD_LOG"] = "error"
     owned = []
     clients = []
     timings = {}
     try:
-        for mode in (["sibling"] if args.benchmark_only else ["sibling", "path", "configured"]):
+        for mode in (["self"] if args.benchmark_only else ["self", "renamed", "configured"]):
             project = scratch / mode
             shutil.copytree(args.project, project, ignore=shutil.ignore_patterns(".git", ".lake", "target", "build"))
             (project / "TestProject").mkdir(exist_ok=True)
@@ -177,23 +189,27 @@ async def verify(args, scratch):
             project = project.resolve()
             selected = dict(env)
             frontends = args.bin_dir
-            daemon = args.bin_dir / "leanckd"
-            if mode != "sibling":
+            if mode != "self":
                 frontends = scratch / (mode + "-bin")
-                stage_copy(args.bin_dir, frontends, ["leanck", "leanck-mcp"])
-            if mode == "path":
-                selected["PATH"] = str(args.bin_dir) + os.pathsep + env["PATH"]
+                stage_copy(args.bin_dir, frontends, ["leanck"])
+            binary = frontends / "leanck"
+            daemon = binary
+            if mode == "renamed":
+                binary = frontends / "renamed-leanck"
+                (frontends / "leanck").rename(binary)
+                daemon = binary
+                if os.uname().sysname == "Darwin":
+                    subprocess.run(["codesign", "--force", "-s", "-", str(binary)], check=True, capture_output=True)
             elif mode == "configured":
                 daemon_dir = scratch / "configured-daemon"
-                stage_copy(args.bin_dir, daemon_dir, ["leanckd"])
-                daemon = daemon_dir / "leanckd"
+                stage_copy(args.bin_dir, daemon_dir, ["leanck"])
+                daemon = daemon_dir / "leanck"
             overlay = scratch / (mode + ".toml")
             settings = "[cache]\nenabled = false\n"
             if mode == "configured":
                 settings += "[client]\ndaemon_bin = " + json.dumps(str(daemon)) + "\n"
             overlay.write_text(settings)
             selected["LEANCK_CONFIG"] = str(overlay)
-            binary = frontends / "leanck"
             probe = await cli(binary, project, selected, "doctor")
             path = Path(probe["socket_path"])
             owned.append(path)
@@ -219,7 +235,7 @@ async def verify(args, scratch):
             assert check_daemon_binary(path, daemon) == pid
             timings[mode] = {"cold_ms": round(cold * 1000, 2), "warm_median_ms": round(statistics.median(samples) * 1000, 2), "cli_24_ms": round(burst * 1000, 2)}
             if not args.benchmark_only:
-                mcp = await MCP.start(frontends / "leanck-mcp", project, selected)
+                mcp = await MCP.start(binary, project, selected)
                 clients.append(mcp)
                 health = await mcp.tool("health", {"json": True})
                 assert health["ok"] and health["lsp"]["workspace"] == str(project), health
@@ -291,7 +307,7 @@ def main():
     args = parser.parse_args()
     args.bin_dir = args.bin_dir.resolve(strict=True)
     args.project = args.project.resolve(strict=True)
-    for name in (["leanck", "leanckd"] if args.benchmark_only else ["leanck", "leanckd", "leanck-mcp"]):
+    for name in ["leanck"]:
         assert (args.bin_dir / name).is_file(), name
         if os.uname().sysname == "Darwin":
             subprocess.run(["codesign", "--verify", "--strict", str(args.bin_dir / name)], check=True, capture_output=True)

@@ -34,6 +34,7 @@ pub struct RequestOptions {
 pub struct Client {
     workspace: WorkspaceRoot,
     settings: leanck_config::Settings,
+    daemon_binary: Option<std::path::PathBuf>,
 }
 
 impl Client {
@@ -42,6 +43,7 @@ impl Client {
         Self {
             workspace,
             settings: leanck_config::Settings::default(),
+            daemon_binary: None,
         }
     }
 
@@ -55,6 +57,14 @@ impl Client {
 
     pub fn with_settings(mut self, settings: leanck_config::Settings) -> Self {
         self.settings = settings;
+        self
+    }
+
+    /// Default executable to invoke with `serve daemon`. The hosting `leanck`
+    /// supplies itself; library callers otherwise use sibling/PATH discovery.
+    /// An explicit `client.daemon_bin` setting takes precedence.
+    pub fn with_daemon_binary(mut self, binary: std::path::PathBuf) -> Self {
+        self.daemon_binary = Some(binary);
         self
     }
 
@@ -87,6 +97,7 @@ impl Client {
             self.workspace(),
             RuntimePaths::for_workspace(self.workspace()),
             &self.settings,
+            self.daemon_binary.as_deref(),
         )
         .await?;
         Ok(())
@@ -194,7 +205,12 @@ impl Client {
     }
 
     async fn startup(&self, runtime: &RuntimePaths, options: &RequestOptions) -> Result<()> {
-        let work = startup::ensure_running(self.workspace(), runtime.clone(), &self.settings);
+        let work = startup::ensure_running(
+            self.workspace(),
+            runtime.clone(),
+            &self.settings,
+            self.daemon_binary.as_deref(),
+        );
         if let Some(token) = &options.cancellation {
             tokio::select! { biased; _ = token.cancelled() => Err(ClientError::Cancelled { delivery_uncertain: false }), result = work => result.map(|_| ()) }
         } else {

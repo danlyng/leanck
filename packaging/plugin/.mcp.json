@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "leanck": {
-      "command": "${CLAUDE_PLUGIN_ROOT}/bin/leanck-mcp",
-      "args": [],
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/leanck",
+      "args": ["serve", "mcp"],
       "env": {}
     }
   }

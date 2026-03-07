@@ -179,8 +179,8 @@ max_output_bytes = 8388608 # 8 MiB capture limit PER stream (stdout and stderr).
 targets = [] # Default Lake targets; [] builds the workspace. Explicit targets replace this.
 
 [client]
-#! Optional explicit daemon binary; otherwise discover a sibling executable, then PATH.
-# daemon_bin = "/absolute/path/to/leanckd"
+#! Optional explicit leanck binary; otherwise CLI/MCP use themselves, and library hosts try sibling/PATH discovery.
+# daemon_bin = "/absolute/path/to/leanck" # Invoked with: serve daemon WORKSPACE
 #! Optional live-query timeout, sent per request; also overrides daemon per-stage wait caps.
 #! Leave unset to use the daemon's separate operation and stage budgets.
 # timeout_ms = 300000
@@ -191,7 +191,7 @@ startup_timeout_ms = 1800000 # Absolute cold-start wait cap (30 minutes), separa
 startup_grace_ms = 30000 # Wait up to 30 seconds while no live daemon PID is visible.
 probe_timeout_ms = 2000 # Health/control and protocol compatibility handshake budget.
 
-#! `leanckd` settings (running daemons must be restarted to apply new settings)
+#! `leanck serve daemon` settings (running daemons must be restarted to apply new settings)
 [daemon]
 idle_timeout_ms = 3600000 # Shut down after one idle hour; 0 disables idle shutdown.
 max_inflight = 8 # Concurrent elaboration-blocking requests (1–65536).

@@ -69,7 +69,7 @@ pub(crate) fn apply(command: &mut Cmd, s: &Settings, matches: &ArgMatches) {
                 a.width = s.normalize.width;
             }
         }
-        Cmd::Config(_) => {}
+        Cmd::Config(_) | Cmd::Serve(_) => {}
     }
 }
 

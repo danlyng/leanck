@@ -6,42 +6,34 @@ plugin_package := justfile_directory() / "leanck-plugin"
 default:
     @just --list
 
-# Build all components: stage plugin binaries (leanck-mcp + leanckd), install the `leanck` CLI on PATH.
-build: build-mcp build-leanckd install-cli
+# Stage the unified executable for the plugin and install it on PATH.
+build: build-plugin-bin install-cli
 
 # Run the whole test suite (Rust workspace).
 test:
     cargo test --workspace --locked
 
-# Compile the Rust MCP server in release mode and stage it in plugin/bin/.
-build-mcp:
-    cargo build --release -p leanck-mcp --locked
+# Compile and stage the CLI, MCP server, and daemon as one executable.
+build-plugin-bin:
+    cargo build --release -p leanck-cli --locked
     mkdir -p "{{plugin_bin}}"
-    cp target/release/leanck-mcp "{{plugin_bin}}"/leanck-mcp
-    if [ "$(uname)" = "Darwin" ]; then codesign --force -s - "{{plugin_bin}}"/leanck-mcp; fi
+    cp target/release/leanck "{{plugin_bin}}"/leanck
+    if [ "$(uname)" = "Darwin" ]; then codesign --force -s - "{{plugin_bin}}"/leanck; fi
 
-# Compile the leanckd daemon in release mode and stage it in plugin/bin/.
-build-leanckd:
-    cargo build --release -p leanckd --locked
-    mkdir -p "{{plugin_bin}}"
-    cp target/release/leanckd "{{plugin_bin}}"/leanckd
-    if [ "$(uname)" = "Darwin" ]; then codesign --force -s - "{{plugin_bin}}"/leanckd; fi
-
-# Install the `leanck` CLI, `leanck-mcp` server, and `leanckd` daemon onto PATH (Codex launches the PATH copies).
+# Install `leanck` onto PATH, including its MCP and daemon modes.
 install-cli:
     cargo install --path crates/leanck-cli --locked
-    cargo install --path crates/leanck-mcp --locked
-    cargo install --path crates/leanckd --locked
 
 # Remove staged plugin binaries (does not touch target/).
 clean-plugin-bin:
-    rm -f "{{plugin_bin}}"/leanck-mcp "{{plugin_bin}}"/leanckd "{{plugin_bin}}"/leanck-lake
+    rm -f "{{plugin_bin}}"/leanck "{{plugin_bin}}"/leanck-mcp "{{plugin_bin}}"/leanckd "{{plugin_bin}}"/leanck-lake
 
-# Stage the CLI, MCP server, and daemon together without installing on PATH.
+# Stage the unified executable without installing on PATH.
 stage destination:
     cargo build --release --workspace --locked
     mkdir -p "{{destination}}"
-    for binary in leanck leanck-mcp leanckd; do cp "target/release/$binary" "{{destination}}/$binary"; if [ "$(uname)" = "Darwin" ]; then codesign --force -s - "{{destination}}/$binary"; fi; done
+    cp target/release/leanck "{{destination}}/leanck"
+    if [ "$(uname)" = "Darwin" ]; then codesign --force -s - "{{destination}}/leanck"; fi
 
 # Verify a temporary release distribution against a disposable Lean template.
 verify-distribution project:

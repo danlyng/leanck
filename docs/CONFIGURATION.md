@@ -1,6 +1,6 @@
 # Configuration
 
-`leanck`, `leanck-normalize`, `leanck-mcp`, and `leanckd` share versioned TOML configuration through the `leanck-config` crate. If no config file is supplied, the default config is used. You can inspect the [complete default template](leanck.example.toml) by running `leanck config defaults`.
+`leanck` (including `serve mcp` and `serve daemon`) and `leanck-normalize` share versioned TOML configuration through the `leanck-config` crate. If no config file is supplied, the default config is used. You can inspect the [complete default template](leanck.example.toml) by running `leanck config defaults`.
 
 ## Getting started
 
@@ -281,7 +281,7 @@ Builds use the project's Lake toolchain and the existing shared execution lock. 
 
 | Section/key | Default | Meaning |
 |---|---|---|
-| `client.daemon_bin` | unset | Explicit daemon executable; otherwise use sibling executable, then `PATH`. |
+| `client.daemon_bin` | unset | Explicit `leanck` executable to invoke with `serve daemon`; otherwise use the host-provided executable, then sibling/`PATH` discovery. |
 | `client.timeout_ms` | unset | Default explicit live-query budget; like request `timeout_ms`, also overrides per-stage wait caps. |
 | `client.transport_timeout_ms` | unset | Independent socket I/O budget; normally operation budget plus 1 second, or probe budget for control operations. |
 | `client.startup_timeout_ms` | `1800000` | Absolute cold-start wait cap. |
@@ -304,7 +304,7 @@ Builds use the project's Lake toolchain and the existing shared execution lock. 
 
 Durations must be between 1 millisecond and one year (31,536,000,000 ms), except `daemon.idle_timeout_ms`, which also accepts `0`. `daemon.max_documents` and `daemon.max_source_bytes` are soft limits: when the daemon exceeds either threshold, it closes and evicts least-recently-used idle documents, but it never evicts documents with active or queued queries.
 
-Set `client.daemon_bin` to select an explicit executable; otherwise discovery checks a sibling executable and then PATH. Set `cache.enabled=false` to skip cache fetching. Directly launched `leanckd WORKSPACE` loads settings for that workspace. Auto-start passes resolved daemon/cache settings to the child with configuration-file discovery disabled, preventing it from resolving a different configuration from the parent's working directory.
+Set `client.daemon_bin` to select an explicit `leanck` executable. The CLI and MCP server otherwise launch their own executable; embedded library callers check for a sibling `leanck` and then PATH. Every selected executable is invoked with `serve daemon WORKSPACE`; custom wrappers must accept that prefix. Set `cache.enabled=false` to skip cache fetching. Directly launched `leanck serve daemon WORKSPACE` loads settings for that workspace. Auto-start passes resolved daemon/cache settings to the child with configuration-file discovery disabled, preventing it from resolving a different configuration from the parent's working directory.
 
 Daemon settings apply at startup. An existing daemon keeps its settings until shut down.
 
@@ -321,4 +321,8 @@ leanck daemons stop --all # Stop every daemon that is serving its socket
 leanck daemons stop /path/to/worktree --wait 30
 ```
 
-`stop` asks each daemon to shut down and waits (15 seconds by default) for it to exit, so its slot is free when the command returns. Both subcommands accept `--json`. `leanck doctor` reports the count against the limit and warns when it is reached. Upgrade the client and daemon together: an older `leanckd` rejects the forwarded `instances.*` settings and exits at startup.
+`stop` asks each daemon to shut down and waits (15 seconds by default) for it to exit, so its slot is free when the command returns. Both subcommands accept `--json`. `leanck doctor` reports the count against the limit and warns when it is reached. The CLI, MCP server, and daemon ship in one executable. After upgrading it, explicitly stop older running daemons before issuing queries; wire-version checks still apply. Auto-started daemons use `leanckd` as their command-line name (`argv[0]`); the OS executable name can remain `leanck`. Eviction and listing use slot records, process start identities, and sockets, never process names.
+
+## Unified executable migration
+
+The former `leanck-mcp` and `leanckd` executables are replaced by `leanck serve mcp` and `leanck serve daemon WORKSPACE`. Update MCP configurations to use command `leanck` and arguments `["serve", "mcp"]`. Update `client.daemon_bin` to point to the unified executable, and update custom daemon wrappers to accept `serve daemon` before the workspace argument. No legacy executable launchers are installed. The standalone `leanck-normalize` executable is unchanged. Existing runtime paths, lock files, slot records, and the wire protocol are unchanged; stop older daemons explicitly rather than deleting their locks.

@@ -70,7 +70,7 @@ pub enum ClientError {
     #[error("configured daemon binary {0:?} is not a file")]
     InvalidBinary(PathBuf),
     #[error(
-        "could not find leanckd; install it alongside leanck, configure client.daemon_bin, or put it on PATH"
+        "could not find leanck to run `serve daemon`; configure client.daemon_bin or put leanck on PATH"
     )]
     BinaryNotFound,
     #[error("leanckd did not start within the timeout")]

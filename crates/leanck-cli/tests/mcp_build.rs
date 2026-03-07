@@ -35,7 +35,8 @@ async fn mcp_build_cancellation_stops_lake_and_allows_the_next_standalone_build(
     let project = Project::new(
         "if [ ! -f attempted ]; then touch attempted; printf '%s' \"$$\" > lake.pid.tmp; mv lake.pid.tmp lake.pid; exec sleep 30; fi\nprintf '%s' \"$$\" > lake.pid.tmp\nmv lake.pid.tmp lake.pid\nprintf '%s\\n' \"$@\" > args\nprintf 'warning: configuration warning\\n'",
     );
-    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_leanck-mcp"))
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_leanck"))
+        .args(["serve", "mcp"])
         .arg("--workspace")
         .arg(&project.0)
         .env("PATH", project.path_env())

@@ -1,6 +1,6 @@
 [package]
 name = "leanckd"
-version = "0.15.0"
+version = "0.16.0"
 edition = "2024"
 rust-version = "1.89"
 
@@ -8,13 +8,8 @@ rust-version = "1.89"
 name = "leanckd"
 path = "src/lib.rs"
 
-[[bin]]
-name = "leanckd"
-path = "src/main.rs"
-
 [dependencies]
 anyhow.workspace = true
-clap.workspace = true
 leanck-config = { workspace = true, default-features = true }
 leanck-core = { workspace = true, features = ["wire"] }
 leanck-lake.workspace = true

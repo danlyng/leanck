@@ -8,7 +8,7 @@ and must not be edited by hand. Sources are:
 - leanck-skills/          skills (shared by Claude Code and Codex)
 - leanck-subagents/       Claude Code agents (*.md) and Codex agents (*.codex.toml)
 - leanck-hooks/           Claude Code hooks
-- --bin-dir               staged leanck, leanck-mcp, and leanckd executables
+- --bin-dir               staged leanck executable
 """
 
 import argparse
@@ -22,7 +22,7 @@ import sys
 import tempfile
 import tomllib
 
-BINARIES = ("leanck", "leanck-mcp", "leanckd")
+BINARIES = ("leanck",)
 MARKER = ".leanck-package.json"
 
 
@@ -180,7 +180,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Assemble the leanck Claude Code and Codex plugin from repository sources.")
     parser.add_argument("--bin-dir", type=Path, required=True,
-                        help="directory holding staged leanck, leanck-mcp, and leanckd")
+                        help="directory holding the staged leanck executable")
     parser.add_argument("--output", type=Path, required=True,
                         help="generated plugin directory to create or replace")
     args = parser.parse_args()

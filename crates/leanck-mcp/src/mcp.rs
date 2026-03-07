@@ -244,6 +244,12 @@ pub struct LeanckServer {
 }
 
 impl LeanckServer {
+    /// Supply the unified executable without changing effective configuration.
+    pub fn with_daemon_binary(mut self, binary: std::path::PathBuf) -> Self {
+        self.workspace = self.workspace.with_daemon_binary(binary);
+        self
+    }
+
     pub fn new(config: &Config) -> Self {
         let workspace = WorkspaceSelection::new(config.workspace.clone());
         workspace.set_configured(config.workspace.clone(), config.settings.clone());

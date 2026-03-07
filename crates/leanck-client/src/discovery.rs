@@ -1,7 +1,8 @@
 use crate::error::{ClientError, Result};
 use std::path::PathBuf;
 
-/// Resolve `leanckd` beside the running executable, then on PATH.
+/// Resolve `leanck` beside the host executable, then on PATH. Never assume
+/// an arbitrary host application or test harness supports `serve daemon`.
 /// Explicit binary selection is supplied through `client.daemon_bin` in settings.
 pub fn resolve_binary() -> Result<PathBuf> {
     resolve_binary_from(std::env::current_exe().ok(), std::env::var_os("PATH"))
@@ -14,13 +15,13 @@ fn resolve_binary_from(
     if let Some(exe) = current_exe
         && let Some(dir) = exe.parent()
     {
-        let sibling = dir.join("leanckd");
-        if sibling.exists() {
+        let sibling = dir.join("leanck");
+        if sibling.is_file() {
             return Ok(sibling);
         }
     }
-    // Fall back to a `leanckd` found on PATH.
-    if let Some(found) = find_on_path("leanckd", search_path) {
+    // Fall back to a `leanck` found on PATH.
+    if let Some(found) = find_on_path("leanck", search_path) {
         return Ok(found);
     }
     Err(ClientError::BinaryNotFound)
@@ -48,12 +49,12 @@ mod tests {
         let path_dir = scratch.0.join("path");
         std::fs::create_dir(&sibling_dir).unwrap();
         std::fs::create_dir(&path_dir).unwrap();
-        let sibling = sibling_dir.join("leanckd");
-        let path_bin = path_dir.join("leanckd");
+        let sibling = sibling_dir.join("leanck");
+        let path_bin = path_dir.join("leanck");
         for bin in [&sibling, &path_bin] {
             std::fs::write(bin, "").unwrap();
         }
-        let current_exe = Some(sibling_dir.join("leanck-mcp"));
+        let current_exe = Some(sibling_dir.join("host-application"));
         let search_path = Some(path_dir.into_os_string());
         assert_eq!(
             resolve_binary_from(current_exe.clone(), search_path.clone()).unwrap(),
@@ -66,6 +67,17 @@ mod tests {
         );
         assert!(matches!(
             resolve_binary_from(None, None),
+            Err(ClientError::BinaryNotFound)
+        ));
+    }
+
+    #[test]
+    fn a_library_host_is_never_assumed_to_support_daemon_mode() {
+        let scratch = Scratch::new();
+        let host = scratch.0.join("host-application");
+        std::fs::write(&host, "").unwrap();
+        assert!(matches!(
+            resolve_binary_from(Some(host), None),
             Err(ClientError::BinaryNotFound)
         ));
     }

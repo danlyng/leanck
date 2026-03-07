@@ -4,7 +4,7 @@
 
 `leanck` is also attentive to minimizing token usage. Agents can request diagnostics for specific declarations and all output is limited to essential information by default (for example, linter warnings are suppressed by default with the expectation that they will be cheap to clean up later).
 
-It exposes the same capabilities through a command-line interface (`leanck`) and a Model Context Protocol server (`leanck-mcp`), along with skills, subagents, and hooks packaged as a plugin for Claude Code and Codex.
+It exposes the same capabilities through a command-line interface (`leanck`) and a Model Context Protocol server (`leanck serve mcp`), along with skills, subagents, and hooks packaged as a plugin for Claude Code and Codex.
 
 ## Features
 
@@ -76,19 +76,21 @@ leanck normalize Main.lean
 
 ## How it works
 
-`leanck` runs a background daemon (`leanckd`) per Lean worktree that manages a single persistent `lake serve` process over a local Unix socket. When an agent runs a live query through the `leanck` CLI or `leanck-mcp`, the client connects to the workspace's daemon (starting it automatically on first use, including fetching the Mathlib cache when applicable) and queries the running Lean server.
+`leanck` runs a background daemon (`leanck serve daemon`) per Lean worktree that manages a single persistent `lake serve` process over a local Unix socket. When an agent runs a live query through the `leanck` CLI or MCP server, the client connects to the workspace's daemon (starting it automatically on first use, including fetching the Mathlib cache when applicable) and queries the running Lean server.
 
 This mirrors how an editor uses the Lean LSP: in both cases, the server process keeps imported `.olean` artifacts and elaborated file states warm in memory, re-elaborating only what changed instead of re-initializing the environment from scratch on each invocation. Because `leanckd` owns and coordinates access to the single `lake serve` instance, multiple concurrent agents and CLI invocations can query the same workspace safely without editor dependencies or multi-client deadlocks. An idle daemon shuts down automatically after an hour. To bound memory, at most `instances.limit` daemons (8 by default) run on a machine; when the limit is reached, starting a daemon for another worktree first stops the longest-idle one. The daemon is asked to stop only if it is still idle, so a daemon that has accepted work in the meantime stays up. `leanck daemons` lists and stops them.
 
 By default, `leanck` also enables Lake's local artifact cache (`LAKE_ARTIFACT_CACHE=true`), allowing worktrees and projects on the same machine to reuse compiled build outputs instead of rebuilding dependencies from scratch (disable with `cache.shared = false`).
 
 ```text
-CLI (leanck) / MCP (leanck-mcp)
-  ├── live queries ──► leanck-client ──► leanckd (per worktree) ──► lake serve
+CLI (leanck) / MCP (leanck serve mcp)
+  ├── live queries ──► leanck-client ──► leanck serve daemon (per worktree) ──► lake serve
   ├── build ─────────► leanck-lake ────► project's lake build
   ├── loogle ────────► leanck-loogle ──► Loogle HTTP endpoint(s)
   └── normalize ─────► leanck-normalize
 ```
+
+The server modes also support explicit launches: `leanck serve mcp [--workspace PATH]` runs MCP over stdio, and `leanck serve daemon WORKTREE` runs a workspace daemon in the foreground. Normal queries start the daemon automatically.
 
 ## Configuration
 
@@ -106,7 +108,7 @@ Any command can also take `--config <FILE>`, `--no-config`, or repeatable `--set
 
 `just package-plugin` builds release binaries and assembles a ready-to-use plugin in `leanck-plugin/` containing:
 
-- The `leanck-mcp` server and `leanck` CLI
+- The `leanck` executable, including CLI, MCP, and daemon modes
 - Skills for theorem proving (`lean-proving`), proof simplification (`lean-simplify`), and style checking (`lean-style`)
 - Subagents (`lean-expert`, `lean-grind`, `lean-style-worker`)
 - A `PostToolUse` hook for `push_neg` migration hints
@@ -118,8 +120,8 @@ See [`packaging/plugin/README.md`](packaging/plugin/README.md) for setup instruc
 | Path | Description |
 |---|---|
 | `crates/leanck-cli/` | The `leanck` command-line interface. |
-| `crates/leanck-mcp/` | Stdio MCP server (`leanck-mcp`) exposing live Lean queries, builds, and Loogle. |
-| `crates/leanckd/` | Per-worktree background daemon managing `lake serve` over a Unix socket. |
+| `crates/leanck-mcp/` | Stdio MCP server (`leanck serve mcp`) exposing live Lean queries, builds, and Loogle. |
+| `crates/leanckd/` | Per-worktree daemon library (`leanck serve daemon`) managing `lake serve` over a Unix socket. |
 | `crates/leanck-client/` | Shared workspace-bound daemon client, auto-start, transport, and output rendering. |
 | `crates/leanck-core/` | Shared workspace identity, socket/lock paths, and wire protocol types. |
 | `crates/leanck-lake/` | Bounded `lake build` runner, output parser, and Mathlib cache coordination. |

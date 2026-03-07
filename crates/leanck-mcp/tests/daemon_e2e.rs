@@ -34,7 +34,7 @@ async fn client_auto_spawns_and_queries() {
         .unwrap()
         .parent()
         .unwrap()
-        .join("leanckd");
+        .join("leanck");
     assert!(
         daemon.is_file(),
         "build the workspace before running this live test"
