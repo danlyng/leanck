@@ -111,16 +111,60 @@ impl SlotLock {
         policy: SlotPolicy,
         record: &SlotRecord,
     ) -> io::Result<SlotOutcome> {
+        Self::acquire_across(directory, &[directory.to_path_buf()], limit, policy, record)
+    }
+
+    /// Serialize admission across all existing runtime roots, including cache
+    /// locations used by older versions. Canonical ordering prevents deadlocks.
+    pub fn acquire_across(
+        directory: &Path,
+        directories: &[PathBuf],
+        limit: u64,
+        policy: SlotPolicy,
+        record: &SlotRecord,
+    ) -> io::Result<SlotOutcome> {
+        let canonical_directory = directory.canonicalize()?;
+        let mut roots = directories.to_vec();
+        roots.push(canonical_directory.clone());
+        let roots = crate::paths::coordination_directories(&roots);
+        if !roots.contains(&canonical_directory) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "selected runtime directory is not safe for accounting",
+            ));
+        }
+        let mut admissions = Vec::new();
+        let mut locked_roots = Vec::new();
+        for root in &roots {
+            let path = root.join(ADMISSION_LOCK);
+            let acquired = (|| {
+                let admission = open_for_locking(&path)?;
+                admission.lock()?;
+                Ok::<_, io::Error>(admission)
+            })();
+            match acquired {
+                Ok(admission) => {
+                    admissions.push(admission);
+                    locked_roots.push(root);
+                }
+                Err(_) if crate::paths::inactive_secondary(&path, directory) => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        let mut elsewhere = 0;
+        for root in locked_roots
+            .into_iter()
+            .filter(|root| **root != canonical_directory)
+        {
+            elsewhere += count_held(root, existing_slots(root)?.iter())?;
+        }
         let mut line = serde_json::to_vec(record).map_err(io::Error::other)?;
         line.push(b'\n');
-        // Dropping this descriptor on any return releases admission.
-        let admission = open_for_locking(&directory.join(ADMISSION_LOCK))?;
-        admission.lock()?;
         let existing = existing_slots(directory)?;
         let refuse = policy == SlotPolicy::Refuse && limit > 0;
         for slot in 0..MAX_SLOTS {
             // The loop only advances past held slots, so every lower slot is held.
-            let below = u64::from(slot);
+            let below = elsewhere + u64::from(slot);
             let mut above = None;
             if refuse && !existing.contains(&slot) {
                 // Taking this slot would create its file; refuse first if full.
@@ -174,12 +218,7 @@ impl SlotLock {
 
 /// Open (creating if needed, never truncating) a file to `flock`.
 fn open_for_locking(path: &Path) -> io::Result<File> {
-    std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(path)
+    crate::paths::open_lock(path)
 }
 
 /// The slot numbers of the slot files currently in `directory`.
@@ -198,7 +237,11 @@ fn existing_slots(directory: &Path) -> io::Result<BTreeSet<u32>> {
 fn count_held<'a>(directory: &Path, slots: impl IntoIterator<Item = &'a u32>) -> io::Result<u64> {
     let mut held = 0;
     for &slot in slots {
-        let file = match File::open(slot_path(directory, slot)) {
+        let file = match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(slot_path(directory, slot))
+        {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
             Err(error) => return Err(error),
@@ -253,6 +296,23 @@ pub fn live(directory: &Path) -> Vec<SlotEntry> {
     scan(directory)
         .into_iter()
         .filter(|entry| record_is_live(&entry.record))
+        .collect()
+}
+
+/// One inventory across runtime roots, deduplicated by socket and process identity.
+/// Discovery never creates directories or acquires locks.
+pub fn live_across(directories: &[PathBuf]) -> Vec<SlotEntry> {
+    let mut seen = std::collections::HashSet::new();
+    crate::paths::coordination_directories(directories)
+        .iter()
+        .flat_map(|dir| live(dir))
+        .filter(|entry| {
+            seen.insert((
+                entry.record.pid,
+                entry.record.start_id,
+                entry.record.socket.clone(),
+            ))
+        })
         .collect()
 }
 
@@ -474,6 +534,131 @@ mod tests {
         ));
         drop(first);
         assert!(std::fs::File::open(&path).unwrap().try_lock().is_ok());
+    }
+
+    #[test]
+    fn admission_and_inventory_cover_fallback_roots_and_deduplicate_aliases() {
+        let scratch = Scratch::new();
+        let preferred = scratch.0.join("preferred");
+        let fallback = scratch.0.join("fallback");
+        std::fs::create_dir(&preferred).unwrap();
+        std::fs::create_dir(&fallback).unwrap();
+        let alias = scratch.0.join("alias");
+        std::os::unix::fs::symlink(&preferred, &alias).unwrap();
+        let roots = vec![
+            preferred.clone(),
+            fallback.clone(),
+            preferred.clone(),
+            alias,
+        ];
+        let first = take(&preferred, 1, SlotPolicy::Refuse);
+        assert!(matches!(
+            SlotLock::acquire_across(
+                &fallback,
+                &roots,
+                1,
+                SlotPolicy::Refuse,
+                &record(std::process::id())
+            )
+            .unwrap(),
+            SlotOutcome::OverLimit { held: 1, limit: 1 }
+        ));
+        assert!(!slot_path(&fallback, 0).exists());
+        let mut second_record = record(std::process::id());
+        second_record.socket = fallback.join("second.sock");
+        let (second, running) = acquired(
+            SlotLock::acquire_across(&fallback, &roots, 2, SlotPolicy::Refuse, &second_record)
+                .unwrap(),
+        );
+        assert_eq!(running, 2);
+        assert_eq!(live_across(&roots).len(), 2);
+        drop(first);
+        assert_eq!(live_across(&roots).len(), 1);
+        drop(second);
+        assert!(live_across(&roots).is_empty());
+    }
+
+    #[test]
+    fn unusable_secondary_admission_can_be_skipped_only_without_live_records() {
+        let scratch = Scratch::new();
+        let good = scratch.0.join("good");
+        let bad = scratch.0.join("bad");
+        for dir in [&good, &bad] {
+            std::fs::create_dir(dir).unwrap();
+        }
+        std::fs::create_dir(bad.join(ADMISSION_LOCK)).unwrap();
+        let roots = vec![good.clone(), bad.clone()];
+        let (lock, _) = acquired(
+            SlotLock::acquire_across(
+                &good,
+                &roots,
+                1,
+                SlotPolicy::Refuse,
+                &record(std::process::id()),
+            )
+            .unwrap(),
+        );
+        drop(lock);
+        std::fs::write(
+            slot_path(&bad, 0),
+            serde_json::to_vec(&record(std::process::id())).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            SlotLock::acquire_across(
+                &good,
+                &roots,
+                1,
+                SlotPolicy::Refuse,
+                &record(std::process::id())
+            )
+            .is_err(),
+            "never omit a live daemon from admission"
+        );
+    }
+
+    #[test]
+    fn concurrent_admission_in_different_roots_enforces_one_shared_limit() {
+        let scratch = Scratch::new();
+        let roots: Vec<_> = ["a", "b"].iter().map(|name| scratch.0.join(name)).collect();
+        for root in &roots {
+            std::fs::create_dir(root).unwrap();
+        }
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let jobs: Vec<_> = roots
+            .iter()
+            .map(|root| {
+                let root = root.clone();
+                let roots = roots.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    SlotLock::acquire_across(
+                        &root,
+                        &roots,
+                        1,
+                        SlotPolicy::Refuse,
+                        &record(std::process::id()),
+                    )
+                    .unwrap()
+                })
+            })
+            .collect();
+        let outcomes: Vec<_> = jobs.into_iter().map(|j| j.join().unwrap()).collect();
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|o| matches!(o, SlotOutcome::Acquired { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|o| matches!(o, SlotOutcome::OverLimit { held: 1, limit: 1 }))
+                .count(),
+            1
+        );
     }
 
     #[test]

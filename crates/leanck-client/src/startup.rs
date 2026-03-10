@@ -3,17 +3,17 @@
 use crate::{
     discovery::resolve_binary,
     error::{ClientError, Result},
-    instances::{EVICT_WAIT, count_live_in, evict_idle_in},
+    instances::{EVICT_WAIT, count_live_across, evict_idle_across},
     transport::can_connect,
 };
 use leanck_config::{OnLimit, Settings};
 use leanck_core::{
-    instances::{EXIT_INSTANCE_LIMIT, live, pid_alive},
+    instances::{EXIT_INSTANCE_LIMIT, live_across, pid_alive},
     paths::RuntimePaths,
 };
 use std::fs::{File, TryLockError};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tokio::process::Child;
 
@@ -68,6 +68,8 @@ fn spawn_daemon(
     cmd.as_std_mut().arg0("leanckd");
     cmd.args(["serve", "daemon"])
         .arg(worktree)
+        .arg("--runtime-dir")
+        .arg(runtime.directory())
         .arg("--no-config");
     for assignment in settings.daemon_assignments() {
         cmd.arg("--set").arg(assignment);
@@ -103,13 +105,17 @@ async fn wait_for_exits(pending: &mut Vec<u32>, wait: Duration) {
 /// daemons evicted by an earlier attempt that had not exited yet. Their slots
 /// are about to free, so they are waited for and never replaced by another
 /// eviction; evictions that have not exited are added to it.
-async fn make_room(slot_dir: &Path, settings: &Settings, exiting: &mut Vec<u32>) -> Result<()> {
+async fn make_room(
+    slot_dirs: &[PathBuf],
+    settings: &Settings,
+    exiting: &mut Vec<u32>,
+) -> Result<()> {
     let limit = settings.instances.limit;
     if limit == 0 {
         return Ok(());
     }
     wait_for_exits(exiting, EVICT_WAIT).await;
-    let running = count_live_in(slot_dir);
+    let running = count_live_across(slot_dirs);
     // Free slots needed for one more daemon, beyond those already freeing.
     let needed = (running + 1)
         .saturating_sub(limit)
@@ -131,7 +137,7 @@ async fn make_room(slot_dir: &Path, settings: &Settings, exiting: &mut Vec<u32>)
         }
         OnLimit::EvictIdle => {
             let needed = usize::try_from(needed).unwrap_or(usize::MAX);
-            let evicted = evict_idle_in(slot_dir, settings, needed).await?;
+            let evicted = evict_idle_across(slot_dirs, settings, needed).await?;
             exiting.extend(
                 evicted
                     .iter()
@@ -140,7 +146,7 @@ async fn make_room(slot_dir: &Path, settings: &Settings, exiting: &mut Vec<u32>)
             );
             if evicted.len() < needed {
                 return Err(ClientError::InstanceLimit {
-                    running: count_live_in(slot_dir),
+                    running: count_live_across(slot_dirs),
                     limit,
                     busy: true,
                 });
@@ -153,7 +159,7 @@ async fn make_room(slot_dir: &Path, settings: &Settings, exiting: &mut Vec<u32>)
 /// The caller's turn to start a worktree's daemon, or the daemon is serving.
 enum StartTurn {
     /// Holds the worktree's start lock until dropped.
-    Mine(File),
+    Mine(Vec<File>),
     Served,
 }
 
@@ -165,20 +171,36 @@ async fn take_start_turn(runtime: &RuntimePaths, policy: StartupPolicy) -> Resul
         directory: runtime.directory().to_path_buf(),
         source,
     };
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(runtime.start_lock())
-        .map_err(prepare)?;
     let deadline = Instant::now() + policy.hard_cap;
     loop {
-        match file.try_lock() {
-            Ok(()) => return Ok(StartTurn::Mine(file)),
-            Err(TryLockError::WouldBlock) => {}
-            Err(TryLockError::Error(source)) => return Err(prepare(source)),
+        let mut locks = Vec::new();
+        let mut blocked = false;
+        for path in runtime.lock_paths("start.lock") {
+            let file = match leanck_core::paths::open_lock(&path) {
+                Ok(file) => file,
+                Err(_) if leanck_core::paths::inactive_secondary(&path, runtime.directory()) => {
+                    continue;
+                }
+                Err(source) => return Err(prepare(source)),
+            };
+            match file.try_lock() {
+                Ok(()) => locks.push(file),
+                Err(TryLockError::WouldBlock) => {
+                    blocked = true;
+                    break;
+                }
+                Err(TryLockError::Error(_))
+                    if leanck_core::paths::inactive_secondary(&path, runtime.directory()) =>
+                {
+                    continue;
+                }
+                Err(TryLockError::Error(source)) => return Err(prepare(source)),
+            }
         }
+        if !blocked {
+            return Ok(StartTurn::Mine(locks));
+        }
+        drop(locks);
         if can_connect(&runtime.socket()).await {
             return Ok(StartTurn::Served);
         }
@@ -218,18 +240,17 @@ pub(crate) async fn ensure_running(
         hard_cap: Duration::from_millis(settings.client.startup_timeout_ms),
         ..StartupPolicy::default()
     };
-    let slot_dir = (!runtime.is_fallback()).then(|| runtime.directory().to_path_buf());
-    if slot_dir.is_none() {
-        eprintln!(
-            "warning: leanck runtime directory fell back to {}; this daemon is not counted against instances.limit",
-            runtime.directory().display()
-        );
-    }
     let _turn = match take_start_turn(&runtime, policy).await? {
         StartTurn::Served => return Ok(runtime),
         StartTurn::Mine(file) => file,
     };
+    let runtime = runtime.rediscover(worktree);
+    let slot_dirs = runtime.accounting_directories();
     if can_connect(&runtime.socket()).await {
+        return Ok(runtime);
+    }
+    if runtime.has_owner() {
+        wait_for_daemon(&runtime, None, policy).await?;
         return Ok(runtime);
     }
     let mut exiting = Vec::new();
@@ -237,23 +258,21 @@ pub(crate) async fn ensure_running(
     loop {
         // A live slot for this worktree's own socket is its daemon warming up:
         // the spawn below only waits for it, so it needs no room.
-        if let Some(dir) = &slot_dir
-            && !live(dir)
-                .iter()
-                .any(|entry| entry.record.socket == runtime.socket())
+        if !live_across(&slot_dirs)
+            .iter()
+            .any(|entry| entry.record.socket == runtime.socket())
         {
-            make_room(dir, settings, &mut exiting).await?;
+            make_room(&slot_dirs, settings, &mut exiting).await?;
         }
         let child = spawn_daemon(&binary, worktree, &runtime, settings)?;
         let watch = Watch {
             child,
-            slot_dir: slot_dir.as_deref(),
+            slot_dirs: &slot_dirs,
             limit: settings.instances.limit,
         };
         match wait_for_daemon(&runtime, Some(watch), policy).await {
             Err(ClientError::InstanceLimit { .. })
                 if settings.instances.on_limit == OnLimit::EvictIdle
-                    && slot_dir.is_some()
                     && attempt < SPAWN_ATTEMPTS =>
             {
                 attempt += 1;
@@ -283,7 +302,7 @@ impl Default for StartupPolicy {
 struct Watch<'a> {
     child: Child,
     /// Where to count running daemons if the child refuses over the limit.
-    slot_dir: Option<&'a Path>,
+    slot_dirs: &'a [PathBuf],
     limit: u64,
 }
 
@@ -323,7 +342,7 @@ async fn wait_for_daemon(
                 0 => watch = None,
                 EXIT_INSTANCE_LIMIT => {
                     return Err(ClientError::InstanceLimit {
-                        running: spawned.slot_dir.map_or(0, count_live_in),
+                        running: count_live_across(spawned.slot_dirs),
                         limit: spawned.limit,
                         busy: false,
                     });

@@ -57,24 +57,40 @@ impl Drop for Daemon {
 /// the holder's fd closes (including on crash), so it never wedges a worktree.
 struct StartupLock {
     // Held only to keep the locked fd open; the `flock` lasts until it closes.
-    _file: File,
+    _files: Vec<File>,
 }
 
 impl StartupLock {
     /// Try to take the lock without blocking. `Ok(None)` means another process
     /// already holds it (a daemon is running or warming up for this worktree).
-    fn acquire(path: &Path) -> std::io::Result<Option<StartupLock>> {
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(path)?;
-        match file.try_lock() {
-            Ok(()) => Ok(Some(StartupLock { _file: file })),
-            Err(std::fs::TryLockError::WouldBlock) => Ok(None),
-            Err(std::fs::TryLockError::Error(error)) => Err(error),
+    fn acquire(runtime: &RuntimePaths) -> std::io::Result<Option<StartupLock>> {
+        let mut files = Vec::new();
+        for path in runtime.lock_paths("lock") {
+            let file = match leanck_core::paths::open_lock(&path) {
+                Ok(file) => file,
+                Err(_) if leanck_core::paths::inactive_secondary(&path, runtime.directory()) => {
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            match file.try_lock() {
+                Ok(()) => files.push(file),
+                Err(std::fs::TryLockError::WouldBlock) => return Ok(None),
+                Err(std::fs::TryLockError::Error(_))
+                    if leanck_core::paths::inactive_secondary(&path, runtime.directory()) =>
+                {
+                    continue;
+                }
+                Err(std::fs::TryLockError::Error(error)) => return Err(error),
+            }
         }
+        use std::io::Write;
+        let selected = serde_json::to_vec(runtime.directory()).map_err(std::io::Error::other)?;
+        for file in &mut files {
+            file.set_len(0)?;
+            file.write_all(&selected)?;
+        }
+        Ok(Some(StartupLock { _files: files }))
     }
 }
 
@@ -85,7 +101,7 @@ struct RuntimeOwner {
     pid: PathBuf,
     // Declared before `_lock` so the instance slot is released no later than
     // the worktree lock; both live for the daemon's whole run.
-    _slot: Option<SlotLock>,
+    _slot: SlotLock,
     _lock: StartupLock,
 }
 
@@ -96,21 +112,14 @@ impl Drop for RuntimeOwner {
     }
 }
 
-/// Take a machine-wide instance slot for this daemon. Fallback runtime
-/// directories take no slot. Over the limit under `refuse` or `evict_idle`
+/// Take a machine-wide instance slot, including for fallback runtimes.
+/// Over the limit under `refuse` or `evict_idle`
 /// this fails before any runtime file is written; the daemon never evicts.
 fn acquire_slot(
     runtime: &RuntimePaths,
     worktree: &Path,
     instances: &leanck_config::Instances,
-) -> Result<Option<SlotLock>> {
-    if runtime.is_fallback() {
-        tracing::warn!(
-            directory = %runtime.directory().display(),
-            "runtime directory fell back to the system temp directory; this daemon is not counted against instances.limit"
-        );
-        return Ok(None);
-    }
+) -> Result<SlotLock> {
     let record = SlotRecord {
         pid: std::process::id(),
         worktree: worktree
@@ -124,7 +133,13 @@ fn acquire_slot(
         OnLimit::Warn => SlotPolicy::Continue,
         OnLimit::Refuse | OnLimit::EvictIdle => SlotPolicy::Refuse,
     };
-    match SlotLock::acquire(runtime.directory(), instances.limit, policy, &record)? {
+    match SlotLock::acquire_across(
+        runtime.directory(),
+        &runtime.accounting_directories(),
+        instances.limit,
+        policy,
+        &record,
+    )? {
         SlotOutcome::OverLimit { held, limit } => {
             tracing::warn!(
                 running = held,
@@ -146,7 +161,7 @@ fn acquire_slot(
                     "instance limit exceeded; starting anyway because on_limit=warn"
                 );
             }
-            Ok(Some(lock))
+            Ok(lock)
         }
     }
 }
@@ -161,11 +176,23 @@ pub async fn run(worktree: &Path) -> Result<()> {
 }
 
 pub async fn run_with_settings(worktree: &Path, settings: leanck_config::Settings) -> Result<()> {
+    run_with_runtime_directory(worktree, settings, None).await
+}
+
+/// An auto-starting client supplies its validated directory explicitly.
+pub async fn run_with_runtime_directory(
+    worktree: &Path,
+    settings: leanck_config::Settings,
+    directory: Option<PathBuf>,
+) -> Result<()> {
     settings
         .validate()
         .map_err(|e| Error::BadRequest(format!("configuration: {e:#}")))?;
-    let runtime = RuntimePaths::for_workspace(worktree).prepare()?;
-    let Some(lock) = StartupLock::acquire(&runtime.lock())? else {
+    let runtime = match directory {
+        Some(directory) => RuntimePaths::selected(directory, worktree)?,
+        None => RuntimePaths::for_workspace(worktree).prepare()?,
+    };
+    let Some(lock) = StartupLock::acquire(&runtime)? else {
         tracing::info!(worktree = %worktree.display(), "another leanckd owns this worktree; exiting");
         return Ok(());
     };

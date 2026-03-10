@@ -2,8 +2,8 @@ use std::process::Command;
 
 #[test]
 fn doctor_accepts_all_lake_markers_without_registry_or_daemon() {
-    let root = std::env::temp_dir().join(format!(
-        "leanck-doctor-{}-{}",
+    let root = std::path::PathBuf::from("/tmp").join(format!(
+        "lcd-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -15,6 +15,7 @@ fn doctor_accepts_all_lake_markers_without_registry_or_daemon() {
     for marker in ["lakefile.lean", "lakefile.toml", "lean-toolchain"] {
         std::fs::write(root.join(marker), "").unwrap();
         let output = Command::new(env!("CARGO_BIN_EXE_leanck"))
+            .env_remove("XDG_RUNTIME_DIR")
             .env("XDG_CACHE_HOME", root.join("runtime-cache"))
             .args(["doctor", "--json", "--workspace"])
             .arg(&root)

@@ -25,7 +25,7 @@ mod workspace;
 
 pub use error::{Error, Result};
 
-pub use daemon::{run, run_with_settings};
+pub use daemon::{run, run_with_runtime_directory, run_with_settings};
 
 #[cfg(test)]
 mod live_smoke;

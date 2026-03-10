@@ -39,6 +39,7 @@ impl Drop for Scratch {
 
 fn leanck(cache: &Path, cwd: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_leanck"))
+        .env_remove("XDG_RUNTIME_DIR")
         .env("XDG_CACHE_HOME", cache)
         .env_remove("LEANCK_CONFIG")
         .current_dir(cwd)

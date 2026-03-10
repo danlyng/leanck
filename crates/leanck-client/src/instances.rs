@@ -13,8 +13,8 @@ use leanck_config::{OnLimit, Settings};
 use leanck_core::{
     api::{Command, HealthResult, LifecycleState, Operation, ShutdownParams},
     error::ProtocolError,
-    instances::{SlotEntry, live, now_unix_secs, pid_alive},
-    paths::cache_dir,
+    instances::{SlotEntry, live_across, now_unix_secs, pid_alive},
+    paths::runtime_directories,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -121,21 +121,29 @@ pub struct StopOutcome {
     pub exited: bool,
 }
 
-/// The machine-wide slot directory, `cache_dir()`. Never created here.
+/// Preferred slot directory. Inventory scans all runtime candidates; never creates them.
 pub fn slot_directory() -> PathBuf {
-    cache_dir()
+    runtime_directories().remove(0)
 }
 
 pub fn count_live() -> u64 {
-    count_live_in(&slot_directory())
+    count_live_across(&runtime_directories())
 }
 
 pub fn count_live_in(dir: &Path) -> u64 {
-    live(dir).len() as u64
+    count_live_across(&[dir.to_path_buf()])
+}
+
+pub(crate) fn count_live_across(dirs: &[PathBuf]) -> u64 {
+    live_across(dirs).len() as u64
 }
 
 pub fn summary(settings: &Settings) -> Summary {
-    summary_in(&slot_directory(), settings)
+    Summary {
+        running: count_live(),
+        limit: settings.instances.limit,
+        on_limit: settings.instances.on_limit,
+    }
 }
 
 pub fn summary_in(dir: &Path, settings: &Settings) -> Summary {
@@ -147,15 +155,19 @@ pub fn summary_in(dir: &Path, settings: &Settings) -> Summary {
 }
 
 pub async fn list(settings: &Settings) -> Vec<DaemonInfo> {
-    list_in(&slot_directory(), settings).await
+    list_across(&runtime_directories(), settings).await
 }
 
 /// Every live slot in `dir`, probed concurrently and sorted by slot.
 pub async fn list_in(dir: &Path, settings: &Settings) -> Vec<DaemonInfo> {
+    list_across(&[dir.to_path_buf()], settings).await
+}
+
+async fn list_across(dirs: &[PathBuf], settings: &Settings) -> Vec<DaemonInfo> {
     let timeout = Duration::from_millis(settings.client.probe_timeout_ms);
     let now = now_unix_secs();
     let mut probes = JoinSet::new();
-    for SlotEntry { slot, record } in live(dir) {
+    for SlotEntry { slot, record } in live_across(dirs) {
         probes.spawn(async move {
             let (state, health, error) = if !record.socket.exists() {
                 (DaemonState::Starting, None, None)
@@ -280,7 +292,7 @@ pub struct Evicted {
 }
 
 pub async fn evict_idle(settings: &Settings, needed: usize) -> Result<Vec<Evicted>> {
-    evict_idle_in(&slot_directory(), settings, needed).await
+    evict_idle_across(&runtime_directories(), settings, needed).await
 }
 
 /// Stop up to `needed` of the longest-idle daemons in `dir` (ties go to the
@@ -295,11 +307,29 @@ pub async fn evict_idle(settings: &Settings, needed: usize) -> Result<Vec<Evicte
 /// `needed` when too few daemons could be evicted, or the first stop error when
 /// none was evicted and an attempt failed with one.
 pub async fn evict_idle_in(dir: &Path, settings: &Settings, needed: usize) -> Result<Vec<Evicted>> {
-    evict_idle_waiting(dir, settings, needed, EVICT_WAIT).await
+    evict_idle_across(&[dir.to_path_buf()], settings, needed).await
 }
 
+pub(crate) async fn evict_idle_across(
+    dirs: &[PathBuf],
+    settings: &Settings,
+    needed: usize,
+) -> Result<Vec<Evicted>> {
+    evict_across_waiting(dirs, settings, needed, EVICT_WAIT).await
+}
+
+#[cfg(test)]
 async fn evict_idle_waiting(
     dir: &Path,
+    settings: &Settings,
+    needed: usize,
+    wait: Duration,
+) -> Result<Vec<Evicted>> {
+    evict_across_waiting(&[dir.to_path_buf()], settings, needed, wait).await
+}
+
+async fn evict_across_waiting(
+    dirs: &[PathBuf],
     settings: &Settings,
     needed: usize,
     wait: Duration,
@@ -307,7 +337,7 @@ async fn evict_idle_waiting(
     if needed == 0 {
         return Ok(Vec::new());
     }
-    let mut candidates: Vec<DaemonInfo> = list_in(dir, settings)
+    let mut candidates: Vec<DaemonInfo> = list_across(dirs, settings)
         .await
         .into_iter()
         .filter(DaemonInfo::is_idle)

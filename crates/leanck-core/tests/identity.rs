@@ -9,7 +9,7 @@ struct Scratch(PathBuf);
 impl Scratch {
     fn new() -> Self {
         static NEXT: AtomicU32 = AtomicU32::new(0);
-        let path = std::env::temp_dir().join(format!(
+        let path = PathBuf::from("/tmp").join(format!(
             "leanck-core-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
@@ -160,11 +160,16 @@ fn runtime_preparation_falls_back_without_changing_the_workspace_key() {
     std::fs::write(&blocked, "").unwrap();
     let original = RuntimePaths::in_directory(blocked.join("runtime"), &scratch.0);
     let prepared = original.clone().prepare().unwrap();
-    assert_eq!(prepared.directory(), std::env::temp_dir());
+    assert!(
+        prepared.directory().starts_with(std::env::temp_dir())
+            || prepared.directory().starts_with("/tmp")
+    );
+    assert_ne!(prepared.directory(), std::env::temp_dir());
     assert_eq!(prepared.socket().file_name(), original.socket().file_name());
     // Existing fallback daemons must also remain visible to non-spawning probes.
-    std::fs::write(prepared.pid(), "123").unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(prepared.socket()).unwrap();
     let discovered = RuntimePaths::for_workspace(&scratch.0);
-    std::fs::remove_file(prepared.pid()).unwrap();
-    assert_eq!(discovered, prepared);
+    drop(listener);
+    std::fs::remove_file(prepared.socket()).unwrap();
+    assert_eq!(discovered.directory(), prepared.directory());
 }

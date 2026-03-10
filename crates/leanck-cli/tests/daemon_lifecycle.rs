@@ -140,7 +140,9 @@ impl Fixture {
             .args(["--set", "cache.enabled=false", "--set", "instances.limit=0"])
             .args(extra);
         if let Some(cache) = &self.cache {
-            command.env("XDG_CACHE_HOME", cache);
+            command
+                .env_remove("XDG_RUNTIME_DIR")
+                .env("XDG_CACHE_HOME", cache);
         }
         command
             .stdin(Stdio::null())
@@ -212,6 +214,7 @@ impl Fixture {
                 "--set",
                 "instances.limit=1",
             ])
+            .env_remove("XDG_RUNTIME_DIR")
             .env(
                 "XDG_CACHE_HOME",
                 self.cache.as_ref().expect("private cache"),
@@ -1021,4 +1024,148 @@ async fn cli_and_mcp_share_cold_start_and_eviction_spares_busy_work_across_works
         Stopped::Exited
     );
     assert!(live(&cache.slots()).is_empty());
+}
+
+#[tokio::test]
+async fn runtime_preference_migration_and_accounting_span_cache_and_runtime_roots() {
+    use serde_json::json;
+    use std::os::unix::fs::PermissionsExt;
+    let runtime = CacheDir::new();
+    std::fs::set_permissions(&runtime.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let cache = CacheDir::new();
+    let mut first = Fixture::isolated(&silent_script(), &cache);
+    let mut old = first.launch();
+    first.ready().await;
+
+    // A new client with XDG_RUNTIME_DIR must find the existing cache daemon.
+    let mut command = first.frontend();
+    command
+        .env("XDG_RUNTIME_DIR", &runtime.0)
+        .env("TMPDIR", &cache.0)
+        .args(["serve", "mcp", "--workspace"])
+        .arg(&first.root);
+    let mut client = mcp::Mcp::start(command).await;
+    let health = client.tool("health", json!({"json": true})).await;
+    assert_eq!(health["ok"], true, "{health}");
+    assert_eq!(health["instances"]["running"], 1, "{health}");
+    assert!(
+        !runtime.slots().exists(),
+        "discovery does not migrate a live daemon"
+    );
+
+    // A second worktree uses XDG_RUNTIME_DIR, but must count the cache daemon.
+    let mut second = Fixture::isolated(&silent_script(), &runtime);
+    let mut command = second.frontend();
+    command
+        .env("XDG_RUNTIME_DIR", &runtime.0)
+        .env("XDG_CACHE_HOME", &cache.0)
+        .env("TMPDIR", &cache.0)
+        .args(["--set", "instances.limit=2", "serve", "mcp", "--workspace"])
+        .arg(&second.root);
+    let mut new_client = mcp::Mcp::start(command).await;
+    let health = new_client.tool("health", json!({"json": true})).await;
+    assert_eq!(health["ok"], true, "{health}");
+    assert_eq!(health["instances"]["running"], 2, "{health}");
+    second.ready().await;
+    assert_eq!(live(&runtime.slots()).len(), 1);
+    assert_eq!(live(&cache.slots()).len(), 1);
+    let mut listing = second.frontend();
+    let output = listing
+        .env("XDG_RUNTIME_DIR", &runtime.0)
+        .env("XDG_CACHE_HOME", &cache.0)
+        .env("TMPDIR", &cache.0)
+        .args(["daemons", "--json"])
+        .output()
+        .await
+        .unwrap();
+    let listed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(listed["running"], 2, "{listed}");
+    assert_eq!(listed["daemons"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        instances::stop_socket(
+            &second.runtime().socket(),
+            None,
+            &leanck_config::Settings::default(),
+            Duration::from_secs(5),
+            StopMode::Always
+        )
+        .await
+        .unwrap(),
+        Stopped::Exited
+    );
+    new_client.close().await;
+    first.stop(&mut old).await;
+    client.close().await;
+}
+
+#[tokio::test]
+async fn autostart_retries_the_selected_fallback_socket_and_preserves_limits() {
+    fallback_startup_case(true).await;
+    fallback_startup_case(false).await;
+}
+
+async fn fallback_startup_case(too_long: bool) {
+    use serde_json::json;
+    let temp = CacheDir::new();
+    let long_cache = if too_long {
+        temp.0.join("x".repeat(120))
+    } else {
+        let file = temp.0.join("file");
+        std::fs::write(&file, "not a directory").unwrap();
+        file.join("cache")
+    };
+    let mut fixture = Fixture::isolated(&silent_script(), &temp);
+    // The fixture's socket helpers expect <cache>/leanck. Use an explicit
+    // RuntimePaths for the new private temporary fallback instead.
+    let fallback = temp
+        .0
+        .join(format!("leanck-{}", unsafe { libc::geteuid() }));
+    let paths = RuntimePaths::in_directory(fallback.clone(), &fixture.root);
+    let mut command = fixture.frontend();
+    command
+        .env("XDG_RUNTIME_DIR", "relative-is-invalid")
+        .env("XDG_CACHE_HOME", &long_cache)
+        .env("TMPDIR", &temp.0)
+        .args(["serve", "mcp", "--workspace"])
+        .arg(&fixture.root);
+    let mut client = mcp::Mcp::start(command).await;
+    let health = client.tool("health", json!({"json": true})).await;
+    assert_eq!(health["ok"], true, "{health}");
+    assert_eq!(health["instances"]["running"], 1, "{health}");
+    assert!(paths.socket().exists());
+    assert!(!long_cache.exists());
+    let record = live(&fallback).pop().unwrap().record;
+    fixture.daemon_identity = Some((record.pid, record.start_id));
+    // Refuse a second daemon even though both use a temporary fallback.
+    let second = Fixture::isolated(&silent_script(), &temp);
+    let output = second
+        .frontend()
+        .env("XDG_RUNTIME_DIR", "relative-is-invalid")
+        .env("XDG_CACHE_HOME", &long_cache)
+        .env("TMPDIR", &temp.0)
+        .args(["--set", "instances.on_limit=\"refuse\"", "serve", "daemon"])
+        .arg(&second.root)
+        .output()
+        .await
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(EXIT_INSTANCE_LIMIT),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        instances::stop_socket(
+            &paths.socket(),
+            None,
+            &leanck_config::Settings::default(),
+            Duration::from_secs(5),
+            StopMode::Always
+        )
+        .await
+        .unwrap(),
+        Stopped::Exited
+    );
+    client.close().await;
+    assert!(live(&fallback).is_empty());
 }

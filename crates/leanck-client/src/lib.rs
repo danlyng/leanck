@@ -204,7 +204,11 @@ impl Client {
         Ok(value)
     }
 
-    async fn startup(&self, runtime: &RuntimePaths, options: &RequestOptions) -> Result<()> {
+    async fn startup(
+        &self,
+        runtime: &RuntimePaths,
+        options: &RequestOptions,
+    ) -> Result<RuntimePaths> {
         let work = startup::ensure_running(
             self.workspace(),
             runtime.clone(),
@@ -212,9 +216,9 @@ impl Client {
             self.daemon_binary.as_deref(),
         );
         if let Some(token) = &options.cancellation {
-            tokio::select! { biased; _ = token.cancelled() => Err(ClientError::Cancelled { delivery_uncertain: false }), result = work => result.map(|_| ()) }
+            tokio::select! { biased; _ = token.cancelled() => Err(ClientError::Cancelled { delivery_uncertain: false }), result = work => result }
         } else {
-            work.await.map(|_| ())
+            work.await
         }
     }
 
@@ -278,7 +282,7 @@ impl Client {
     ) -> Result<Value> {
         match first {
             Err(error) if error.is_pre_dispatch() => {
-                self.startup(&runtime, options).await?;
+                let runtime = self.startup(&runtime, options).await?;
                 self.attempt(&runtime, request, options, budget, negotiate)
                     .await
             }

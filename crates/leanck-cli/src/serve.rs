@@ -18,6 +18,9 @@ enum Mode {
     Daemon {
         /// Lake project directory.
         worktree: PathBuf,
+        /// Use the runtime directory selected by an auto-starting client.
+        #[arg(long, hide = true)]
+        runtime_dir: Option<PathBuf>,
     },
 }
 
@@ -46,11 +49,18 @@ pub(crate) fn run(args: Args, config: ConfigArgs) -> anyhow::Result<()> {
                 .with_daemon_binary(std::env::current_exe()?);
             runtime.block_on(leanck_mcp::serve(server))
         }
-        Mode::Daemon { worktree } => {
+        Mode::Daemon {
+            worktree,
+            runtime_dir,
+        } => {
             let root = leanck_core::workspace::WorkspaceRoot::from_path(worktree)?;
             let settings = config.load(root.as_path())?.settings;
             runtime
-                .block_on(leanckd::run_with_settings(root.as_path(), settings))
+                .block_on(leanckd::run_with_runtime_directory(
+                    root.as_path(),
+                    settings,
+                    runtime_dir,
+                ))
                 .map_err(anyhow::Error::from)
         }
     }
