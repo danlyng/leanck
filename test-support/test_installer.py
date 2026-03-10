@@ -78,6 +78,7 @@ fi
         self.log = self.root / "calls.jsonl"
         self.host_executions = self.root / "host-executions.jsonl"
         self.binary_executions = self.root / "binary-executions"
+        self.source_executions = self.root / "source-executions.jsonl"
         self.downloads = self.root / "downloads"
         self.downloads.mkdir()
         self.env = os.environ | {
@@ -95,6 +96,8 @@ fi
             "LEANCK_TEST_ARCH": "x86_64",
             "LEANCK_TEST_HOST_EXECUTIONS": str(self.host_executions),
             "LEANCK_TEST_BINARY_EXECUTIONS": str(self.binary_executions),
+            "LEANCK_TEST_SOURCE_EXECUTIONS": str(self.source_executions),
+            "LEANCK_TEST_SOURCE_BINARY": str(self.fixture / "bin/leanck"),
             "TMPDIR": str(self.downloads),
         }
         python = sys.executable
@@ -140,6 +143,44 @@ sys.exit(1 if os.environ.get('LEANCK_TEST_HOST_FAILURE') == name else 0)
         for name in ("claude", "codex", "codesign"):
             executable(self.commands / name, host)
 
+    def mock_source_tools(self):
+        executable(self.commands / "python3", f"#!{sys.executable}\n" + '''
+import json, os, sys
+with open(os.environ['LEANCK_TEST_SOURCE_EXECUTIONS'], 'a') as log:
+    log.write(json.dumps(['python3', *sys.argv[1:]]) + '\\n')
+os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
+''')
+        executable(self.commands / "rustc", f"#!{sys.executable}\n" + '''
+import json, os, sys
+with open(os.environ['LEANCK_TEST_SOURCE_EXECUTIONS'], 'a') as log:
+    log.write(json.dumps(['rustc', *sys.argv[1:]]) + '\\n')
+print('host: x86_64-unknown-linux-gnu')
+''')
+        executable(self.commands / "cargo", f"#!{sys.executable}\n" + '''
+import json, os, pathlib, sys, time, tomllib
+args = sys.argv[1:]
+with open(os.environ['LEANCK_TEST_SOURCE_EXECUTIONS'], 'a') as log:
+    log.write(json.dumps(['cargo', *args]) + '\\n')
+if os.environ.get('LEANCK_TEST_BUILD_DELAY'):
+    time.sleep(10)
+if os.environ.get('LEANCK_TEST_BUILD_FAILURE'):
+    sys.exit(1)
+source = pathlib.Path(args[args.index('--manifest-path') + 1]).parent
+version = tomllib.loads((source / 'crates/leanck-cli/Cargo.toml').read_text())['package']['version']
+output = pathlib.Path(args[args.index('--target-dir') + 1]) / args[args.index('--target') + 1] / 'release/leanck'
+output.parent.mkdir(parents=True, exist_ok=True)
+script = pathlib.Path(os.environ['LEANCK_TEST_SOURCE_BINARY']).read_text()
+output.write_text(script.replace('leanck 1.2.3', 'leanck ' + os.environ.get('LEANCK_TEST_BUILT_VERSION', version)))
+output.chmod(0o755)
+if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
+    skill = source / 'leanck-skills/added-after-review/SKILL.md'
+    skill.parent.mkdir()
+    skill.write_text('---\\nname: added-after-review\\ndescription: added skill\\n---\\n')
+''')
+
+    def source_calls(self):
+        return [json.loads(line) for line in self.source_executions.read_text().splitlines()] if self.source_executions.exists() else []
+
     def run_install(self, *args, success=True, approve=True, standalone=True):
         # Existing component tests explicitly exercise standalone mode.
         if standalone and "--plugin" not in args and "--all" not in args:
@@ -165,7 +206,21 @@ sys.exit(1 if os.environ.get('LEANCK_TEST_HOST_FAILURE') == name else 0)
         finally:
             terminal.close()
 
-    def standalone_config(self, terminal, *, binary_dir="", skills="", agents="", completions="", path=""):
+    def completion_config(self, terminal, completions="none", default=None):
+        terminal.prompt("Shell completions (", completions)
+        if (completions or default) not in (None, "none"):
+            terminal.prompt("Completions directory")
+
+
+    def plugin_config(self, terminal, completions="none", path="no"):
+        terminal.choose("Install as plugin or standalone?", "Plugin (recommended)")
+        self.completion_config(terminal, completions)
+        terminal.prompt("Add leanck to PATH?", path)
+        if path == "yes":
+            terminal.prompt("Shell profile to update")
+
+
+    def standalone_config(self, terminal, *, binary_dir="", skills="", agents="", completions="none", path=""):
         terminal.choose("Install as plugin or standalone?", "Standalone")
         terminal.prompt("Install the CLI?")
         terminal.prompt("Install location", str(binary_dir))
@@ -177,15 +232,13 @@ sys.exit(1 if os.environ.get('LEANCK_TEST_HOST_FAILURE') == name else 0)
             terminal.prompt("Codex skills directory")
         if agents in ("codex", "both"):
             terminal.prompt("Codex configuration directory")
-        terminal.prompt("Shell completions (", completions)
-        if completions and completions != "none":
-            terminal.prompt("Completions directory")
+        self.completion_config(terminal, completions)
         terminal.prompt("Add leanck to PATH?", path)
         if path == "yes":
             terminal.prompt("Shell profile to update")
 
     def open_plugin_config(self, terminal):
-        terminal.choose("Install as plugin or standalone?", "Plugin (recommended)")
+        self.plugin_config(terminal)
         terminal.choose(PLUGIN_PROMPT, "Edit advanced config...")
 
     def calls(self):
@@ -223,15 +276,26 @@ sys.exit(1 if os.environ.get('LEANCK_TEST_HOST_FAILURE') == name else 0)
         manifest.write_text('[package]\nname = "leanck-cli"\nversion = "9.8.7"\n')
         skill = source / "leanck-skills/new-proof/SKILL.md"
         skill.parent.mkdir(parents=True)
-        skill.write_text("local skill")
+        skill.write_text("---\nname: new-proof\ndescription: Local skill\n---\nLocal skill instructions.\n")
         agents = source / "leanck-subagents"
         agents.mkdir()
-        (agents / "new-expert.md").write_text("Claude agent")
-        (agents / "new-grind.codex.toml").write_text("Codex agent")
+        (agents / "new-expert.md").write_text("---\nname: new-expert\ndescription: Local Claude agent\n---\nAgent instructions.\n")
+        (agents / "new-grind.codex.toml").write_text('name = "new-grind"\ndescription = "Local Codex agent"\ndeveloper_instructions = "Agent instructions"\n')
+        (source / "Cargo.toml").write_text('[workspace]\nmembers = ["crates/leanck-cli"]\n')
+        (source / "Cargo.lock").write_text('version = 4\n')
+        packaging = source / "packaging"
+        packaging.mkdir()
+        for name in ("package_plugin.py", "package_release.py", "package_local.py"):
+            shutil.copy2(REPO / "packaging" / name, packaging / name)
+        shutil.copytree(REPO / "packaging/plugin", packaging / "plugin")
+        shutil.copytree(REPO / "leanck-hooks", source / "leanck-hooks")
+        shutil.copy2(REPO / "install.sh", source / "install.sh")
+        shutil.copy2(REPO / "uninstall.sh", source / "uninstall.sh")
         return source
 
     def test_local_repo_preview_uses_source_inventory_without_network_or_build(self):
         source = self.source_checkout()
+        self.mock_source_tools()
         self.env["LEANCK_TEST_DOWNLOAD_FAILURE"] = "1"
         before = self.snapshot_home()
         result = self.run_install("--from-repo", str(source), "--dry-run", "--skills", "both", "--agents", "both", "--json", approve=False)
@@ -242,16 +306,145 @@ sys.exit(1 if os.environ.get('LEANCK_TEST_HOST_FAILURE') == name else 0)
         for name in ("new-proof", "new-expert.md", "new-grind.toml"):
             self.assertTrue(any(name in action for action in data["actions"]))
         self.assertEqual(self.calls(), [])
+        self.assertEqual(self.source_calls(), [])
         self.assert_dry_run_unchanged(before)
 
-    def test_local_repo_requires_dry_run_and_a_valid_checkout(self):
+    def test_local_repo_requires_complete_checkout_and_rejects_release_version(self):
         before = self.snapshot_home()
-        result = self.run_install("--from-repo", str(REPO), success=False)
-        self.assertIn(b"requires --dry-run", result.stderr)
+        result = self.run_install("--from-repo", str(REPO), "--version", "1.2.3", success=False)
+        self.assertIn(b"--version selects a published release", result.stderr)
         result = self.run_install("--from-repo", str(self.root), "--dry-run", success=False)
         self.assertIn(b"not a leanck source checkout", result.stderr)
+        source = self.source_checkout()
+        (source / "packaging/package_local.py").unlink()
+        result = self.run_install("--from-repo", str(source), success=False)
+        self.assertIn(b"complete, current source checkout", result.stderr)
         self.assertEqual(self.calls(), [])
         self.assert_dry_run_unchanged(before)
+
+
+    def test_local_repo_plugin_builds_and_registers_from_source_without_release_downloads(self):
+        source = self.source_checkout()
+        self.mock_source_tools()
+        self.env["LEANCK_TEST_DOWNLOAD_FAILURE"] = "1"
+        result = self.run_install("--from-repo", str(source), "--plugin", "codex", "--json")
+        data = json.loads(result.stdout)
+        self.assertEqual(data["status"], "installed")
+        self.assertEqual(data["version"], "v9.8.7 (local source)")
+        binary = self.home / "data/leanck/bin/leanck"
+        self.assertIn("leanck 9.8.7", binary.read_text())
+        bundle = self.home / "data/leanck/bundle"
+        mcp = json.loads((bundle / "plugin/.mcp.codex.json").read_text())
+        self.assertEqual(mcp["mcpServers"]["leanck"]["command"], str(binary))
+        self.assertTrue((self.home / "codex/agents/leanck/new-grind.toml").is_symlink())
+        self.assertEqual(json.loads((bundle / "plugin/.codex-plugin/plugin.json").read_text())["version"], "9.8.7")
+        builds = [call for call in self.source_calls() if call[0] == "cargo"]
+        self.assertEqual(len(builds), 1)
+        self.assertIn("--locked", builds[0])
+        self.assertIn("--release", builds[0])
+        self.assertEqual(builds[0][builds[0].index("--manifest-path") + 1], str(source / "Cargo.toml"))
+        self.assertEqual(builds[0][builds[0].index("--target") + 1], "x86_64-unknown-linux-gnu")
+        self.assertFalse(any(call[0] in ("curl", "codesign") for call in self.calls()))
+        self.assertTrue(any(call[:3] == ["codex", "plugin", "add"] for call in self.calls()))
+        self.assertEqual(list(self.downloads.iterdir()), [])
+
+    def test_local_repo_standalone_installs_built_cli_and_selected_components(self):
+        source = self.source_checkout()
+        self.mock_source_tools()
+        result = self.run_install("--from-repo", str(source), "--skills", "both", "--agents", "both", "--completions", "bash")
+        self.assertIn(b"local source", result.stderr)
+        for path in (".local/bin/leanck", "claude/skills/new-proof/SKILL.md", ".agents/skills/new-proof/SKILL.md", "claude/agents/new-expert.md", "codex/agents/leanck/new-grind.toml", "data/bash-completion/completions/leanck"):
+            self.assertTrue((self.home / path).is_file(), path)
+        self.assertFalse((self.home / "data/leanck/bundle").exists())
+        self.assertEqual(self.calls(), [])
+        self.assertFalse(self.host_executions.exists())
+
+    def test_local_repo_components_without_cli_skip_compilation(self):
+        source = self.source_checkout()
+        self.mock_source_tools()
+        self.run_install("--from-repo", str(source), "--no-cli", "--skills", "both", "--agents", "both")
+        self.assertTrue((self.home / "claude/skills/new-proof/SKILL.md").is_file())
+        self.assertTrue((self.home / "codex/agents/leanck/new-grind.toml").is_file())
+        self.assertFalse((source / "target").exists())
+        self.assertFalse((self.home / ".local/bin/leanck").exists())
+        self.assertFalse(self.binary_executions.exists())
+        self.assertTrue(self.source_calls())
+        self.assertTrue(all(call[0] == "python3" for call in self.source_calls()))
+        self.assertEqual(self.calls(), [])
+
+    def test_local_repo_build_failure_and_timeout_preserve_existing_installation(self):
+        source = self.source_checkout()
+        self.mock_source_tools()
+        binary = self.home / ".local/bin/leanck"
+        binary.parent.mkdir(parents=True)
+        binary.write_text("existing installation")
+        before = self.snapshot_home()
+        for failure in ("LEANCK_TEST_BUILD_FAILURE", "LEANCK_TEST_BUILD_DELAY"):
+            with self.subTest(failure=failure):
+                self.env[failure] = "1"
+                result = self.run_install("--from-repo", str(source), "--timeout", "1", "--json", success=False)
+                self.assertEqual(json.loads(result.stdout)["status"], "failed")
+                self.assertIn(b"local build failed", result.stderr)
+                self.assertEqual(self.snapshot_home(), before)
+                self.assertFalse(self.binary_executions.exists())
+                self.assertFalse(self.host_executions.exists())
+                self.assertEqual(list(self.downloads.iterdir()), [])
+                del self.env[failure]
+
+    def test_local_repo_version_or_inventory_changes_fail_before_installation(self):
+        source = self.source_checkout()
+        self.mock_source_tools()
+        before = self.snapshot_home()
+        for setting, value, error in (("LEANCK_TEST_BUILT_VERSION", "0.0.0", b"does not match binary"),
+                                      ("LEANCK_TEST_CHANGE_INVENTORY", "1", b"component names changed")):
+            with self.subTest(setting=setting):
+                self.env[setting] = value
+                result = self.run_install("--from-repo", str(source), success=False)
+                self.assertIn(error, result.stderr)
+                self.assertEqual(self.snapshot_home(), before)
+                self.assertEqual(list(self.downloads.iterdir()), [])
+                del self.env[setting]
+
+    def test_local_repo_ignores_remembered_release_pin(self):
+        self.run_install("--version", "1.2.3")
+        source = self.source_checkout()
+        self.mock_source_tools()
+        result = self.run_install("--from-repo", str(source), "--json")
+        self.assertEqual(json.loads(result.stdout)["version"], "v9.8.7 (local source)")
+        state = (self.home / "state/leanck/installer/selections.tsv").read_text()
+        self.assertIn("version\t1.2.3\n", state)
+        self.assertEqual(len([call for call in self.calls() if call[0] == "curl"]), 2)
+
+    def test_local_repo_build_waits_for_confirmation_and_cancel_never_executes_source(self):
+        source = self.source_checkout()
+        self.mock_source_tools()
+        before = self.snapshot_home()
+        def cancel(t):
+            self.plugin_config(t)
+            t.wait(lambda: t.screen.selected(PLUGIN_PROMPT), "local installation approval")
+            self.assertFalse(self.source_executions.exists())
+            self.assertFalse(self.host_executions.exists())
+            self.assertFalse(self.binary_executions.exists())
+            self.assertFalse((source / "target").exists())
+            t.choose(PLUGIN_PROMPT, "Cancel")
+        code, output = self.run_interactive(cancel, "--from-repo", str(source))
+        self.assertEqual(code, 0, output.decode())
+        self.assertEqual(self.snapshot_home(), before)
+        self.assertEqual(self.source_calls(), [])
+        self.assertEqual(self.calls(), [])
+        def approve(t):
+            self.open_plugin_config(t)
+            t.enum("Register plugins", "codex")
+            t.action("Save changes")
+            t.wait(lambda: t.screen.selected(PLUGIN_PROMPT), "approved local settings")
+            self.assertEqual(self.source_calls(), [])
+            self.assertFalse((source / "target").exists())
+            t.choose(PLUGIN_PROMPT, "Continue")
+        code, output = self.run_interactive(approve, "--from-repo", str(source))
+        self.assertEqual(code, 0, output.decode())
+        self.assertTrue((source / "target/x86_64-unknown-linux-gnu/release/leanck").is_file())
+        self.assertTrue((self.home / "data/leanck/bin/leanck").is_file())
+        self.assertFalse(any(call[0] in ("curl", "codesign") for call in self.calls()))
 
     def test_offline_terminal_plugin_preview_can_open_editor_without_changes(self):
 
@@ -346,7 +539,7 @@ sys.exit(1 if os.environ.get('LEANCK_TEST_HOST_FAILURE') == name else 0)
 
         before = self.snapshot_home()
         def decline(t):
-            t.choose("Install as plugin or standalone?", "Plugin (recommended)")
+            self.plugin_config(t)
             t.wait(lambda: t.screen.selected(PLUGIN_PROMPT) == "Cancel", "default Cancel")
             t.send(ENTER)
         code, output = self.run_interactive(decline)
@@ -365,6 +558,8 @@ sys.exit(1 if os.environ.get('LEANCK_TEST_HOST_FAILURE') == name else 0)
         def drive(t):
             t.wait(lambda: t.screen.selected("Install as plugin or standalone?") == "Plugin (recommended)", "default plugin")
             t.send(ENTER)
+            self.completion_config(t)
+            t.prompt("Add leanck to PATH?", "no")
             t.wait(lambda: t.screen.selected(PLUGIN_PROMPT) == "Cancel", "confirmation")
             self.assertFalse((self.home / "data/leanck").exists())
             self.assertFalse(self.host_executions.exists())
@@ -393,6 +588,8 @@ sys.exit(1 if os.environ.get('LEANCK_TEST_HOST_FAILURE') == name else 0)
             t.send(UP)
             t.wait(lambda: t.screen.selected(title) == "Plugin (recommended)", "plugin selection")
             t.send(ENTER)
+            self.completion_config(t)
+            t.prompt("Add leanck to PATH?", "no")
             t.choose(PLUGIN_PROMPT, "Edit advanced config...")
             t.focus("Plugin data directory")
             form = "\n".join(t.screen.section("Advanced configuration"))
@@ -411,7 +608,7 @@ sys.exit(1 if os.environ.get('LEANCK_TEST_HOST_FAILURE') == name else 0)
     def test_terminal_color_controls_and_piped_stdout(self):
 
         def cancel(t):
-            t.choose("Install as plugin or standalone?", "Plugin (recommended)")
+            self.plugin_config(t)
             t.choose(PLUGIN_PROMPT, "Cancel")
         for args, env in ((("--no-color",), {}), ((), {"NO_COLOR": "1"})):
             with self.subTest(args=args, env=env):
@@ -420,6 +617,8 @@ sys.exit(1 if os.environ.get('LEANCK_TEST_HOST_FAILURE') == name else 0)
                 self.assertNotRegex(output, rb"\x1b\[[0-9;]*m")
         def plain(t):
             t.prompt("Install as plugin or standalone?", "plugin")
+            self.completion_config(t)
+            t.prompt("Add leanck to PATH?", "no")
             t.prompt(PLUGIN_PROMPT, "edit")
             t.prompt("Edit advanced config", "save")
             t.prompt(PLUGIN_PROMPT, "cancel")
@@ -726,6 +925,119 @@ sys.exit(1 if os.environ.get('LEANCK_TEST_HOST_FAILURE') == name else 0)
         self.assertFalse((self.home / "config/fish/config.fish").exists())
         self.run_install("--completions", "unsupported", success=False)
 
+    def test_completion_defaults_follow_supported_current_shell_or_none(self):
+        for current_shell, expected in (("/bin/bash", "bash"), ("/bin/zsh", "zsh"),
+                                        ("/usr/local/bin/fish", "fish"), ("/opt/bin/pwsh", "powershell"),
+                                        ("/opt/bin/powershell", "powershell"), ("/bin/elvish", "elvish"),
+                                        ("/bin/tcsh", "none"), ("/bin/sh", "none"), ("", "none"), (None, "none")):
+            with self.subTest(shell=current_shell):
+                if current_shell is None:
+                    self.env.pop("SHELL", None)
+                else:
+                    self.env["SHELL"] = current_shell
+                result = self.run_install("--dry-run")
+                self.assertIn(f"- Shell completions: {expected}\n".encode(), result.stderr)
+        self.assertFalse(self.binary_executions.exists())
+
+
+    def test_plugin_prompts_default_to_current_shell_and_adding_to_path(self):
+        before = self.snapshot_home()
+        def drive(t):
+            t.choose("Install as plugin or standalone?", "Plugin (recommended)")
+            self.completion_config(t, "", default="zsh")
+            t.prompt("Add leanck to PATH?")
+            t.prompt("Shell profile to update")
+            t.wait(lambda: t.screen.selected(PLUGIN_PROMPT), "confirmation")
+            self.assertEqual(self.snapshot_home(), before)
+            t.choose(PLUGIN_PROMPT, "Continue")
+        code, output = self.run_interactive(drive)
+        self.assertEqual(code, 0, output.decode())
+        self.assertRegex(output, rb"Shell completions [^\r\n]*\[zsh\]:")
+        self.assertRegex(output, rb"Add leanck to PATH\?[^\r\n]*\[yes\]:")
+        self.assertTrue((self.home / "data/zsh/site-functions/_leanck").is_file())
+        self.assertIn(str(self.home / "data/leanck/bin"), (self.home / ".zshrc").read_text())
+
+
+    def test_plugin_prompts_allow_declining_completions_and_path(self):
+        def drive(t):
+            self.plugin_config(t)
+            t.choose(PLUGIN_PROMPT, "Continue")
+        code, output = self.run_interactive(drive)
+        self.assertEqual(code, 0, output.decode())
+        self.assertFalse((self.home / "data/zsh/site-functions/_leanck").exists())
+        self.assertFalse((self.home / ".zshrc").exists())
+        self.assertNotIn("_completions", self.binary_executions.read_text())
+
+
+    def test_plugin_prompt_defaults_respect_explicit_opt_outs(self):
+        def drive(t):
+            t.choose("Install as plugin or standalone?", "Plugin (recommended)")
+            self.completion_config(t, "", default="none")
+            t.prompt("Add leanck to PATH?")
+            t.choose(PLUGIN_PROMPT, "Continue")
+        code, output = self.run_interactive(drive, "--completions", "none", "--no-add-to-path")
+        self.assertEqual(code, 0, output.decode())
+        self.assertRegex(output, rb"Shell completions [^\r\n]*\[none\]:")
+        self.assertRegex(output, rb"Add leanck to PATH\?[^\r\n]*\[no\]:")
+        self.assertFalse((self.home / ".zshrc").exists())
+        self.assertNotIn("_completions", self.binary_executions.read_text())
+
+
+    def test_standalone_prompt_defaults_to_current_shell(self):
+        def drive(t):
+            t.choose("Install as plugin or standalone?", "Standalone")
+            for label in ("Install the CLI?", "Install location", "Standalone skills", "Custom agents"):
+                t.prompt(label)
+            self.completion_config(t, "", default="zsh")
+            t.prompt("Add leanck to PATH?", "no")
+            t.choose(STANDALONE_PROMPT, "Continue")
+        code, output = self.run_interactive(drive)
+        self.assertEqual(code, 0, output.decode())
+        self.assertRegex(output, rb"Shell completions [^\r\n]*\[zsh\]:")
+        self.assertTrue((self.home / "data/zsh/site-functions/_leanck").is_file())
+
+
+    def test_plugin_unknown_shell_defaults_to_no_completions(self):
+        for current_shell in ("/bin/tcsh", ""):
+            with self.subTest(shell=current_shell):
+                def drive(t):
+                    t.choose("Install as plugin or standalone?", "Plugin (recommended)")
+                    self.completion_config(t, "", default="none")
+                    t.prompt("Add leanck to PATH?", "no")
+                    t.choose(PLUGIN_PROMPT, "Cancel")
+                code, output = self.run_interactive(drive, env={"SHELL": current_shell})
+                self.assertEqual(code, 0, output.decode())
+                self.assertRegex(output, rb"Shell completions [^\r\n]*\[none\]:")
+        self.assertFalse(self.binary_executions.exists())
+
+
+    def test_plugin_unknown_shell_asks_for_supported_path_shell(self):
+        def drive(t):
+            t.choose("Install as plugin or standalone?", "Plugin (recommended)")
+            self.completion_config(t)
+            t.prompt("Add leanck to PATH?")
+            t.prompt("Shell for PATH (", "fish")
+            t.prompt("Shell profile to update")
+            t.choose(PLUGIN_PROMPT, "Continue")
+        code, output = self.run_interactive(drive, env={"SHELL": "/bin/tcsh"})
+        self.assertEqual(code, 0, output.decode())
+        self.assertIn("fish_add_path", (self.home / "config/fish/config.fish").read_text())
+        self.assertFalse((self.home / ".bashrc").exists())
+
+
+    def test_explicit_and_saved_completion_choices_override_detected_default(self):
+        self.run_install("--completions", "none")
+        result = self.run_install("--dry-run")
+        self.assertIn(b"- Shell completions: none\n", result.stderr)
+        result = self.run_install("--dry-run", "--shell", "bash")
+        self.assertIn(b"- Shell completions: bash\n", result.stderr)
+        result = self.run_install("--dry-run", "--shell", "bash", "--completions", "fish")
+        self.assertIn(b"- Shell completions: fish\n", result.stderr)
+        result = self.run_install("--plugin", "codex", "--dry-run", "--completions", "none", "--no-add-to-path")
+        self.assertIn(b"- Shell completions: none\n", result.stderr)
+        self.assertIn(b"- Add leanck to PATH: no\n", result.stderr)
+
+
     def test_custom_completion_directory_is_previewed_and_remembered(self):
         directory = self.root / "chosen completions"
         before = self.snapshot_home()
@@ -969,7 +1281,7 @@ sys.exit(1 if os.environ.get('LEANCK_TEST_HOST_FAILURE') == name else 0)
             self.assertFalse((self.home / path).is_symlink(), path)
 
     def test_standalone_installs_only_cli_and_can_upgrade(self):
-        result = self.run_install()
+        result = self.run_install("--completions", "none")
         binary = self.home / ".local/bin/leanck"
         self.assertTrue(os.access(binary, os.X_OK))
         self.assertFalse((self.home / "data").exists())
@@ -1154,7 +1466,7 @@ sys.exit(1 if os.environ.get('LEANCK_TEST_HOST_FAILURE') == name else 0)
             ["codex", "plugin", "marketplace", "add", str(bundle)],
             ["codex", "plugin", "add", "leanck@leanck-installer"],
         ])
-        self.assertIn(b"Add ", result.stderr)  # PATH hint survives the installer's internal PATH change.
+        self.assertIn("data/leanck/bin", (self.home / ".zshrc").read_text())
         self.run_install("--all")
 
     def test_conflicting_skill_aborts_before_installing_cli_and_force_replaces_it(self):
@@ -1262,12 +1574,227 @@ sys.exit(1 if os.environ.get('LEANCK_TEST_HOST_FAILURE') == name else 0)
 
     def test_packaged_catalogs_and_plugin_versions_match(self):
         with tarfile.open(self.assets / ARCHIVE) as archive:
+            self.assertEqual(archive.extractfile("leanck/uninstall.sh").read(), (REPO / "uninstall.sh").read_bytes())
             self.assertEqual(archive.extractfile("leanck/.leanck-release").read(), b"v1.2.3\n")
             for host in ("claude", "codex"):
                 manifest = json.load(archive.extractfile(f"leanck/plugin/.{host}-plugin/plugin.json"))
                 self.assertEqual(manifest["version"], "1.2.3")
             catalog = json.load(archive.extractfile("leanck/.agents/plugins/marketplace.json"))
             self.assertEqual(catalog["plugins"][0]["source"]["path"], "./plugin")
+
+
+    def run_uninstall(self, *args, success=True, approve=True):
+        result = subprocess.run([os.environ.get("LEANCK_INSTALLER_SHELL", "sh"), "-s", "--",
+                                 *(["--yes"] if approve else []), *args],
+                                input=(REPO / "uninstall.sh").read_bytes(), env=self.env,
+                                capture_output=True, timeout=30)
+        if success:
+            self.assertEqual(result.returncode, 0, result.stderr.decode())
+        else:
+            self.assertNotEqual(result.returncode, 0, result.stderr.decode())
+        return result
+
+
+
+    def test_uninstall_standalone_preserves_user_files_and_backups(self):
+        profile = self.home / ".zshrc"
+        profile.write_text("# existing profile\n")
+        self.run_install("--skills", "both", "--agents", "both", "--completions", "fish", "--add-to-path")
+        profile.write_text(profile.read_text() + "# added later\n")
+        unrelated = self.home / "codex/agents/leanck/custom.toml"
+        unrelated.write_text("keep")
+        self.run_uninstall()
+        for path in (self.home / ".local/bin/leanck", self.home / "claude/skills/lean-proving",
+                     self.home / ".agents/skills/lean-proving", self.home / "claude/agents/lean-expert.md",
+                     self.home / "codex/agents/leanck/lean-expert.toml",
+                     self.home / "config/fish/completions/leanck.fish",
+                     self.home / "state/leanck/installer/selections.tsv"):
+            self.assertFalse(path.exists(), str(path))
+        self.assertEqual(unrelated.read_text(), "keep")
+        self.assertIn("# existing profile", profile.read_text())
+        self.assertIn("# added later", profile.read_text())
+        self.assertNotIn("leanck PATH", profile.read_text())
+        self.assertTrue((self.home / "state/leanck/installer/backups").is_dir())
+        self.assertIn("leanck daemons stop", self.binary_executions.read_text())
+        self.assertIn(b"nothing to remove", self.run_uninstall().stderr)
+
+
+
+    def test_uninstall_dry_run_executes_nothing_and_needs_no_approval(self):
+        self.run_install("--all", "--add-to-path", "--completions", "fish")
+        before = self.snapshot_home()
+        hosts = self.host_executions.read_bytes()
+        binaries = self.binary_executions.read_bytes()
+        result = self.run_uninstall("--dry-run", approve=False)
+        self.assertIn(b"Would remove host: ", result.stderr)
+        self.assertIn(b"Would stop leanck daemons", result.stderr)
+        self.assertEqual(self.snapshot_home(), before)
+        self.assertEqual(self.host_executions.read_bytes(), hosts)
+        self.assertEqual(self.binary_executions.read_bytes(), binaries)
+        self.run_uninstall(approve=False, success=False)
+        self.assertEqual(self.snapshot_home(), before)
+
+
+
+    def test_uninstall_plugin_unregisters_only_selected_host_and_custom_home(self):
+        self.run_install("--plugin", "codex")
+        self.log.write_text("")
+        self.run_uninstall()
+        self.assertEqual(self.calls(), [
+            ["codex", "plugin", "remove", "leanck@leanck-installer"],
+            ["codex", "plugin", "marketplace", "remove", "leanck-installer"],
+        ])
+        self.assertFalse((self.home / "data/leanck/bundle").exists())
+        self.assertFalse((self.home / "data/leanck/agents").exists())
+        self.assertFalse((self.home / "data/leanck/bin/leanck").exists())
+        self.assertEqual(list((self.home / "codex/agents/leanck").glob("*.toml*")), [])
+
+
+
+    def test_uninstall_preserves_modified_components_and_can_resume(self):
+        self.run_install("--skills", "claude", "--agents", "both", "--completions", "fish")
+        changed = [self.home / ".local/bin/leanck", self.home / "claude/skills/lean-proving/SKILL.md",
+                   self.home / "claude/agents/lean-expert.md", self.home / "codex/agents/leanck/lean-grind.toml",
+                   self.home / "config/fish/completions/leanck.fish"]
+        originals = {path: path.read_bytes() for path in changed}
+        for path in changed:
+            path.write_bytes(path.read_bytes() + b"\n# edited\n")
+        result = self.run_uninstall(success=False)
+        self.assertIn(b"Uninstall incomplete", result.stderr)
+        for path in changed:
+            self.assertTrue(path.read_bytes().endswith(b"# edited\n"))
+        self.assertTrue((self.home / "claude/agents/lean-expert.md.leanck-installed").exists())
+        for path, content in originals.items():
+            path.write_bytes(content)
+        self.run_uninstall()
+        self.assertTrue(all(not path.exists() for path in changed))
+
+
+
+    def test_uninstall_tracks_old_and_extra_destinations(self):
+        binary_a = self.root / "first bin"
+        binary_b = self.root / "second bin"
+        extra = self.root / "extra skills"
+        self.run_install("--bin-dir", str(binary_a), "--extra-skills-dir", str(extra))
+        self.run_install("--bin-dir", str(binary_b))
+        self.run_uninstall()
+        self.assertFalse((binary_a / "leanck").exists())
+        self.assertFalse((binary_b / "leanck").exists())
+        self.assertFalse((extra / "lean-proving").exists())
+
+
+
+    def test_uninstall_host_failure_preserves_files_and_retry_receipts(self):
+        self.run_install("--all")
+        self.env["LEANCK_TEST_HOST_FAILURE"] = "codex"
+        self.run_uninstall(success=False)
+        self.assertTrue((self.home / "data/leanck/bundle").exists())
+        receipts = (self.home / "state/leanck/installer/uninstall.tsv").read_text()
+        self.assertNotIn("host\tclaude\t", receipts)
+        self.assertIn("marketplace\tclaude\t", receipts)
+        del self.env["LEANCK_TEST_HOST_FAILURE"]
+        self.log.write_text("")
+        self.run_uninstall()
+        self.assertNotIn(["claude", "plugin", "uninstall", "leanck@leanck-installer", "--scope", "user"], self.calls())
+
+
+
+    def test_uninstall_rejects_symlink_parents_and_tree_links(self):
+        self.run_install("--skills", "claude", "--agents", "codex")
+        directory = self.home / "codex/agents/leanck"
+        moved = self.home / "moved agents"
+        directory.rename(moved)
+        directory.symlink_to(moved, target_is_directory=True)
+        skill = self.home / "claude/skills/lean-proving"
+        (skill / "user-link").symlink_to(self.home / "outside")
+        self.run_uninstall(success=False)
+        self.assertTrue((moved / "lean-expert.toml").exists())
+        self.assertTrue((skill / "user-link").is_symlink())
+
+
+
+    def test_uninstall_legacy_state_and_custom_state_directory(self):
+        state_dir = self.root / "custom state"
+        self.run_install("--state-dir", str(state_dir), "--skills", "both", "--agents", "both")
+        (state_dir / "uninstall.tsv").unlink()  # State from before uninstall inventory support.
+        self.run_uninstall("--state-dir", str(state_dir))
+        self.assertFalse((self.home / ".local/bin/leanck").exists())
+        self.assertFalse((self.home / "claude/skills/lean-proving").exists())
+        self.assertFalse((self.home / "codex/agents/leanck/lean-expert.toml").exists())
+
+
+
+    def test_uninstall_invalid_arguments_do_not_change_files(self):
+        self.run_install()
+        before = self.snapshot_home()
+        for args in (("--unknown",), ("--state-dir",), ("--timeout", "0"), ("--plugin", "invalid")):
+            with self.subTest(args=args):
+                self.run_uninstall(*args, success=False)
+                self.assertEqual(self.snapshot_home(), before)
+
+
+
+    def test_uninstall_cancellation_and_confirmation_use_terminal_not_script_stdin(self):
+        self.run_install()
+        before = self.snapshot_home()
+        terminal = InstallerTerminal(self, REPO / "uninstall.sh", (), self.env, False, (32, 120))
+        try:
+            terminal.prompt("Uninstall leanck?", "no")
+            result = terminal.finish()
+            self.assertEqual(result[0], 0)
+        finally:
+            terminal.close()
+        self.assertEqual(self.snapshot_home(), before)
+
+
+
+    def test_uninstall_host_timeout_preserves_files(self):
+        self.run_install("--plugin", "codex")
+        self.env["LEANCK_TEST_HOST_DELAY"] = "codex"
+        result = self.run_uninstall("--timeout", "1", success=False)
+        self.assertIn(b"Command timed out", result.stderr)
+        self.assertTrue((self.home / "data/leanck/bundle").exists())
+
+
+
+    def test_uninstall_legacy_plugins_require_explicit_host_selection(self):
+        self.run_install("--plugin", "codex")
+        (self.home / "state/leanck/installer/uninstall.tsv").unlink()
+        before = self.snapshot_home()
+        result = self.run_uninstall(success=False)
+        self.assertIn(b"older installer did not record plugin hosts", result.stderr)
+        self.assertEqual(self.snapshot_home(), before)
+        self.env["CLAUDE_CONFIG_DIR"] = str(self.home / "unrelated claude")
+        self.run_uninstall("--plugin", "codex")
+        self.assertFalse((self.home / "data/leanck/bundle").exists())
+
+
+
+    def test_uninstall_legacy_plugins_use_saved_custom_host_directory(self):
+        custom_home = self.root / "custom codex"
+        self.run_install("--plugin", "codex", "--codex-dir", str(custom_home))
+        (self.home / "state/leanck/installer/uninstall.tsv").unlink()
+        config_log = self.root / "uninstall-host-config.jsonl"
+        self.env["LEANCK_TEST_HOST_CONFIG_LOG"] = str(config_log)
+        self.run_uninstall("--plugin", "codex")
+        calls = [json.loads(line) for line in config_log.read_text().splitlines()]
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all(call[0] == "codex" and call[1] == str(custom_home) for call in calls))
+
+
+
+    def test_uninstall_legacy_preserves_retargeted_agent_link(self):
+        self.run_install("--plugin", "codex")
+        (self.home / "state/leanck/installer/uninstall.tsv").unlink()
+        link = self.home / "codex/agents/leanck/lean-expert.toml"
+        user_agent = self.home / "user-agent.toml"
+        user_agent.write_text("keep my agent")
+        link.unlink()
+        link.symlink_to(user_agent)
+        self.run_uninstall("--plugin", "codex", success=False)
+        self.assertEqual(link.readlink(), user_agent)
+        self.assertEqual(user_agent.read_text(), "keep my agent")
+
 
 
 if __name__ == "__main__":

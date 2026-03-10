@@ -75,4 +75,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
-        run: gh release create "$RELEASE_TAG" --verify-tag --draft --generate-notes dist/* install.sh
+        run: gh release create "$RELEASE_TAG" --verify-tag --draft --generate-notes dist/* install.sh uninstall.sh

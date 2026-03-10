@@ -25,48 +25,55 @@ TARGETS = (
 )
 
 
-def package_release(bin_dir, output, target, version):
+def assemble_distribution(repo, bin_dir, root, version, *, sign_binaries=True):
+    """Assemble an unpacked distribution shared by releases and local installs."""
     version = version.removeprefix("v")
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.+-]+)?", version):
         raise ValueError("version must be a semantic version, optionally prefixed with v")
-    binary = bin_dir / "leanck"
-    result = subprocess.run([str(binary), "--version"], check=True, capture_output=True, text=True)
-    if result.stdout.strip() != f"leanck {version}":
-        raise ValueError(f"release v{version} does not match binary: {result.stdout.strip()!r}")
-    output.mkdir(parents=True, exist_ok=True)
+    if bin_dir is not None:
+        binary = bin_dir / "leanck"
+        result = subprocess.run([str(binary), "--version"], check=True, capture_output=True, text=True)
+        if result.stdout.strip() != f"leanck {version}":
+            raise ValueError(f"release v{version} does not match binary: {result.stdout.strip()!r}")
+    root.mkdir()
+    package(repo, bin_dir, root / "plugin", sign_binaries=sign_binaries)
+    # Host plugin caches use this version when refreshing their installed copy.
+    for host in ("claude", "codex"):
+        manifest = root / "plugin" / f".{host}-plugin" / "plugin.json"
+        data = json.loads(manifest.read_text())
+        data["version"] = version
+        manifest.write_text(json.dumps(data, indent=2) + "\n")
+    catalogs = {
+        ".claude-plugin/marketplace.json": {
+            "name": "leanck-installer",
+            "owner": {"name": "Dan Lyng"},
+            "plugins": [{"name": "leanck", "source": "./plugin"}],
+        },
+        ".agents/plugins/marketplace.json": {
+            "name": "leanck-installer",
+            "plugins": [{
+                "name": "leanck",
+                "source": {"source": "local", "path": "./plugin"},
+                "policy": {"installation": "AVAILABLE", "authentication": "ON_INSTALL"},
+                "category": "Engineering",
+            }],
+        },
+    }
+    for name, catalog in catalogs.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(catalog, indent=2) + "\n")
+    (root / ".leanck-release").write_text(f"v{version}\n")
+    shutil.copy2(repo / "install.sh", root / "install.sh")
+    shutil.copy2(repo / "uninstall.sh", root / "uninstall.sh")
+
+
+def package_release(bin_dir, output, target, version):
     repo = Path(__file__).resolve().parent.parent
     with tempfile.TemporaryDirectory(prefix="leanck-release-") as temp:
         root = Path(temp) / "leanck"
-        root.mkdir()
-        package(repo, bin_dir, root / "plugin")
-        # Host plugin caches use this version when refreshing their installed copy.
-        for host in ("claude", "codex"):
-            manifest = root / "plugin" / f".{host}-plugin" / "plugin.json"
-            data = json.loads(manifest.read_text())
-            data["version"] = version
-            manifest.write_text(json.dumps(data, indent=2) + "\n")
-        catalogs = {
-            ".claude-plugin/marketplace.json": {
-                "name": "leanck-installer",
-                "owner": {"name": "Dan Lyng"},
-                "plugins": [{"name": "leanck", "source": "./plugin"}],
-            },
-            ".agents/plugins/marketplace.json": {
-                "name": "leanck-installer",
-                "plugins": [{
-                    "name": "leanck",
-                    "source": {"source": "local", "path": "./plugin"},
-                    "policy": {"installation": "AVAILABLE", "authentication": "ON_INSTALL"},
-                    "category": "Engineering",
-                }],
-            },
-        }
-        for name, catalog in catalogs.items():
-            path = root / name
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(catalog, indent=2) + "\n")
-        (root / ".leanck-release").write_text(f"v{version}\n")
-        shutil.copy2(repo / "install.sh", root / "install.sh")
+        assemble_distribution(repo, bin_dir, root, version)
+        output.mkdir(parents=True, exist_ok=True)
         archive = output / f"leanck-{target}.tar.gz"
         with tarfile.open(archive, "w:gz", format=tarfile.PAX_FORMAT) as tar:
             tar.add(root, arcname="leanck")

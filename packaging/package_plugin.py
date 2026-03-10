@@ -106,7 +106,7 @@ def add_hooks(repo, out):
     copy_tree(source, out / "hooks")
 
 
-def add_binaries(bin_dir, out):
+def add_binaries(bin_dir, out, *, sign=True):
     (out / "bin").mkdir()
     for name in BINARIES:
         source = bin_dir / name
@@ -114,15 +114,18 @@ def add_binaries(bin_dir, out):
             raise PackageError(f"{source}: staged executable is missing")
         target = out / "bin" / name
         shutil.copy2(source, target)
-        if platform.system() == "Darwin":
+        if sign and platform.system() == "Darwin":
             subprocess.run(["codesign", "--force", "-s", "-", str(target)],
                            check=True, capture_output=True)
 
 
 def revision(repo):
     def git(*args):
-        result = subprocess.run(["git", "-C", str(repo), *args],
-                                capture_output=True, text=True)
+        try:
+            result = subprocess.run(["git", "-C", str(repo), *args],
+                                    capture_output=True, text=True)
+        except FileNotFoundError:
+            return None
         return result.stdout.strip() if result.returncode == 0 else None
     return {"commit": git("rev-parse", "HEAD"),
             "dirty": bool(git("status", "--porcelain"))}
@@ -142,7 +145,7 @@ def replace(staged, output):
         staged.rename(output)
 
 
-def package(repo, bin_dir, output):
+def package(repo, bin_dir, output, *, sign_binaries=True):
     overlay = repo / "packaging" / "plugin"
     for manifest in overlay.rglob("*.json"):
         check_json(manifest)
@@ -153,7 +156,8 @@ def package(repo, bin_dir, output):
         skills = add_skills(repo, staged)
         claude, codex = add_agents(repo, staged)
         add_hooks(repo, staged)
-        add_binaries(bin_dir, staged)
+        if bin_dir is not None:
+            add_binaries(bin_dir, staged, sign=sign_binaries)
         source = revision(repo)
         (staged / MARKER).write_text(json.dumps({
             "generated_by": "just package-plugin",
@@ -161,7 +165,7 @@ def package(repo, bin_dir, output):
             "skills": skills,
             "claude_agents": claude,
             "codex_agents": codex,
-            "binaries": list(BINARIES),
+            "binaries": list(BINARIES) if bin_dir is not None else [],
         }, indent=2) + "\n", encoding="utf-8")
         staged.chmod(0o755)
         replace(staged, output)

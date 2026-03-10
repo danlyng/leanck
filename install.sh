@@ -180,6 +180,13 @@ absolute_path() {
     esac
     valid_text "$resolved"
 }
+default_completions() {
+    case "$1" in
+        bash|zsh|fish|elvish) completions=$1 ;;
+        pwsh|powershell) completions=powershell ;;
+        *) completions=none ;;
+    esac
+}
 completion_default_dir() {
     case "$1" in
         fish) printf '%s' "$fish_completions_dir" ;;
@@ -209,6 +216,27 @@ configure_completions() {
         prompt 'Completions directory' "$completion_dir" text
         absolute_path "$reply"; completions_dir=$resolved
     fi
+}
+configure_path() {
+    yes_no 'Add leanck to PATH?' "$( [ "$add_to_path" = 1 ] && printf yes || printf no )"
+    add_to_path=$answer
+    [ "$add_to_path" = 1 ] || return 0
+    case "$shell" in fish|bash|zsh) ;;
+        *)
+            while :; do
+                prompt 'Shell for PATH (fish / bash / zsh)' bash choice
+                case "$reply" in fish|bash|zsh) shell=$reply; break ;; esac
+                warn 'Choose fish, bash, or zsh.'
+            done
+            if [ "$profile_set" = 0 ]; then
+                case "$shell" in
+                    fish) path_file=${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish ;;
+                    zsh) path_file=$HOME/.zshrc ;;
+                    bash) path_file=$HOME/.bashrc ;;
+                esac
+            fi ;;
+    esac
+    prompt 'Shell profile to update' "$path_file" text; path_file=$reply
 }
 codex_agents_destination() { codex_agent_path=${codex_agents_dir:-$codex_dir/agents/leanck}; }
 has_components() {
@@ -264,6 +292,8 @@ EOF
 }
 
 plan() { printf '%s\n' "$*" >> "$work/plan"; }
+# Keep a cumulative uninstall inventory, including destinations from older installs.
+record_install() { printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$work/uninstall.tsv"; }
 preview() { [ "$dry_run" = 1 ] || [ "$planning" = 1 ]; }
 digest_file() {
     if [ "$hash_command" = sha256sum ]; then sha256sum < "$1"; else shasum -a 256 < "$1"; fi | awk '{print $1}'
@@ -387,7 +417,7 @@ usage() {
 Usage: sh install.sh [OPTIONS]
   -y, --yes                  Approve selected settings without prompts (required without a terminal)
   --dry-run                  Verify and preview; never execute downloaded code or change installed files
-  --from-repo DIR            Preview local source inventory offline (requires --dry-run; no build)
+  --from-repo DIR            Build and install a local checkout (dry runs never build)
   --standalone              Install standalone components instead of the plugin
   --skills HOST              Standalone skills: none, claude, codex, or both
   --agents HOST              Custom agents: none, claude, codex, or both
@@ -428,13 +458,15 @@ Examples:
   sh install.sh --plugin codex
   sh install.sh --standalone --skills both
   sh install.sh --all --dry-run
+  sh install.sh --from-repo .
   sh install.sh --from-repo . --dry-run
   sh install.sh --yes --skills both --version v0.30.0
   sh install.sh --dry-run --json
 
 Dry runs include prompts and review in a terminal; --yes skips the prompts.
---from-repo reads the actual local skill/agent names without downloading or
-building anything. It previews installation; release artifacts are not verified.
+--from-repo configures from local source, then builds and packages after approval.
+It needs Rust/Cargo and Python 3.11+; skills/agents-only installs skip compilation.
+With --dry-run it only reads the source inventory, without builds or network access.
 Plugin is the default; use arrow keys and Enter to choose the installation mode.
 The final confirmation offers Cancel, Continue, and Edit advanced config.
 Advanced settings can be edited before returning to confirmation. Without a terminal, use
@@ -493,7 +525,7 @@ download() {
     die "download failed: $1; check the release/tag and network connection"
 }
 
-prepare_repo_preview() {
+prepare_repo_source() {
     # Build a temporary inventory from checkout filenames, without packaging,
     # compiling, signing, or executing any code from the selected repository.
     release=$work/repo-preview
@@ -518,9 +550,51 @@ prepare_repo_preview() {
     done
     source_version=$(awk -F '"' '/^version = "/ {print $2; exit}' "$from_repo/crates/leanck-cli/Cargo.toml")
     case "$source_version" in ''|*[!0-9A-Za-z.+-]*) die 'cannot read the local CLI version from Cargo.toml' ;; esac
-    installed_version="v$source_version (local source preview; release unverified)"
-    plan "Source inventory: $from_repo (offline; no binary built or release verified)"
-    say 'Using local source inventory; no network access, build, signing, or host commands.'
+    if [ "$dry_run" = 1 ]; then
+        installed_version="v$source_version (local source preview; release unverified)"
+        plan "Source inventory: $from_repo (offline; no binary built or release verified)"
+        say 'Using local source inventory; no network access, build, signing, or host commands.'
+    else
+        installed_version="v$source_version (local source)"
+        plan "Local source: $from_repo"
+        say 'Using local source; building and packaging start after approval.'
+    fi
+}
+
+repo_command() {
+    # run_bounded starts this in a child; exec keeps its cancellation PID valid.
+    cd "$from_repo" || exit 1
+    exec "$@"
+}
+build_repo_source() {
+    run_bounded "$timeout" python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' ||
+        die 'local source installation requires Python 3.11 or newer on PATH'
+    if [ "$cli" = 1 ]; then
+        for command in cargo rustc; do
+            command -v "$command" >/dev/null 2>&1 || die "local builds require $command on PATH"
+        done
+        run_bounded "$timeout" repo_command rustc -vV > "$work/rustc-version" || die 'could not determine the native Rust target'
+        native_target=$(awk '/^host: / {print $2; exit}' "$work/rustc-version")
+        case "$native_target" in ''|*[!0-9A-Za-z_-]*) die 'could not determine the native Rust target' ;; esac
+        say "Building leanck from $from_repo"
+        run_bounded "$timeout" repo_command cargo build --release --locked --package leanck-cli \
+            --manifest-path "$from_repo/Cargo.toml" --target-dir "$from_repo/target" --target "$native_target" >&2 ||
+            die 'local build failed; check the build output, or increase --timeout for a slow build'
+        local_bin_dir=$from_repo/target/$native_target/release
+    fi
+    say 'Packaging local skills, agents, and plugin configuration'
+    if [ "$cli" = 1 ]; then
+        run_bounded "$timeout" python3 "$from_repo/packaging/package_local.py" \
+            --bin-dir "$local_bin_dir" --output "$work/local-install" --version "$source_version" --inventory "$release" >&2 ||
+            die 'could not package local source; no installation files were changed'
+    else
+        run_bounded "$timeout" python3 "$from_repo/packaging/package_local.py" \
+            --output "$work/local-install" --version "$source_version" --inventory "$release" >&2 ||
+            die 'could not package local source; no installation files were changed'
+    fi
+    release=$work/local-install
+    plugin=$release/plugin
+    plugin_release=$release
 }
 
 prepare_preview() {
@@ -580,6 +654,7 @@ install_tree() {
     printf '%s\n' 'leanck installer v1' > "$pending/.leanck-installed"
     tree_digest "$pending" > "$pending/.leanck-content-sha256"
     commit "$pending" "$destination"
+    record_install tree "$(cat "$destination/.leanck-content-sha256")" "$destination"
     say "Installed $destination"
 }
 
@@ -613,6 +688,11 @@ install_agents() {
             else digest_file "$agent_destination/${agent##*/}" > "$pending"; fi
             commit "$pending" "$agent_destination/${agent##*/}.$suffix"
         done
+        if [ -n "$agent_links" ]; then
+            record_install link "$agent_links/${agent##*/}" "$agent_destination/${agent##*/}"
+        else
+            record_install agent "$(digest_file "$agent_destination/${agent##*/}")" "$agent_destination/${agent##*/}"
+        fi
     done
     say "Installed agents in $agent_destination"
 }
@@ -702,6 +782,17 @@ load_state() {
 }
 save_state() {
     mkdir -p "$state_dir"
+    pending=$(mktemp "$state_dir/.leanck-install.XXXXXX")
+    if [ -f "$state_dir/uninstall.tsv" ]; then cat "$state_dir/uninstall.tsv" >> "$pending"; fi
+    if [ -f "$work/uninstall.tsv" ]; then cat "$work/uninstall.tsv" >> "$pending"; fi
+    if [ "$mode" = plugin ] && ! skipped "$bundle_dir"; then
+        [ "$plugin_claude" = 0 ] || printf 'host\tclaude\t%s\n' "$claude_dir" >> "$pending"
+        [ "$plugin_codex" = 0 ] || printf 'host\tcodex\t%s\n' "$codex_dir" >> "$pending"
+    fi
+    # Last installation wins for a path; host records are scoped to the host home.
+    awk -F '\t' '{key=($1=="host" ? $1 FS $2 FS $3 : $3); lines[key]=$0} END {for(key in lines) print lines[key]}' "$pending" > "$work/inventory"
+    cat "$work/inventory" > "$pending"
+    commit "$pending" "$state_dir/uninstall.tsv"
     if [ "$cli" = 1 ] && ! skipped "$bin_dir/leanck"; then
         last_binary_path=$bin_dir/leanck; last_binary_digest=$(digest_file "$bin_dir/leanck")
     fi
@@ -1303,6 +1394,7 @@ apply_extras() {
             run_bounded "$timeout" "$bin_dir/leanck" _completions "$completions" > "$pending" || die 'completion generation failed'
             chmod 644 "$pending"
             commit "$pending" "$completion_path"
+            record_install file "$(digest_file "$completion_path")" "$completion_path"
         fi
     fi
     if [ "$cli" = 1 ] && [ "$add_to_path" = 1 ] && ! skipped "$path_file"; then
@@ -1320,6 +1412,7 @@ apply_extras() {
             profile_line >> "$pending"
             printf '# <<< leanck PATH <<<\n' >> "$pending"
             commit "$pending" "$path_file"
+            record_install profile - "$path_file"
         fi
     fi
 }
@@ -1352,6 +1445,7 @@ PYCODE
             chmod 755 "$pending"
             run_bounded "$timeout" "$pending" --version >&2
             commit "$pending" "$bin_dir/leanck"
+            record_install file "$(digest_file "$bin_dir/leanck")" "$bin_dir/leanck"
             say "Installed $bin_dir/leanck ($installed_version)"
         fi
     fi
@@ -1417,20 +1511,22 @@ prepare_plan() {
     codex_agents_destination
     completion_destination
     bundle_dir=$data_dir/bundle
+    [ ! -L "$state_dir/uninstall.tsv" ] || die "refusing symlink: $state_dir/uninstall.tsv"
+    [ ! -e "$state_dir/uninstall.tsv" ] || [ -f "$state_dir/uninstall.tsv" ] || die "invalid uninstall inventory: $state_dir/uninstall.tsv"
     backup_dir=$state_dir/backups/$(date +%Y%m%dT%H%M%S)-$$
     cp "$work/source-plan" "$work/plan"
     : > "$work/skip"
     has_components ||
         die 'nothing selected; omit --no-cli or select --skills or --agents'
-    if [ -z "$from_repo" ]; then
+    if [ -z "$from_repo" ] || [ "$dry_run" = 0 ]; then
         if [ "$plugin_claude" = 1 ]; then
             command -v claude >/dev/null 2>&1 || die '--plugin claude requires Claude Code on PATH'
         fi
         if [ "$plugin_codex" = 1 ]; then
             command -v codex >/dev/null 2>&1 || die '--plugin codex requires Codex on PATH'
         fi
-        if [ "$mode" = plugin ]; then
-            command -v python3 >/dev/null 2>&1 || die 'plugin configuration and hooks require python3'
+        if [ "$mode" = plugin ] || [ -n "$from_repo" ]; then
+            command -v python3 >/dev/null 2>&1 || die 'plugin configuration and local packaging require python3'
         fi
     fi
     plugin_release=$release
@@ -1475,6 +1571,7 @@ prepare_plan() {
         fi
     fi
     if [ "$cli" = 1 ] && [ "$add_to_path" = 1 ]; then
+        case "$shell" in fish|bash|zsh) ;; *) die '--add-to-path needs --shell fish, bash, or zsh' ;; esac
         [ ! -L "$path_file" ] || die "refusing symlink profile: $path_file"
         if [ -e "$path_file" ]; then
             [ -f "$path_file" ] || die "shell profile is not a regular file: $path_file"
@@ -1486,6 +1583,10 @@ prepare_plan() {
         fi
     fi
     planning=1
+    if [ -n "$from_repo" ] && [ "$dry_run" = 0 ]; then
+        if [ "$cli" = 1 ]; then plan "Would build leanck from $from_repo (locked native release build)"; fi
+        plan "Would package local skills and agents from $from_repo"
+    fi
     apply_install
     planning=0
     plan "Installer choices and replacement backups: $state_dir"
@@ -1520,8 +1621,10 @@ main() {
     claude_dir=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
     codex_dir=${CODEX_HOME:-$HOME/.codex}
     codex_skills=$HOME/.agents/skills
-    shell=${SHELL:-sh}; shell=${shell##*/}
-    completions=none; [ "$shell" != fish ] || completions=fish
+    # Some /bin/sh implementations invent an unexported SHELL from the account's
+    # login shell. Only an inherited SHELL identifies the caller's shell here.
+    shell=$(env | sed -n 's/^SHELL=//p'); shell=${shell##*/}; shell=${shell:-sh}
+    default_completions "$shell"
     fish_completions_dir=${XDG_CONFIG_HOME:-$HOME/.config}/fish/completions
     case "$shell" in
         fish) path_file=${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish ;;
@@ -1542,7 +1645,7 @@ main() {
     load_state
     # An explicitly selected Codex home takes precedence over remembered destinations.
     if [ -n "${CODEX_HOME:-}" ]; then codex_dir=$CODEX_HOME; fi
-    shell_changed=0 profile_set=0 completions_set=0 bin_dir_set=0 path_set=0 cli_explicit=0
+    shell_changed=0 profile_set=0 completions_set=0 bin_dir_set=0 path_set=0 cli_explicit=0 version_set=0
     detect_hosts
     plugin_claude=$detected_claude plugin_codex=$detected_codex
     skills_explicit=0 agents_explicit=0 plugin_explicit=0
@@ -1581,7 +1684,7 @@ main() {
                 need_value "$@"; valid_text "$2"
                 case "$1" in --codex-skills-dir) key=codex_skills ;; *) key=$(printf '%s' "${1#--}" | tr - _ ) ;; esac
                 value=$2; eval "$key=\$value"
-                case "$key" in shell) shell_changed=1 ;; path_file) profile_set=1 ;; completions) completions_set=1 ;; bin_dir) bin_dir_set=1 ;; esac
+                case "$key" in shell) shell_changed=1 ;; path_file) profile_set=1 ;; completions) completions_set=1 ;; bin_dir) bin_dir_set=1 ;; version) version_set=1 ;; esac
                 shift 2 ;;
             *) die "unknown option: $1; see --help" ;;
         esac
@@ -1591,7 +1694,7 @@ main() {
     if [ "$mode" = plugin ] && [ "$cli_explicit" = 0 ]; then cli=1; fi
     if [ "$bin_dir_set" = 0 ]; then bin_dir=$standalone_bin_dir; fi
     if [ "$shell_changed" = 1 ]; then
-        if [ "$completions_set" = 0 ]; then completions=none; [ "$shell" != fish ] || completions=fish; fi
+        if [ "$completions_set" = 0 ]; then default_completions "$shell"; fi
         if [ "$profile_set" = 0 ]; then
             case "$shell" in fish) path_file=${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish ;;
                 zsh) path_file=$HOME/.zshrc ;; *) path_file=$HOME/.bashrc ;; esac
@@ -1599,11 +1702,16 @@ main() {
     fi
     colors
     if [ -n "$from_repo" ]; then
-        [ "$dry_run" = 1 ] || die '--from-repo requires --dry-run; local source mode only previews installation'
+        [ "$version_set" = 0 ] || die '--version selects a published release; omit it with --from-repo'
         absolute_path "$from_repo"; from_repo=$resolved
         [ -f "$from_repo/crates/leanck-cli/Cargo.toml" ] &&
             [ -d "$from_repo/leanck-skills" ] && [ -d "$from_repo/leanck-subagents" ] ||
             die "not a leanck source checkout: $from_repo; pass --from-repo /path/to/leanck"
+        if [ "$dry_run" = 0 ]; then
+            for source_file in Cargo.toml Cargo.lock packaging/package_local.py packaging/package_release.py packaging/package_plugin.py; do
+                [ -f "$from_repo/$source_file" ] || die "local installation needs $from_repo/$source_file; use a complete, current source checkout"
+            done
+        fi
     fi
     if [ "$yes" = 0 ] && [ "$json" = 0 ] && [ -t 2 ]; then
         if ( : </dev/tty ) 2>/dev/null; then exec 3<>/dev/tty; interactive=1; fi
@@ -1668,7 +1776,7 @@ main() {
     esac
 
     if [ -n "$from_repo" ]; then
-        say "Dry run: checking local source inventory for $arch-$platform"
+        say "Checking local source inventory in $from_repo"
     elif [ "$dry_run" = 1 ]; then
         say "Dry run: checking leanck for $arch-$platform (temporary downloads only)"
     else
@@ -1678,7 +1786,7 @@ main() {
     : > "$work/plan"; : > "$work/skip"; : > "$work/journal"
     backup_dir=$state_dir/backups/$(date +%Y%m%dT%H%M%S)-$$
     if [ -n "$from_repo" ]; then
-        prepare_repo_preview
+        prepare_repo_source
     else
         archive=leanck-$arch-$platform.tar.gz
         download "$release_url/$release_path/$archive" "$work/$archive"
@@ -1737,8 +1845,11 @@ main() {
             bin_dir=${plugin_bin_dir:-$data_dir/bin}
             absolute_path "$bin_dir"; bin_dir=$resolved
         fi
-        [ "$completions_set" = 1 ] || completions=none
-        [ "$path_set" = 1 ] || add_to_path=0
+        [ "$path_set" = 1 ] || add_to_path=1
+        if [ "$interactive" = 1 ]; then
+            configure_completions
+            configure_path
+        fi
     else
         plugin_claude=0 plugin_codex=0
         if [ "$interactive" = 1 ]; then configure_standalone; fi
@@ -1780,6 +1891,7 @@ main() {
     if [ "$plugin_codex" = 1 ]; then
         run_bounded "$timeout" env CODEX_HOME="$codex_dir" codex plugin add --help >/dev/null 2>&1 || die 'update Codex to a version with codex plugin add'
     fi
+    if [ -n "$from_repo" ]; then build_repo_source; fi
     [ "$verbose" -lt 2 ] || say 'Applying file changes, then registering selected host plugins.'
     apply_install
     save_state
