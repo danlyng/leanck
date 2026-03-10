@@ -1,5 +1,5 @@
 #! Complete configuration example. Active values below match built-in defaults.
-#! Copy to leanck.toml in a project (omit [instances]), or ~/.config/leanck/config.toml
+#! Copy to leanck.toml or .leanck.toml in a project (omit [instances]), or ~/.config/leanck/config.toml
 #! for user defaults.
 #! Precedence: defaults < user file < nearest project file < --config/LEANCK_CONFIG
 #! < --set < explicit command flags/MCP parameters.
@@ -93,6 +93,13 @@ ignore_authors = [
 ]
 #! Optional missing module docstring; {module} is the input filename without its extension.
 # module_doc_template = "/-! # About {module} -/"
+
+#! Exact, case-sensitive Git names after mailmap resolution -> header display strings.
+#! Applied once after ignore_authors, to generated/replaced headers only; years are retained.
+#! Values must be nonempty single-line strings without control characters or Lean comment delimiters.
+#! Tables merge by name; --set 'normalize.rules.frontmatter.author_map={}' clears inherited names.
+[normalize.rules.frontmatter.author_map]
+# "git-handle" = "Full Name"
 
 #! These policies apply only when normalize.headings = true
 [normalize.rules.headings]
@@ -211,7 +218,7 @@ max_output_bytes = 8388608 # 8 MiB capture limit per stream.
 
 [instances]
 #! Machine-wide daemon cap. User configuration, --config/LEANCK_CONFIG, or --set only;
-#! a project leanck.toml that sets [instances] is rejected.
+#! a project leanck.toml or .leanck.toml that sets [instances] is rejected.
 limit = 8 # Maximum running leanckd daemons on this machine; 0 disables the cap (at most 4096).
 on_limit = "evict_idle" # At the cap: "evict_idle" stops the longest-idle daemon, "refuse", or "warn".
 

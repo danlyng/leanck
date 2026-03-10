@@ -41,6 +41,9 @@ pub struct FrontmatterRules {
     /// Exact author names, emails, or `Name <email>` signatures to omit from new headers.
     /// Matching is ASCII case-insensitive, before and after Git mailmap canonicalization.
     pub ignore_authors: Vec<String>,
+    /// Exact, case-sensitive mailmapped Git names mapped to header display strings.
+    /// Applied once, after author exclusions, to generated/replaced headers only.
+    pub author_map: BTreeMap<String, String>,
     /// Optional module docstring template, used only when the docstring is missing.
     pub module_doc_template: Option<String>,
 }
@@ -83,6 +86,7 @@ impl Default for FrontmatterRules {
             .into_iter()
             .map(str::to_owned)
             .collect(),
+            author_map: BTreeMap::new(),
             module_doc_template: None,
         }
     }
@@ -301,6 +305,16 @@ impl NormalizeRules {
                 .all(|identity| !identity.trim().is_empty()
                     && !identity.chars().any(char::is_control)),
             "frontmatter.ignore_authors entries must be nonempty single-line identities without control characters"
+        );
+        ensure!(
+            self.frontmatter.author_map.iter().all(|(name, display)| {
+                [name, display]
+                    .iter()
+                    .all(|text| !text.trim().is_empty() && !text.chars().any(char::is_control))
+                    && !display.contains("/-")
+                    && !display.contains("-/")
+            }),
+            "frontmatter.author_map keys and values must be nonempty single-line strings without control characters; values must not contain Lean comment delimiters"
         );
         validate_template(
             &self.frontmatter.header_template,

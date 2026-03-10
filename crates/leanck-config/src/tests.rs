@@ -210,6 +210,43 @@ fn discovery_is_nearest_and_stops_at_project_or_git_boundary() {
     assert!(marker.exists() && outer.exists());
 }
 #[test]
+fn hidden_project_config_obeys_nearest_boundary_and_filename_precedence() {
+    for marker in ["lakefile.lean", "lakefile.toml", "lean-toolchain", ".git"] {
+        let dir = Scratch::new();
+        dir.file(".leanck.toml", "");
+        dir.file(&format!("project/{marker}"), "");
+        let file = dir.file("project/src/Main.lean", "");
+        assert_eq!(project_config_path(&file).unwrap(), None);
+        let hidden = dir.file("project/.leanck.toml", "");
+        assert_eq!(project_config_path(&file).unwrap(), Some(hidden.clone()));
+        let visible = dir.file("project/leanck.toml", "");
+        assert_eq!(project_config_path(&file).unwrap(), Some(visible));
+        let nearest = dir.file("project/src/.leanck.toml", "");
+        assert_eq!(project_config_path(&file).unwrap(), Some(nearest.clone()));
+        assert_eq!(
+            project_config_path(&dir.0.join("project/src/New.lean")).unwrap(),
+            Some(nearest)
+        );
+        // Hidden configs have the same machine-wide setting restriction.
+        std::fs::remove_file(dir.0.join("project/leanck.toml")).unwrap();
+        std::fs::write(&hidden, "[instances]\nlimit=2\n").unwrap();
+        assert!(
+            ConfigArgs::default()
+                .load(&dir.0.join("project"))
+                .unwrap_err()
+                .to_string()
+                .contains("[instances]")
+        );
+        let loaded = ConfigArgs {
+            config: Some(hidden),
+            ..Default::default()
+        }
+        .load(&dir.0.join("project"))
+        .unwrap();
+        assert_eq!(loaded.settings.instances.limit, 2);
+    }
+}
+#[test]
 fn paths_are_relative_to_the_file_that_defines_them() {
     let dir = Scratch::new();
     let path = dir.file("sub/config.toml", "[client]\ndaemon_bin='bin/leanckd'");
@@ -503,6 +540,80 @@ fn author_exclusions_are_inspectable_replaceable_and_validated() {
             )
             .is_err(),
             "{value}"
+        );
+    }
+}
+
+#[test]
+fn author_maps_merge_by_name_and_allow_explicit_replacement() {
+    let dir = Scratch::new();
+    let user = dir.file(
+        "user.toml",
+        "[normalize.rules.frontmatter.author_map]\n'Alice Alias'='Alice'\nBob='Robert'\n",
+    );
+    let project = dir.file(
+        "project.toml",
+        "[normalize.rules.frontmatter.author_map]\n'Alice Alias'='Alice Example'\n",
+    );
+    let loaded = load_files(&[(user.clone(), true), (project.clone(), true)], &[]).unwrap();
+    let map = &loaded.settings.normalize.rules.frontmatter.author_map;
+    assert_eq!(map["Alice Alias"], "Alice Example");
+    assert_eq!(map["Bob"], "Robert");
+    assert_eq!(
+        loaded.sources["normalize.rules.frontmatter.author_map.Alice Alias"],
+        project.display().to_string()
+    );
+    assert_eq!(
+        loaded.sources["normalize.rules.frontmatter.author_map.Bob"],
+        user.display().to_string()
+    );
+    let loaded = load_files(
+        &[(user, true)],
+        &["normalize.rules.frontmatter.author_map={}".into()],
+    )
+    .unwrap();
+    assert!(
+        loaded
+            .settings
+            .normalize
+            .rules
+            .frontmatter
+            .author_map
+            .is_empty()
+    );
+    let loaded = load_files(
+        &[],
+        &["normalize.rules.frontmatter.author_map={'Git Name'='Display Name'}".into()],
+    )
+    .unwrap();
+    assert_eq!(
+        loaded.settings.normalize.rules.frontmatter.author_map["Git Name"],
+        "Display Name"
+    );
+    assert_eq!(
+        loaded.sources["normalize.rules.frontmatter.author_map.Git Name"],
+        "--set"
+    );
+    for value in [
+        "{'Name'=''}",
+        "{'Name'='   '}",
+        "{''='Name'}",
+        "{'   '='Name'}",
+        "{'Name'='unsafe -/ text'}",
+        "{'Name'='unsafe /- text'}",
+        "{Name=\"line\\nbreak\"}",
+        "{\"line\\nbreak\"='Name'}",
+        "{Name=42}",
+        "[]",
+        "'Name'",
+    ] {
+        assert!(
+            load_files(
+                &[],
+                &[format!("normalize.rules.frontmatter.author_map={value}")]
+            )
+            .is_err(),
+            "accepted {value}"
         );
     }
 }

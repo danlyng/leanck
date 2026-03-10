@@ -1,8 +1,5 @@
 //! Bounded, read-only Git attribution. No identity is guessed when history is absent.
-use std::collections::BTreeSet;
-
-#[cfg(any(feature = "command", test))]
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(feature = "command")]
 use std::{
     io::Read,
@@ -55,6 +52,15 @@ impl FileHistory {
                 .cloned()
                 .collect(),
         }
+    }
+
+    pub(crate) fn map_names(mut self, author_map: &BTreeMap<String, String>) -> Self {
+        for author in &mut self.contributors {
+            if let Some(display) = author_map.get(&author.name) {
+                author.name.clone_from(display);
+            }
+        }
+        self
     }
 }
 

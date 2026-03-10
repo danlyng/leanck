@@ -124,6 +124,58 @@ fn missing_header_uses_renamed_file_history_and_mailmap() {
         source
     );
 }
+
+#[test]
+fn hidden_config_maps_mailmapped_names_in_generated_and_replaced_headers() {
+    let repo = Repo::new();
+    fs::write(repo.0.join("Main.lean"), "def x := 1\n").unwrap();
+    repo.commit(
+        "Alias",
+        "alias@example.invalid",
+        "2020-01-02T12:00:00+00:00",
+    );
+    fs::write(
+        repo.0.join(".mailmap"),
+        "Canonical Person <canonical@example.invalid> Alias <alias@example.invalid>\n",
+    )
+    .unwrap();
+    fs::write(repo.0.join(".leanck.toml"), "[normalize.rules.frontmatter]\ninvalid_existing='replace'\n[normalize.rules.frontmatter.author_map]\nAlias='Wrong: raw identity'\n'Canonical Person'='Display Person'\n").unwrap();
+    fs::create_dir_all(repo.0.join("config-home")).unwrap();
+    let normalize = || {
+        Command::new(env!("CARGO_BIN_EXE_leanck-normalize"))
+            .current_dir(&repo.0)
+            .env("XDG_CONFIG_HOME", repo.0.join("config-home"))
+            .env_remove("LEANCK_CONFIG")
+            .arg("Main.lean")
+            .output()
+            .unwrap()
+    };
+    for input in ["def x := 1\n", "/- Old attribution -/\ndef x := 1\n"] {
+        fs::write(repo.0.join("Main.lean"), input).unwrap();
+        let output = normalize();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let source = fs::read_to_string(repo.0.join("Main.lean")).unwrap();
+        assert!(
+            source.contains("Copyright (c) 2020 Display Person."),
+            "{source}"
+        );
+        assert!(source.contains("Authors: Display Person"), "{source}");
+        assert!(
+            !source.contains("Canonical")
+                && !source.contains("Wrong")
+                && !source.contains("Old attribution")
+        );
+        assert!(normalize().status.success());
+        assert_eq!(
+            fs::read_to_string(repo.0.join("Main.lean")).unwrap(),
+            source
+        );
+    }
+}
 #[test]
 fn existing_header_needs_no_git_and_untracked_files_get_no_invented_identity() {
     let repo = Repo::new();

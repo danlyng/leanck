@@ -3,7 +3,7 @@
 # All execution is inside main so a truncated download cannot start installation.
 
 # Prompts use a separate terminal descriptor: stdin may contain this script.
-INSTALLER_VERSION="0.1.0"
+INSTALLER_VERSION="0.2.0"
 colors() {
     bold='' cyan='' green='' yellow='' red='' reset='' out_bold='' out_reset=''
     prompt_style='' selected_style='' input_style=''
@@ -411,70 +411,63 @@ rollback() {
 
 
 usage() {
-    printf '%sInstall leanck%s — configure, review, and approve changes to your user account.\n' "$out_bold" "$out_reset"
-    cat <<'EOF'
+    b=$out_bold r=$out_reset
+    cat <<EOF
+${b}Install leanck${r} — configure, review, and approve changes to your user account.
 
-Usage: sh install.sh [OPTIONS]
-  -y, --yes                  Approve selected settings without prompts (required without a terminal)
-  --dry-run                  Verify and preview; never execute downloaded code or change installed files
-  --from-repo DIR            Build and install a local checkout (dry runs never build)
-  --standalone              Install standalone components instead of the plugin
-  --skills HOST              Standalone skills: none, claude, codex, or both
-  --agents HOST              Custom agents: none, claude, codex, or both
-  --plugin HOST              Register plugins: claude, codex, or both (default: detected hosts)
-                            none selects standalone mode
-  --all                      Plugin mode with both hosts and included Codex custom agents
-  --cli / --no-cli           Install or skip the executable (default: install)
-  --version VERSION          Release tag (default: latest, or previous selection)
-  --bin-dir DIR              Executable directory (plugin: DATA_DIR/bin; standalone: ~/.local/bin)
-  --data-dir DIR             Plugin data directory (honors XDG_DATA_HOME)
-  --state-dir DIR            Installer state/backups (honors XDG_STATE_HOME)
-  --claude-dir DIR           Claude configuration directory (honors CLAUDE_CONFIG_DIR)
-  --codex-dir DIR            Codex configuration directory (honors CODEX_HOME)
-  --codex-skills-dir DIR     Codex standalone skills (default: ~/.agents/skills)
-  --completions SHELL        bash, zsh, fish, powershell, elvish, or none
-  --completions-dir DIR      Override the selected shell's completions directory
-  --fish-completions-dir DIR Fish default directory (honors XDG_CONFIG_HOME)
-  --codex-agents-dir DIR     Codex agent definitions (default: CODEX_HOME/agents/leanck)
-  --extra-skills-dir DIR     Additional skills directory (repeatable)
-  --extra-claude-agents-dir DIR  Additional Claude agent directory (repeatable)
-  --extra-codex-agents-dir DIR   Additional Codex agent directory (repeatable)
-  --shell SHELL              Shell for PATH configuration: fish, bash, or zsh (default: SHELL)
-  --add-to-path              Add a managed PATH block to the selected shell profile
-  --no-add-to-path           Disable a remembered PATH update
-  --path-file FILE           Override the profile destination
-  --release-url URL          HTTPS release mirror (default: GitHub releases)
-  --timeout SECONDS          Download/command timeout (default: 300)
-  --force                    Back up and replace conflicting files; does not imply --yes
-  --json                     JSON result/errors; disables prompts; use --yes to install
-  --no-color                 Disable color (also honors NO_COLOR and TERM=dumb)
-  --no-pager                 Print long plans directly
-  -q, --quiet                Suppress nonessential messages (approval is still required)
-  -v, --verbose              More detail; repeat for command details
-  -h, --help                 Show help
+${b}Usage:${r} sh install.sh [OPTIONS]
 
-Examples:
+${b}Common options:${r}
+  -y, --yes                        Approve selected settings without prompts (required without a TTY)
+      --dry-run                    Verify and preview without executing code or modifying files
+      --force                      Back up and replace conflicting files (does not imply --yes)
+      --plugin HOST                Register plugins: claude, codex, both, or none (default: detected)
+      --all                        Plugin mode for both hosts plus Codex custom agents
+      --standalone                 Install standalone components instead of the plugin
+      --version VERSION            Release tag to install (default: latest, or saved selection)
+      --from-repo DIR              Build and install from a local checkout (skipped on --dry-run)
+  -h, --help                       Show this help (also: sh install.sh help)
+
+${b}Component selection:${r}
+      --cli, --no-cli              Install or skip the executable (default: --cli)
+      --skills HOST                Standalone skills: none, claude, codex, or both
+      --agents HOST                Custom agents: none, claude, codex, or both
+      --completions SHELL          Shell completions: bash, zsh, fish, powershell, elvish, or none
+
+${b}Directories & paths:${r}
+      --bin-dir DIR                Executable dir (plugin: DATA_DIR/bin; standalone: ~/.local/bin)
+      --data-dir DIR               Plugin data dir (default: \$XDG_DATA_HOME/leanck)
+      --state-dir DIR              Installer state & backups (default: \$XDG_STATE_HOME/leanck/installer)
+      --claude-dir DIR             Claude config dir (default: \$CLAUDE_CONFIG_DIR or ~/.claude)
+      --codex-dir DIR              Codex config dir (default: \$CODEX_HOME or ~/.codex)
+      --codex-skills-dir DIR       Codex standalone skills dir (default: ~/.agents/skills)
+      --codex-agents-dir DIR       Codex agent definitions dir (default: CODEX_DIR/agents/leanck)
+      --completions-dir DIR        Override the selected shell's completions directory
+      --fish-completions-dir DIR   Fish completions default dir (honors XDG_CONFIG_HOME)
+      --extra-skills-dir DIR       Additional skills directory (repeatable)
+      --extra-claude-agents-dir DIR  Additional Claude agent directory (repeatable)
+      --extra-codex-agents-dir DIR   Additional Codex agent directory (repeatable)
+      --shell SHELL                Shell for PATH updates: fish, bash, or zsh (default: \$SHELL)
+      --add-to-path                Add a managed PATH block to the selected shell profile
+      --no-add-to-path             Disable a remembered PATH update
+      --path-file FILE             Override the shell profile file to update
+
+${b}Source & output:${r}
+      --release-url URL            HTTPS release mirror (default: GitHub releases)
+      --timeout SECONDS            Download and command timeout in seconds (default: 300)
+      --json                       Emit JSON status/errors; disables prompts (use --yes to install)
+      --no-color                   Disable ANSI color (also honors NO_COLOR and TERM=dumb)
+      --no-pager                   Print long plans without paging
+  -q, --quiet                      Suppress non-essential progress messages
+  -v, --verbose                    Increase detail (repeatable for command output)
+
+${b}Examples:${r}
   curl -fsSL https://lean4.party/leanck-install.sh | sh
   sh install.sh --plugin codex
   sh install.sh --standalone --skills both
-  sh install.sh --all --dry-run
+  sh install.sh --yes --all --version v0.30.0
   sh install.sh --from-repo .
-  sh install.sh --from-repo . --dry-run
-  sh install.sh --yes --skills both --version v0.30.0
   sh install.sh --dry-run --json
-
-Dry runs include prompts and review in a terminal; --yes skips the prompts.
---from-repo configures from local source, then builds and packages after approval.
-It needs Rust/Cargo and Python 3.11+; skills/agents-only installs skip compilation.
-With --dry-run it only reads the source inventory, without builds or network access.
-Plugin is the default; use arrow keys and Enter to choose the installation mode.
-The final confirmation offers Cancel, Continue, and Edit advanced config.
-Advanced settings can be edited before returning to confirmation. Without a terminal, use
---yes or --dry-run. Replacements are backed up; host registration failures
-report partial external changes. Host plugins require their CLI and python3.
-Dry runs use temporary downloads, never execute downloaded binaries or host CLIs,
-and remove temporary files on exit. HTTP 404 permits
-an explicitly unverified preview; a real installation always requires verification.
 EOF
 }
 

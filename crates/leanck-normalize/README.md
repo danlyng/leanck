@@ -62,4 +62,6 @@ Structured policies under `normalize.rules` configure frontmatter ordering and t
 
 The pure `normalize_with_context` API accepts explicit history and compiled dictionary resources. Schema-only builds retain no configuration loader or command adapter.
 
+Project configuration may be named `leanck.toml` or `.leanck.toml`; `leanck.toml` wins when both exist in the same directory. The `normalize.rules.frontmatter.author_map` table maps exact, case-sensitive Git names after mailmap resolution to display strings in generated or explicitly replaced headers. Exclusions apply first; unmapped names and retained existing headers stay unchanged. For example, `author_map = { "git-handle" = "Full Name" }` inside `[normalize.rules.frontmatter]` changes both the author list and copyright attribution. The pure API applies the same mapping to supplied history.
+
 Normalization returns nonfatal diagnostics in `NormalizeResult.warnings`; command entry points print warnings on stderr. Config inspection exposes warnings that do not depend on source content. URL linkification works independently of comment wrapping, using the pinned Markdown engine's disabled-width transformation mode.

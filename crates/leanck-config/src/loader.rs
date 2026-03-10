@@ -75,7 +75,7 @@ fn same_file(a: &Path, b: &Path) -> bool {
 struct Layer {
     path: PathBuf,
     required: bool,
-    /// A discovered project `leanck.toml`, which must not set the machine-wide
+    /// A discovered project configuration, which must not set the machine-wide
     /// `[instances]` table.
     discovered_project: bool,
 }
@@ -113,7 +113,10 @@ pub fn user_config_path() -> Option<PathBuf> {
         .map(|p| p.join("leanck/config.toml"))
 }
 
-/// Nearest leanck.toml, bounded by the first Lake project or VCS root.
+const PROJECT_CONFIG_NAMES: [&str; 2] = ["leanck.toml", ".leanck.toml"];
+
+/// Nearest leanck.toml or .leanck.toml, bounded by the first Lake project or VCS root.
+/// When both exist in the same directory, leanck.toml takes precedence.
 /// For a file (including a not-yet-existing file), discovery starts at its parent.
 pub fn project_config_path(start: &Path) -> Result<Option<PathBuf>> {
     let start = std::path::absolute(start)?;
@@ -125,12 +128,14 @@ pub fn project_config_path(start: &Path) -> Result<Option<PathBuf>> {
             .context("configuration search has no parent")?
     };
     for dir in dir.ancestors() {
-        let file = dir.join("leanck.toml");
-        if file
-            .try_exists()
-            .with_context(|| format!("cannot inspect {}", file.display()))?
-        {
-            return Ok(Some(file));
+        for name in PROJECT_CONFIG_NAMES {
+            let file = dir.join(name);
+            if file
+                .try_exists()
+                .with_context(|| format!("cannot inspect {}", file.display()))?
+            {
+                return Ok(Some(file));
+            }
         }
         if ["lakefile.lean", "lakefile.toml", "lean-toolchain", ".git"]
             .iter()
@@ -358,7 +363,10 @@ impl Command {
             let text = toml::to_string_pretty(&defaults)?;
             if let Action::Init { path } = &self.action {
                 // Project files may not set the machine-wide [instances] table.
-                let text = if path.file_name() == Some(std::ffi::OsStr::new("leanck.toml")) {
+                let text = if PROJECT_CONFIG_NAMES
+                    .iter()
+                    .any(|name| path.file_name() == Some(std::ffi::OsStr::new(name)))
+                {
                     without_table(&text, "instances")
                 } else {
                     text

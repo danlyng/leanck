@@ -152,7 +152,10 @@ fn generated_header(
     rules: &leanck_config::FrontmatterRules,
     context: &crate::Context<'_>,
 ) -> Option<String> {
-    let history = context.history?.excluding(&rules.ignore_authors);
+    let history = context
+        .history?
+        .excluding(&rules.ignore_authors)
+        .map_names(&rules.author_map);
     let years: Vec<_> = history
         .contributors
         .iter()

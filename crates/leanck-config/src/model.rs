@@ -187,7 +187,7 @@ impl Default for Cache {
     }
 }
 /// Machine-wide daemon cap. Read from user-level configuration only; project
-/// `leanck.toml` files are rejected if they set it.
+/// `leanck.toml` and `.leanck.toml` files are rejected if they set it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Instances {

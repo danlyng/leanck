@@ -208,6 +208,45 @@ fn validation_errors_are_json_and_init_never_overwrites() {
 }
 
 #[test]
+fn hidden_project_config_can_be_initialized_inspected_and_ignored() {
+    let dir = Scratch::new();
+    assert!(
+        dir.run(&["config", "init", ".leanck.toml"])
+            .status
+            .success()
+    );
+    let path = dir.0.join("project/.leanck.toml");
+    let original = fs::read_to_string(&path).unwrap();
+    assert!(!original.contains("[instances]"));
+    assert!(dir.run(&["config", "check"]).status.success());
+    assert!(
+        !dir.run(&["config", "init", ".leanck.toml"])
+            .status
+            .success()
+    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    fs::write(&path, "[normalize]\nwidth=81\n[normalize.rules.frontmatter.author_map]\n'Git Name'='Display Name'\n").unwrap();
+    let report = json(&dir.run(&["config", "show", "--json"]));
+    assert_eq!(report["settings"]["normalize"]["width"], 81);
+    assert_eq!(
+        report["settings"]["normalize"]["rules"]["frontmatter"]["author_map"]["Git Name"],
+        "Display Name"
+    );
+    assert_eq!(
+        report["sources"]["normalize.rules.frontmatter.author_map.Git Name"],
+        path.canonicalize().unwrap().to_string_lossy().as_ref()
+    );
+    let report = json(&dir.run(&["config", "show", "--json", "--no-config"]));
+    assert!(report["files"].as_array().unwrap().is_empty());
+    assert!(
+        report["settings"]["normalize"]["rules"]["frontmatter"]["author_map"]
+            .as_object()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn normalize_partial_order_from_project_config_pins_namespace() {
     let dir = Scratch::new();
     fs::write(dir.0.join("project/leanck.toml"),

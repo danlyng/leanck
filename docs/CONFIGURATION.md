@@ -4,7 +4,7 @@
 
 ## Getting started
 
-Create a project configuration with `leanck config init`, which writes `leanck.toml` in the current directory. You can specify another destination: `leanck config init /path/to/config.toml`. The generated file contains defaults; remove settings you want to inherit from your user configuration. When the destination is named `leanck.toml`, `init` omits the machine-wide `[instances]` table, which project files cannot set.
+Create a project configuration with `leanck config init`, which writes `leanck.toml` in the current directory. Use `leanck config init .leanck.toml` for a hidden project file, or specify another destination: `leanck config init /path/to/config.toml`. The generated file contains defaults; remove settings you want to inherit from your user configuration. When the destination is named `leanck.toml` or `.leanck.toml`, `init` omits the machine-wide `[instances]` table, which project files cannot set.
 
 A small project configuration might contain:
 
@@ -48,12 +48,12 @@ Settings are resolved in this order:
 
 1. Built-in defaults.
 2. User configuration at `$XDG_CONFIG_HOME/leanck/config.toml`, falling back to `$HOME/.config/leanck/config.toml`.
-3. The nearest `leanck.toml` starting at the selected workspace or input directory.
+3. The nearest `leanck.toml` or `.leanck.toml` starting at the selected workspace or input directory. Discovery stops at the first Lake project or Git root; if both filenames exist in the same directory, only `leanck.toml` is loaded.
 4. The file specified in `LEANCK_CONFIG`.
 5. The file specified in `--config FILE`.
 6. Repeatable `--set KEY=VALUE` overrides, in command-line order.
 
-The machine-wide `[instances]` table is never read from a discovered `leanck.toml`; a project file that sets it is rejected with an error naming the user configuration path. It may come from any other layer, including a `leanck.toml` passed explicitly with `--config` or `LEANCK_CONFIG`.
+The machine-wide `[instances]` table is never read from a discovered `leanck.toml` or `.leanck.toml`; a project file that sets it is rejected with an error naming the user configuration path. It may come from any other layer, including either project filename passed explicitly with `--config` or `LEANCK_CONFIG`.
 
 Tables merge by field. Arrays replace earlier arrays, including empty arrays. Unknown keys, unsupported schema versions, malformed TOML, invalid types, invalid URLs/globs, and invalid resource limits are errors.
 
@@ -122,6 +122,16 @@ When a header is generated, the command adapter reads that file's Git author his
 `normalize.rules.frontmatter.ignore_authors` excludes authors from newly generated headers and their year ranges. Entries are exact names, email addresses, or `Name <email>` signatures, matched ASCII case-insensitively after trimming surrounding whitespace; there are no wildcards or substring matches. Both the raw Git identity and the mailmapped identity are checked. The defaults exclude known Claude Code, Codex, Cursor, GitHub Copilot, Aider, Gemini Code Assist, and Devin identities; the commented example config lists every email. Set `ignore_authors = []` to include everyone, or replace the array with your own identities. Retained existing headers keep their authors; explicitly replaced headers use the filtered history. The pure API applies the same exclusions to explicitly supplied file history.
 
 Attribution uses Git author fields, not committers or `Co-authored-by` trailers.
+
+`normalize.rules.frontmatter.author_map` maps exact, case-sensitive Git author names to display strings in generated or explicitly replaced headers. Matching uses names after Git mailmap resolution and author exclusions. Each name is mapped once; unmapped names stay unchanged. Both `{authors}` and `{copyright}` use the mapped strings, deduplicated and sorted, while year ranges retain all included contributions. Retained existing headers are unchanged. Keys and values must be nonempty single-line strings without control characters; values cannot contain Lean comment delimiters. The pure API applies the same mapping to supplied history.
+
+```toml
+[normalize.rules.frontmatter.author_map]
+"git-handle" = "Full Name"
+"Old Git Name" = "Full Name"
+```
+
+The map defaults to empty and merges by name across configuration files. Use `--set 'normalize.rules.frontmatter.author_map={}'` to clear inherited mappings, or supply a complete inline TOML table through `--set` to replace them.
 
 Default identities are based on the tools' public signatures and bot accounts, including [Codex's signature](https://github.com/openai/codex/blob/main/codex-rs/git-utils/src/baseline.rs), [Aider's attribution implementation](https://github.com/Aider-AI/aider/blob/main/aider/repo.py), and GitHub's public account IDs for [Claude](https://api.github.com/users/claude%5Bbot%5D), [Cursor](https://api.github.com/users/cursor%5Bbot%5D), [Copilot](https://api.github.com/users/copilot%5Bbot%5D), [Gemini Code Assist](https://api.github.com/users/gemini-code-assist%5Bbot%5D), and [Devin](https://api.github.com/users/devin-ai-integration%5Bbot%5D). Email matching covers model-specific display names without excluding similarly named humans.
 

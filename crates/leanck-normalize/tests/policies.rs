@@ -465,3 +465,61 @@ fn explicit_history_applies_author_exclusions_before_rendering_all_placeholders(
     .unwrap();
     assert!(!result.output.contains("Copyright"));
 }
+
+#[test]
+fn author_mapping_is_exact_single_pass_and_deduplicates_display_names() {
+    let history = FileHistory {
+        contributors: [
+            ("Alias", "old@example.test", 2020),
+            ("Other Alias", "new@example.test", 2024),
+            ("Unmapped", "other@example.test", 2022),
+            ("alias", "case@example.test", 2021),
+            ("Codex", "noreply@openai.com", 2010),
+        ]
+        .into_iter()
+        .map(|(name, email, year)| Contributor {
+            name: name.into(),
+            email: email.into(),
+            years: [year].into(),
+        })
+        .collect(),
+    };
+    let mut rules = NormalizeRules::default();
+    rules.frontmatter.author_map = [
+        ("Alias", "Émilie Example"),
+        ("Other Alias", "Émilie Example"),
+        ("Émilie Example", "Must not chain"),
+        ("Codex", "Must remain excluded"),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.into(), value.into()))
+    .collect();
+    let context = Context {
+        history: Some(&history),
+        ..Default::default()
+    };
+    let source = normalize_with_context("def x := 1\n", 100, Options::default(), &rules, &context)
+        .unwrap()
+        .output;
+    assert!(
+        source.contains("Copyright (c) 2020–2024 Unmapped, alias, Émilie Example."),
+        "{source}"
+    );
+    assert!(
+        source.contains("Authors: Unmapped, alias, Émilie Example"),
+        "{source}"
+    );
+    assert_eq!(source.matches("Émilie Example").count(), 2);
+    assert!(!source.contains("Must") && !source.contains("2010"));
+    // Changing a map does not rewrite a retained existing header.
+    rules
+        .frontmatter
+        .author_map
+        .insert("Alias".into(), "New Display".into());
+    assert_eq!(
+        normalize_with_context(&source, 100, Options::default(), &rules, &context)
+            .unwrap()
+            .output,
+        source
+    );
+}
