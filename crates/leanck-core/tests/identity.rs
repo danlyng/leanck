@@ -142,10 +142,19 @@ fn runtime_calculation_is_pure_and_hash_and_filenames_stay_stable() {
         absent.clone(),
         Path::new("/__leanck_contract_missing__/workspace"),
     );
-    assert_eq!(paths.socket(), absent.join("leanck-a6e6834103b3f536.sock"));
-    assert_eq!(paths.pid(), absent.join("leanck-a6e6834103b3f536.pid"));
-    assert_eq!(paths.lock(), absent.join("leanck-a6e6834103b3f536.lock"));
-    assert_eq!(paths.log(), absent.join("leanck-a6e6834103b3f536.log"));
+    // Independent BLAKE2b-48 vector; this differs from a truncated BLAKE2b-64 digest.
+    assert_eq!(
+        worktree_key(Path::new("/__leanck_contract_missing__/workspace")),
+        "a3b694f716c7"
+    );
+    assert_eq!(paths.socket(), absent.join("leanck-a3b694f716c7.sock"));
+    assert_eq!(paths.pid(), absent.join("leanck-a3b694f716c7.pid"));
+    assert_eq!(paths.lock(), absent.join("leanck-a3b694f716c7.lock"));
+    assert_eq!(paths.log(), absent.join("leanck-a3b694f716c7.log"));
+    assert_eq!(
+        paths.start_lock(),
+        absent.join("leanck-a3b694f716c7.start.lock")
+    );
     assert!(!absent.exists());
     let prepared = paths.clone().prepare().unwrap();
     assert_eq!(prepared, paths);

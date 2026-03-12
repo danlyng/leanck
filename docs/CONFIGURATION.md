@@ -73,6 +73,8 @@ leanck --no-config --set 'cache.enabled=false' diagnostics Main.lean
 
 ## Runtime directories
 
+Runtime socket, PID, log, and lock filenames use a 12-character lowercase hexadecimal worktree key, generated directly with a 6-byte (48-bit) BLAKE2b digest of the canonical workspace path.
+
 New daemons prefer `$XDG_RUNTIME_DIR/leanck`, then `$XDG_CACHE_HOME/leanck` (default `$HOME/.cache/leanck`), then a private `leanck-<uid>` directory under the system temporary directory, and finally `/tmp/leanck-<uid>` if the configured temporary path is unusable. Relative XDG values are ignored. The XDG runtime base must already exist, belong to the current user, and have mode `0700`; leanck creates its own subdirectory, not the login session's runtime base.
 
 Before starting Lean, leanck validates the complete socket pathname against the platform's byte limit, directory ownership and permissions, file creation, exclusive locking, and Unix socket binding. New directories use mode `0700`. Invalid candidates are skipped; if none work, the error lists the attempted locations and reasons. A client passes the selected directory explicitly to the daemon and uses that directory for its retry.

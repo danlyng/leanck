@@ -206,19 +206,25 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         finally:
             terminal.close()
 
-    def completion_config(self, terminal, completions="none", default=None):
+    def completion_config(self, terminal, completions="none"):
         terminal.prompt("Shell completions (", completions)
-        if (completions or default) not in (None, "none"):
-            terminal.prompt("Completions directory")
 
+    def make_completion_dir(self, shell):
+        relative = {
+            "bash": "data/bash-completion/completions",
+            "zsh": "data/zsh/site-functions",
+            "fish": "config/fish/completions",
+            "powershell": "config/powershell/Completions",
+            "elvish": "config/elvish/lib",
+        }[shell]
+        directory = self.home / relative
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory
 
     def plugin_config(self, terminal, completions="none", path="no"):
         terminal.choose("Install as plugin or standalone?", "Plugin (recommended)")
         self.completion_config(terminal, completions)
         terminal.prompt("Add leanck to PATH?", path)
-        if path == "yes":
-            terminal.prompt("Shell profile to update")
-
 
     def standalone_config(self, terminal, *, binary_dir="", skills="", agents="", completions="none", path=""):
         terminal.choose("Install as plugin or standalone?", "Standalone")
@@ -234,8 +240,6 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
             terminal.prompt("Codex configuration directory")
         self.completion_config(terminal, completions)
         terminal.prompt("Add leanck to PATH?", path)
-        if path == "yes":
-            terminal.prompt("Shell profile to update")
 
     def open_plugin_config(self, terminal):
         self.plugin_config(terminal)
@@ -351,6 +355,7 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
     def test_local_repo_standalone_installs_built_cli_and_selected_components(self):
         source = self.source_checkout()
         self.mock_source_tools()
+        self.make_completion_dir("bash")
         result = self.run_install("--from-repo", str(source), "--skills", "both", "--agents", "both", "--completions", "bash")
         self.assertIn(b"local source", result.stderr)
         for path in (".local/bin/leanck", "claude/skills/new-proof/SKILL.md", ".agents/skills/new-proof/SKILL.md", "claude/agents/new-expert.md", "codex/agents/leanck/new-grind.toml", "data/bash-completion/completions/leanck"):
@@ -809,15 +814,22 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
     def test_advanced_plugin_additional_locations_and_completion_destination(self):
         skills, claude, codex = [self.root / name for name in ("extra skills", "extra Claude agents", "extra Codex agents")]
         completions = self.root / "custom completions"
+        completions.mkdir()
+        profile = self.root / "custom profile"
+        profile.write_text("# existing profile\n")
         def drive(t):
             self.open_plugin_config(t)
             for label, path in (("Add skill location...", skills), ("Add Claude location...", claude), ("Add Codex location...", codex)):
                 t.edit(label, path)
             t.enum("Shell completions", "bash")
             t.edit("Completions directory", completions)
+            t.enum("Add leanck to PATH", "yes")
+            t.edit("Shell profile", profile)
             t.action("Save changes")
-            for path in (skills, claude, codex, completions):
+            for path in (skills, claude, codex):
                 self.assertFalse(path.exists())
+            self.assertEqual(list(completions.iterdir()), [])
+            self.assertEqual(profile.read_text(), "# existing profile\n")
             t.choose(PLUGIN_PROMPT, "Continue")
         code, output = self.run_interactive(drive)
         self.assertEqual(code, 0, output.decode())
@@ -825,9 +837,36 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         self.assertTrue((claude / "lean-expert.md").is_file())
         self.assertTrue((codex / "lean-expert.toml").is_file())
         self.assertIn("completions for bash", (completions / "leanck").read_text())
+        self.assertIn("# >>> leanck PATH >>>", profile.read_text())
         state = (self.home / "state/leanck/installer/selections.tsv").read_text()
         for key, path in (("extra_skills", skills), ("extra_claude_agents", claude), ("extra_codex_agents", codex)):
             self.assertIn(f"{key}\t{path}\n", state)
+
+    def test_plain_advanced_config_can_change_completion_and_profile_paths(self):
+        directory = self.root / "existing completions"
+        directory.mkdir()
+        profile = self.root / "existing profile"
+        profile.write_text("# existing profile\n")
+        def drive(t):
+            t.prompt("Install as plugin or standalone?", "plugin")
+            self.completion_config(t, "")
+            t.prompt("Add leanck to PATH?")
+            t.prompt(PLUGIN_PROMPT, "edit")
+            t.prompt("Edit advanced config", "completions")
+            self.completion_config(t, "fish")
+            t.prompt("Completions directory", str(directory))
+            t.prompt("Edit advanced config", "path")
+            t.prompt("Add leanck to PATH?")
+            t.prompt("Shell (fish / bash / zsh)", "fish")
+            t.prompt("Shell profile to update", str(profile))
+            t.prompt("Edit advanced config", "save")
+            t.prompt(PLUGIN_PROMPT, "continue")
+        code, output = self.run_interactive(drive, env={"TERM": "dumb"})
+        self.assertEqual(code, 0, output.decode())
+        self.assertTrue((directory / "leanck.fish").is_file())
+        self.assertIn("fish_add_path", profile.read_text())
+        self.assertFalse((self.home / "data/zsh").exists())
+        self.assertFalse((self.home / ".zshrc").exists())
 
     def test_advanced_removing_new_location_restores_clean_state(self):
         def drive(t):
@@ -887,8 +926,9 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
                             for p in backup_root.glob("*/*") if p.name != "manifest.tsv"))
 
     def test_completion_and_path_preview_and_idempotent_install(self):
+        self.make_completion_dir("fish")
         profile = self.home / "config/fish/config.fish"
-        profile.parent.mkdir(parents=True)
+        profile.parent.mkdir(parents=True, exist_ok=True)
         profile.write_text("# existing profile\n")
         profile.chmod(0o644)
         before = self.snapshot_home()
@@ -913,6 +953,7 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         }
         for shell, relative in destinations.items():
             with self.subTest(shell=shell):
+                self.make_completion_dir(shell)
                 self.run_install("--completions", shell)
                 script = self.home / relative
                 self.assertTrue(script.is_file())
@@ -939,14 +980,14 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
                 self.assertIn(f"- Shell completions: {expected}\n".encode(), result.stderr)
         self.assertFalse(self.binary_executions.exists())
 
-
     def test_plugin_prompts_default_to_current_shell_and_adding_to_path(self):
+        self.make_completion_dir("zsh")
+        (self.home / ".zshrc").write_text("# existing profile\n")
         before = self.snapshot_home()
         def drive(t):
             t.choose("Install as plugin or standalone?", "Plugin (recommended)")
-            self.completion_config(t, "", default="zsh")
+            self.completion_config(t, "")
             t.prompt("Add leanck to PATH?")
-            t.prompt("Shell profile to update")
             t.wait(lambda: t.screen.selected(PLUGIN_PROMPT), "confirmation")
             self.assertEqual(self.snapshot_home(), before)
             t.choose(PLUGIN_PROMPT, "Continue")
@@ -954,9 +995,11 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         self.assertEqual(code, 0, output.decode())
         self.assertRegex(output, rb"Shell completions [^\r\n]*\[zsh\]:")
         self.assertRegex(output, rb"Add leanck to PATH\?[^\r\n]*\[yes\]:")
+        self.assertNotIn(b"Completions directory [", output)
+        self.assertNotIn(b"Shell profile to update", output)
+        self.assertNotIn(b"does not exist", output)
         self.assertTrue((self.home / "data/zsh/site-functions/_leanck").is_file())
         self.assertIn(str(self.home / "data/leanck/bin"), (self.home / ".zshrc").read_text())
-
 
     def test_plugin_prompts_allow_declining_completions_and_path(self):
         def drive(t):
@@ -968,11 +1011,103 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         self.assertFalse((self.home / ".zshrc").exists())
         self.assertNotIn("_completions", self.binary_executions.read_text())
 
+    def test_missing_default_shell_paths_warn_and_skip_without_prompting_or_creating(self):
+        for mode, confirmation in (("plugin", PLUGIN_PROMPT), ("standalone", STANDALONE_PROMPT)):
+            with self.subTest(mode=mode):
+                def drive(t):
+                    if mode == "plugin":
+                        self.plugin_config(t, completions="", path="yes")
+                    else:
+                        self.standalone_config(t, completions="", path="yes")
+                    t.choose(confirmation, "Continue")
+                code, output = self.run_interactive(drive)
+                self.assertEqual(code, 0, output.decode())
+                self.assertIn(b"Completions directory does not exist:", output)
+                self.assertIn(b"skipping shell completions", output)
+                self.assertIn(b"Shell profile does not exist:", output)
+                self.assertIn(b"skipping PATH update", output)
+                self.assertNotIn(b"Completions directory [", output)
+                self.assertNotIn(b"Shell profile to update", output)
+                self.assertNotIn(b"Open a new shell to load the PATH change", output)
+                self.assertFalse((self.home / "data/zsh").exists())
+                self.assertFalse((self.home / ".zshrc").exists())
+                self.assertNotIn("_completions", self.binary_executions.read_text())
+                inventory = (self.home / "state/leanck/installer/uninstall.tsv").read_text()
+                self.assertNotIn("site-functions", inventory)
+                self.assertNotIn(".zshrc", inventory)
+
+    def test_missing_custom_shell_paths_are_skipped_in_preview_and_install(self):
+        directory = self.root / "missing completions parent/completions"
+        profile = self.root / "missing profile parent/config.fish"
+        args = ("--shell", "fish", "--completions-dir", str(directory), "--path-file", str(profile), "--add-to-path")
+        before = self.snapshot_home()
+        result = self.run_install(*args, "--dry-run")
+        self.assertIn(b"Skip shell completions (directory missing):", result.stderr)
+        self.assertIn(b"Skip PATH update (shell profile missing):", result.stderr)
+        self.assertNotIn(b"Would install fish completions", result.stderr)
+        self.assertNotIn(b"Would update shell profile", result.stderr)
+        self.assert_dry_run_unchanged(before)
+        self.run_install(*args)
+        self.assertFalse(directory.parent.exists())
+        self.assertFalse(profile.parent.exists())
+        self.assertNotIn("_completions", self.binary_executions.read_text())
+
+    def test_confirmation_repeats_skipped_option_warnings_and_clears_corrected_paths(self):
+        directory = self.root / "existing completions"
+        directory.mkdir()
+        profile = self.root / "existing profile"
+        profile.touch()
+        before = self.snapshot_home()
+        def drive(t):
+            self.plugin_config(t, completions="", path="yes")
+            t.wait(lambda: t.screen.selected(PLUGIN_PROMPT), "initial confirmation")
+            for warning in (b"skipping shell completions", b"skipping PATH update"):
+                self.assertEqual(t.transcript.count(warning), 1)
+            t.choose(PLUGIN_PROMPT, "Edit advanced config...")
+            t.action("Cancel")
+            t.wait(lambda: t.screen.selected(PLUGIN_PROMPT), "confirmation reminders")
+            for warning in (b"skipping shell completions", b"skipping PATH update"):
+                self.assertEqual(t.transcript.count(warning), 2)
+            t.choose(PLUGIN_PROMPT, "Edit advanced config...")
+            t.edit("Completions directory", directory)
+            t.edit("Shell profile", profile)
+            t.action("Save changes")
+            t.wait(lambda: t.screen.selected(PLUGIN_PROMPT), "corrected confirmation")
+            for warning in (b"skipping shell completions", b"skipping PATH update"):
+                self.assertEqual(t.transcript.count(warning), 2)
+            t.choose(PLUGIN_PROMPT, "Cancel")
+        code, output = self.run_interactive(drive)
+        self.assertEqual(code, 0, output.decode())
+        self.assertEqual(self.snapshot_home(), before)
+
+    def test_shell_updates_skip_only_the_missing_destination(self):
+        directory = self.make_completion_dir("fish")
+        profile = self.home / "config/fish/config.fish"
+        result = self.run_install("--shell", "fish", "--add-to-path")
+        self.assertTrue((directory / "leanck.fish").is_file())
+        self.assertFalse(profile.exists())
+        self.assertNotIn(b"skipping shell completions", result.stderr)
+        self.assertIn(b"skipping PATH update", result.stderr)
+        profile.write_text("# existing fish config\n")
+        missing = self.root / "missing completions"
+        result = self.run_install("--completions-dir", str(missing))
+        self.assertFalse(missing.exists())
+        self.assertIn("fish_add_path", profile.read_text())
+        self.assertIn(b"skipping shell completions", result.stderr)
+        self.assertNotIn(b"skipping PATH update", result.stderr)
+
+    def test_completion_directory_must_be_a_directory_before_installing(self):
+        directory = self.root / "completion file"
+        directory.write_text("keep this file")
+        result = self.run_install("--completions-dir", str(directory), success=False)
+        self.assertIn(b"completions directory is not a directory", result.stderr)
+        self.assertEqual(directory.read_text(), "keep this file")
+        self.assertFalse((self.home / ".local/bin/leanck").exists())
 
     def test_plugin_prompt_defaults_respect_explicit_opt_outs(self):
         def drive(t):
             t.choose("Install as plugin or standalone?", "Plugin (recommended)")
-            self.completion_config(t, "", default="none")
+            self.completion_config(t, "")
             t.prompt("Add leanck to PATH?")
             t.choose(PLUGIN_PROMPT, "Continue")
         code, output = self.run_interactive(drive, "--completions", "none", "--no-add-to-path")
@@ -981,14 +1116,15 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         self.assertRegex(output, rb"Add leanck to PATH\?[^\r\n]*\[no\]:")
         self.assertFalse((self.home / ".zshrc").exists())
         self.assertNotIn("_completions", self.binary_executions.read_text())
-
+        self.assertNotIn(b"does not exist", output)
 
     def test_standalone_prompt_defaults_to_current_shell(self):
+        self.make_completion_dir("zsh")
         def drive(t):
             t.choose("Install as plugin or standalone?", "Standalone")
             for label in ("Install the CLI?", "Install location", "Standalone skills", "Custom agents"):
                 t.prompt(label)
-            self.completion_config(t, "", default="zsh")
+            self.completion_config(t, "")
             t.prompt("Add leanck to PATH?", "no")
             t.choose(STANDALONE_PROMPT, "Continue")
         code, output = self.run_interactive(drive)
@@ -996,13 +1132,12 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         self.assertRegex(output, rb"Shell completions [^\r\n]*\[zsh\]:")
         self.assertTrue((self.home / "data/zsh/site-functions/_leanck").is_file())
 
-
     def test_plugin_unknown_shell_defaults_to_no_completions(self):
         for current_shell in ("/bin/tcsh", ""):
             with self.subTest(shell=current_shell):
                 def drive(t):
                     t.choose("Install as plugin or standalone?", "Plugin (recommended)")
-                    self.completion_config(t, "", default="none")
+                    self.completion_config(t, "")
                     t.prompt("Add leanck to PATH?", "no")
                     t.choose(PLUGIN_PROMPT, "Cancel")
                 code, output = self.run_interactive(drive, env={"SHELL": current_shell})
@@ -1010,20 +1145,20 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
                 self.assertRegex(output, rb"Shell completions [^\r\n]*\[none\]:")
         self.assertFalse(self.binary_executions.exists())
 
-
     def test_plugin_unknown_shell_asks_for_supported_path_shell(self):
+        profile = self.home / "config/fish/config.fish"
+        profile.parent.mkdir(parents=True)
+        profile.write_text("# existing fish config\n")
         def drive(t):
             t.choose("Install as plugin or standalone?", "Plugin (recommended)")
             self.completion_config(t)
             t.prompt("Add leanck to PATH?")
             t.prompt("Shell for PATH (", "fish")
-            t.prompt("Shell profile to update")
             t.choose(PLUGIN_PROMPT, "Continue")
         code, output = self.run_interactive(drive, env={"SHELL": "/bin/tcsh"})
         self.assertEqual(code, 0, output.decode())
         self.assertIn("fish_add_path", (self.home / "config/fish/config.fish").read_text())
         self.assertFalse((self.home / ".bashrc").exists())
-
 
     def test_explicit_and_saved_completion_choices_override_detected_default(self):
         self.run_install("--completions", "none")
@@ -1037,14 +1172,14 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         self.assertIn(b"- Shell completions: none\n", result.stderr)
         self.assertIn(b"- Add leanck to PATH: no\n", result.stderr)
 
-
     def test_custom_completion_directory_is_previewed_and_remembered(self):
         directory = self.root / "chosen completions"
         before = self.snapshot_home()
         result = self.run_install("--completions", "bash", "--completions-dir", str(directory), "--dry-run")
-        self.assertIn(str(directory / "leanck").encode(), result.stderr)
+        self.assertIn(f"Skip shell completions (directory missing): {directory}".encode(), result.stderr)
         self.assertFalse(directory.exists())
         self.assert_dry_run_unchanged(before)
+        directory.mkdir()
         self.run_install("--completions", "bash", "--completions-dir", str(directory))
         script = directory / "leanck"
         script.write_text("local completion edits")
@@ -1073,6 +1208,7 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         for path, content in originals.items():
             path.write_text(content)
         self.env["LEANCK_TEST_COMPLETION_FAILURE"] = "1"
+        self.make_completion_dir("fish")
         result = self.run_install("--plugin", "codex", "--force", "--completions", "fish", success=False)
         self.assertIn(b"Restoring replaced files", result.stderr)
         for path, content in originals.items():
@@ -1142,6 +1278,7 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         self.assertFalse((parent / "lean-expert.toml.leanck-installed").exists())
 
     def test_failed_file_install_rolls_back_prior_replacements(self):
+        self.make_completion_dir("fish")
         binary = self.home / ".local/bin/leanck"
         binary.parent.mkdir(parents=True)
         binary.write_text("previous binary")
@@ -1214,6 +1351,7 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
 
     def test_profile_quoting_handles_metacharacters_as_literal_paths(self):
         custom = self.root / "a'b\\c $(touch NEVER)"
+        (self.home / ".bashrc").touch()
         self.run_install("--bin-dir", str(custom), "--shell", "bash", "--add-to-path")
         profile = self.home / ".bashrc"
         result = subprocess.run(["bash", "--noprofile", "--norc", "-c", '. "$1"; printf "%s" "$PATH"',
@@ -1221,6 +1359,9 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         self.assertEqual(result.stdout.decode().split(":")[0], str(custom))
         self.assertFalse((REPO / "NEVER").exists())
         if shutil.which("fish"):
+            profile = self.home / "config/fish/config.fish"
+            profile.parent.mkdir(parents=True, exist_ok=True)
+            profile.touch()
             self.run_install("--bin-dir", str(custom), "--shell", "fish", "--add-to-path")
             profile = self.home / "config/fish/config.fish"
             result = subprocess.run(["fish", "--no-config", "-c",
@@ -1273,6 +1414,7 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         self.assertEqual(agent.resolve(), (self.home / "data/leanck/agents/lean-expert.toml").resolve())
 
     def test_plugin_failure_rolls_back_binary_bundle_and_agent_links(self):
+        self.make_completion_dir("fish")
         self.env["LEANCK_TEST_COMPLETION_FAILURE"] = "1"
         self.run_install("--plugin", "codex", "--completions", "fish", success=False)
         for path in ("data/leanck/bin/leanck", "data/leanck/bundle", "data/leanck/agents",
@@ -1451,6 +1593,7 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         self.assert_dry_run_unchanged(before)
 
     def test_all_registers_plugins_and_installs_codex_agents_without_duplicate_skills(self):
+        (self.home / ".zshrc").touch()
         result = self.run_install("--all", "--skills", "both", "--agents", "claude")
         bundle = self.home / "data/leanck/bundle"
         self.assertTrue((bundle / "plugin/bin/leanck").is_file())
@@ -1582,7 +1725,6 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
             catalog = json.load(archive.extractfile("leanck/.agents/plugins/marketplace.json"))
             self.assertEqual(catalog["plugins"][0]["source"]["path"], "./plugin")
 
-
     def run_uninstall(self, *args, success=True, approve=True):
         result = subprocess.run([os.environ.get("LEANCK_INSTALLER_SHELL", "sh"), "-s", "--",
                                  *(["--yes"] if approve else []), *args],
@@ -1594,9 +1736,8 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
             self.assertNotEqual(result.returncode, 0, result.stderr.decode())
         return result
 
-
-
     def test_uninstall_standalone_preserves_user_files_and_backups(self):
+        self.make_completion_dir("fish")
         profile = self.home / ".zshrc"
         profile.write_text("# existing profile\n")
         self.run_install("--skills", "both", "--agents", "both", "--completions", "fish", "--add-to-path")
@@ -1618,9 +1759,9 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         self.assertIn("leanck daemons stop", self.binary_executions.read_text())
         self.assertIn(b"nothing to remove", self.run_uninstall().stderr)
 
-
-
     def test_uninstall_dry_run_executes_nothing_and_needs_no_approval(self):
+        self.make_completion_dir("fish")
+        (self.home / ".zshrc").touch()
         self.run_install("--all", "--add-to-path", "--completions", "fish")
         before = self.snapshot_home()
         hosts = self.host_executions.read_bytes()
@@ -1633,8 +1774,6 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         self.assertEqual(self.binary_executions.read_bytes(), binaries)
         self.run_uninstall(approve=False, success=False)
         self.assertEqual(self.snapshot_home(), before)
-
-
 
     def test_uninstall_plugin_unregisters_only_selected_host_and_custom_home(self):
         self.run_install("--plugin", "codex")
@@ -1649,9 +1788,8 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         self.assertFalse((self.home / "data/leanck/bin/leanck").exists())
         self.assertEqual(list((self.home / "codex/agents/leanck").glob("*.toml*")), [])
 
-
-
     def test_uninstall_preserves_modified_components_and_can_resume(self):
+        self.make_completion_dir("fish")
         self.run_install("--skills", "claude", "--agents", "both", "--completions", "fish")
         changed = [self.home / ".local/bin/leanck", self.home / "claude/skills/lean-proving/SKILL.md",
                    self.home / "claude/agents/lean-expert.md", self.home / "codex/agents/leanck/lean-grind.toml",
@@ -1669,8 +1807,6 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         self.run_uninstall()
         self.assertTrue(all(not path.exists() for path in changed))
 
-
-
     def test_uninstall_tracks_old_and_extra_destinations(self):
         binary_a = self.root / "first bin"
         binary_b = self.root / "second bin"
@@ -1681,8 +1817,6 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         self.assertFalse((binary_a / "leanck").exists())
         self.assertFalse((binary_b / "leanck").exists())
         self.assertFalse((extra / "lean-proving").exists())
-
-
 
     def test_uninstall_host_failure_preserves_files_and_retry_receipts(self):
         self.run_install("--all")
@@ -1697,8 +1831,6 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         self.run_uninstall()
         self.assertNotIn(["claude", "plugin", "uninstall", "leanck@leanck-installer", "--scope", "user"], self.calls())
 
-
-
     def test_uninstall_rejects_symlink_parents_and_tree_links(self):
         self.run_install("--skills", "claude", "--agents", "codex")
         directory = self.home / "codex/agents/leanck"
@@ -1711,8 +1843,6 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         self.assertTrue((moved / "lean-expert.toml").exists())
         self.assertTrue((skill / "user-link").is_symlink())
 
-
-
     def test_uninstall_legacy_state_and_custom_state_directory(self):
         state_dir = self.root / "custom state"
         self.run_install("--state-dir", str(state_dir), "--skills", "both", "--agents", "both")
@@ -1722,8 +1852,6 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         self.assertFalse((self.home / "claude/skills/lean-proving").exists())
         self.assertFalse((self.home / "codex/agents/leanck/lean-expert.toml").exists())
 
-
-
     def test_uninstall_invalid_arguments_do_not_change_files(self):
         self.run_install()
         before = self.snapshot_home()
@@ -1731,8 +1859,6 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
             with self.subTest(args=args):
                 self.run_uninstall(*args, success=False)
                 self.assertEqual(self.snapshot_home(), before)
-
-
 
     def test_uninstall_cancellation_and_confirmation_use_terminal_not_script_stdin(self):
         self.run_install()
@@ -1746,16 +1872,12 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
             terminal.close()
         self.assertEqual(self.snapshot_home(), before)
 
-
-
     def test_uninstall_host_timeout_preserves_files(self):
         self.run_install("--plugin", "codex")
         self.env["LEANCK_TEST_HOST_DELAY"] = "codex"
         result = self.run_uninstall("--timeout", "1", success=False)
         self.assertIn(b"Command timed out", result.stderr)
         self.assertTrue((self.home / "data/leanck/bundle").exists())
-
-
 
     def test_uninstall_legacy_plugins_require_explicit_host_selection(self):
         self.run_install("--plugin", "codex")
@@ -1768,8 +1890,6 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         self.run_uninstall("--plugin", "codex")
         self.assertFalse((self.home / "data/leanck/bundle").exists())
 
-
-
     def test_uninstall_legacy_plugins_use_saved_custom_host_directory(self):
         custom_home = self.root / "custom codex"
         self.run_install("--plugin", "codex", "--codex-dir", str(custom_home))
@@ -1780,8 +1900,6 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         calls = [json.loads(line) for line in config_log.read_text().splitlines()]
         self.assertEqual(len(calls), 2)
         self.assertTrue(all(call[0] == "codex" and call[1] == str(custom_home) for call in calls))
-
-
 
     def test_uninstall_legacy_preserves_retargeted_agent_link(self):
         self.run_install("--plugin", "codex")
@@ -1794,7 +1912,6 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         self.run_uninstall("--plugin", "codex", success=False)
         self.assertEqual(link.readlink(), user_agent)
         self.assertEqual(user_agent.read_text(), "keep my agent")
-
 
 
 if __name__ == "__main__":

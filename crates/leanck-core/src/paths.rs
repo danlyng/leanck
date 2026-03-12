@@ -1,5 +1,5 @@
 //! Runtime discovery is read-only; preparation validates before Lean is started.
-use blake2::{Blake2b, Digest, digest::consts::U8};
+use blake2::{Blake2b, Digest, digest::consts::U6};
 use std::{
     fs::{File, OpenOptions, TryLockError},
     io,
@@ -109,11 +109,12 @@ fn prepare_directory(path: &Path) -> io::Result<()> {
     valid_directory(path, false)
 }
 
+/// A native 48-bit BLAKE2b digest encoded as 12 lowercase hexadecimal characters.
 pub fn worktree_key(worktree: &Path) -> String {
     let canonical = worktree
         .canonicalize()
         .unwrap_or_else(|_| worktree.to_path_buf());
-    hex::encode(Blake2b::<U8>::digest(
+    hex::encode(Blake2b::<U6>::digest(
         canonical.as_os_str().as_encoded_bytes(),
     ))
 }
@@ -501,6 +502,22 @@ mod tests {
         assert!(socket_length(Path::new(&"x".repeat(address.sun_path.len() - 1))).is_ok());
         assert!(socket_length(Path::new(&"x".repeat(address.sun_path.len()))).is_err());
         assert!(socket_length(Path::new(&"é".repeat(address.sun_path.len() / 2))).is_err());
+    }
+
+    #[test]
+    fn shorter_digest_allows_socket_at_platform_path_limit() {
+        let s = Scratch::new();
+        let address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+        let limit = address.sun_path.len() - 1;
+        let key = worktree_key(&s.0);
+        let name = format!("leanck-{key}.sock");
+        let padding = limit - s.0.as_os_str().as_encoded_bytes().len() - name.len() - 2;
+        let directory = s.0.join("x".repeat(padding));
+        let runtime = s.select(vec![directory.clone()]).prepare().unwrap();
+        assert_eq!(runtime.directory(), directory);
+        assert_eq!(runtime.socket().as_os_str().as_encoded_bytes().len(), limit);
+        assert!(socket_length(&directory.join("leanck-a6e6834103b3f536.sock")).is_err());
+        let _listener = UnixListener::bind(runtime.socket()).unwrap();
     }
 
     #[test]

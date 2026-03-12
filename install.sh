@@ -3,7 +3,7 @@
 # All execution is inside main so a truncated download cannot start installation.
 
 # Prompts use a separate terminal descriptor: stdin may contain this script.
-INSTALLER_VERSION="0.2.0"
+INSTALLER_VERSION="0.3.0"
 colors() {
     bold='' cyan='' green='' yellow='' red='' reset='' out_bold='' out_reset=''
     prompt_style='' selected_style='' input_style=''
@@ -166,8 +166,7 @@ configure_standalone() {
         configure_completions
         case ":$original_path:" in *":$bin_dir:"*) ;; *)
             yes_no 'Add leanck to PATH?' "$( [ "$add_to_path" = 1 ] && printf yes || printf no )"
-            add_to_path=$answer
-            if [ "$add_to_path" = 1 ]; then prompt 'Shell profile to update' "$path_file" text; path_file=$reply; fi ;;
+            add_to_path=$answer ;;
         esac
     fi
 }
@@ -211,7 +210,7 @@ configure_completions() {
         case "$reply" in none|bash|zsh|fish|powershell|elvish) completions=$reply; break ;; esac
         warn 'Choose none, bash, zsh, fish, powershell, or elvish.'
     done
-    if [ "$completions" != none ]; then
+    if [ "${1:-}" = advanced ] && [ "$completions" != none ]; then
         completion_destination
         prompt 'Completions directory' "$completion_dir" text
         absolute_path "$reply"; completions_dir=$resolved
@@ -236,7 +235,6 @@ configure_path() {
                 esac
             fi ;;
     esac
-    prompt 'Shell profile to update' "$path_file" text; path_file=$reply
 }
 codex_agents_destination() { codex_agent_path=${codex_agents_dir:-$codex_dir/agents/leanck}; }
 has_components() {
@@ -292,6 +290,10 @@ EOF
 }
 
 plan() { printf '%s\n' "$*" >> "$work/plan"; }
+warn_skipped_option() {
+    printf '%s\n' "$*" >> "$work/warnings"
+    if [ "$interactive" = 0 ]; then warn "$*"; fi
+}
 # Keep a cumulative uninstall inventory, including destinations from older installs.
 record_install() { printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$work/uninstall.tsv"; }
 preview() { [ "$dry_run" = 1 ] || [ "$planning" = 1 ]; }
@@ -900,7 +902,7 @@ edit_advanced_config_plain() {
                 case "$reply" in keep) ;; none) extra_claude_agents='' ;; *) append_location extra_claude_agents "$reply" ;; esac
                 prompt 'Additional Codex agents directory (keep / none / path)' keep text
                 case "$reply" in keep) ;; none) extra_codex_agents='' ;; *) append_location extra_codex_agents "$reply" ;; esac ;;
-            completions) configure_completions ;;
+            completions) configure_completions advanced ;;
             path)
                 yes_no 'Add leanck to PATH?' "$( [ "$add_to_path" = 1 ] && printf yes || printf no )"
                 add_to_path=$answer
@@ -1381,7 +1383,6 @@ apply_extras() {
     if [ "$cli" = 1 ] && [ "$completions" != none ] && ! skipped "$completion_path"; then
         if preview; then plan "Would install $completions completions: $completion_path"
         else
-            mkdir -p "$completion_dir"
             pending=$(mktemp "$completion_dir/.leanck-install.XXXXXX")
             # Preserve generator headers: Zsh's compinit reads #compdef on the first line.
             run_bounded "$timeout" "$bin_dir/leanck" _completions "$completions" > "$pending" || die 'completion generation failed'
@@ -1395,12 +1396,9 @@ apply_extras() {
             plan "Would update shell profile: $path_file"
             plan "  $(profile_line)"
         else
-            mkdir -p "$(dirname "$path_file")"
             pending=$(mktemp "$(dirname "$path_file")/.leanck-install.XXXXXX")
-            if [ -f "$path_file" ]; then
-                cp -p "$path_file" "$pending"
-                awk '/^# >>> leanck PATH >>>$/ {skip=1;next} /^# <<< leanck PATH <<<$/ {skip=0;next} !skip' "$path_file" > "$pending"
-            else chmod 644 "$pending"; fi
+            cp -p "$path_file" "$pending"
+            awk '/^# >>> leanck PATH >>>$/ {skip=1;next} /^# <<< leanck PATH <<<$/ {skip=0;next} !skip' "$path_file" > "$pending"
             printf '\n# >>> leanck PATH >>>\n' >> "$pending"
             profile_line >> "$pending"
             printf '# <<< leanck PATH <<<\n' >> "$pending"
@@ -1509,6 +1507,7 @@ prepare_plan() {
     backup_dir=$state_dir/backups/$(date +%Y%m%dT%H%M%S)-$$
     cp "$work/source-plan" "$work/plan"
     : > "$work/skip"
+    : > "$work/warnings"
     has_components ||
         die 'nothing selected; omit --no-cli or select --skills or --agents'
     if [ -z "$from_repo" ] || [ "$dry_run" = 0 ]; then
@@ -1557,6 +1556,15 @@ prepare_plan() {
         [ "$last_binary_digest" != "$(digest_file "$bin_dir/leanck")" ]; then
         conflict "$bin_dir/leanck"
     fi
+    if [ "$cli" = 1 ] && [ "$completions" != none ]; then
+        if [ -e "$completion_dir" ] || [ -L "$completion_dir" ]; then
+            [ -d "$completion_dir" ] || die "completions directory is not a directory: $completion_dir; choose another path in advanced config or with --completions-dir"
+        else
+            warn_skipped_option "Completions directory does not exist: $completion_dir; skipping shell completions. Choose an existing directory in advanced config or with --completions-dir."
+            printf '%s\n' "$completion_path" >> "$work/skip"
+            plan "Skip shell completions (directory missing): $completion_dir"
+        fi
+    fi
     if [ "$cli" = 1 ] && [ "$completions" != none ] && { [ -e "$completion_path" ] || [ -L "$completion_path" ]; }; then
         if [ "$last_completions_path" != "$completion_path" ] ||
             [ "$last_completions_digest" != "$(digest_file "$completion_path")" ]; then
@@ -1573,6 +1581,10 @@ prepare_plan() {
                 /^# <<< leanck PATH <<<$/ {if(!open) exit 1; open=0}
                 END {if(open) exit 1}
             ' "$path_file" || die "unbalanced leanck PATH markers in $path_file; repair the block before retrying"
+        else
+            warn_skipped_option "Shell profile does not exist: $path_file; skipping PATH update. Choose an existing file in advanced config or with --path-file."
+            printf '%s\n' "$path_file" >> "$work/skip"
+            plan "Skip PATH update (shell profile missing): $path_file"
         fi
     fi
     planning=1
@@ -1861,6 +1873,7 @@ main() {
         if [ "$mode" = plugin ]; then confirmation='Installing `leanck` as a plugin. Continue?'
         else confirmation='Installing `leanck` as standalone. Continue?'; fi
         while :; do
+            while IFS= read -r skipped_warning; do warn "$skipped_warning"; done < "$work/warnings"
             choose "$confirmation" cancel 'cancel continue edit' 'Cancel|Continue|Edit advanced config...'
             case "$reply" in
                 continue) break ;;
@@ -1901,7 +1914,7 @@ main() {
     if [ "$cli" = 1 ]; then
         case ":$original_path:" in
             *":$bin_dir:"*) ;;
-            *) if [ "$add_to_path" = 0 ]; then say "Add $bin_dir to PATH in your shell and agent host."
+            *) if [ "$add_to_path" = 0 ] || skipped "$path_file"; then say "Add $bin_dir to PATH in your shell and agent host."
                else say 'Open a new shell to load the PATH change; restart the agent host as needed.'; fi ;;
         esac
         say 'After an upgrade, stop old daemons with: leanck daemons stop --all'
