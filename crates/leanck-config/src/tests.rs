@@ -118,17 +118,29 @@ fn instances_defaults_range_and_policy_names() {
     );
 }
 #[test]
-fn project_configuration_cannot_set_instances() {
+fn project_configuration_ignores_instances_and_records_a_warning() {
     let dir = Scratch::new();
     dir.file("project/lakefile.toml", "");
-    let project = dir.file("project/leanck.toml", "[instances]\nlimit = 2\n");
-    let error = ConfigArgs::default()
-        .load(&dir.0.join("project"))
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("[instances]"), "{error}");
-    assert!(error.contains("leanck/config.toml"), "{error}");
-    assert!(error.contains(&project.display().to_string()), "{error}");
+    let baseline = ConfigArgs::default().load(&dir.0.join("project")).unwrap();
+    let project = dir.file(
+        "project/leanck.toml",
+        "[normalize]\nwidth=90\n[instances]\nlimit = 2\n",
+    );
+    let loaded = ConfigArgs::default().load(&dir.0.join("project")).unwrap();
+    assert_eq!(
+        loaded.settings.instances.limit,
+        baseline.settings.instances.limit
+    );
+    assert_eq!(
+        loaded.sources["instances.limit"],
+        baseline.sources["instances.limit"]
+    );
+    assert_eq!(loaded.settings.normalize.width, 90);
+    assert_eq!(loaded.warnings.len(), 1);
+    let warning = &loaded.warnings[0];
+    assert_eq!(warning.code, "ignored_project_machine_wide_section");
+    assert!(warning.message.contains("leanck/config.toml"));
+    assert!(warning.message.contains(&project.display().to_string()));
     // An explicit layer that is the project file itself is accepted.
     let loaded = ConfigArgs {
         config: Some(project.clone()),
@@ -137,6 +149,20 @@ fn project_configuration_cannot_set_instances() {
     .load(&dir.0.join("project"))
     .unwrap();
     assert_eq!(loaded.settings.instances.limit, 2);
+    assert!(loaded.warnings.is_empty());
+    // The entire ignored section is removed before validation, including typos/types.
+    std::fs::write(&project, "[instances]\nlimit='invalid'\nunknown=true\n").unwrap();
+    assert_eq!(
+        ConfigArgs::default()
+            .load(&dir.0.join("project"))
+            .unwrap()
+            .warnings
+            .len(),
+        1
+    );
+    // Other project settings are still validated.
+    std::fs::write(&project, "[instances]\nlimit=2\n[normalize]\nwidht=90\n").unwrap();
+    assert!(ConfigArgs::default().load(&dir.0.join("project")).is_err());
     // Other explicit layers and overrides may set [instances].
     std::fs::write(&project, "[normalize]\nwidth = 90\n").unwrap();
     let explicit = dir.file(
@@ -227,15 +253,14 @@ fn hidden_project_config_obeys_nearest_boundary_and_filename_precedence() {
             project_config_path(&dir.0.join("project/src/New.lean")).unwrap(),
             Some(nearest)
         );
-        // Hidden configs have the same machine-wide setting restriction.
+        // Hidden configs ignore the same machine-wide settings.
         std::fs::remove_file(dir.0.join("project/leanck.toml")).unwrap();
         std::fs::write(&hidden, "[instances]\nlimit=2\n").unwrap();
-        assert!(
-            ConfigArgs::default()
-                .load(&dir.0.join("project"))
-                .unwrap_err()
-                .to_string()
-                .contains("[instances]")
+        let loaded = ConfigArgs::default().load(&dir.0.join("project")).unwrap();
+        assert_eq!(loaded.warnings.len(), 1);
+        assert_eq!(
+            loaded.warnings[0].code,
+            "ignored_project_machine_wide_section"
         );
         let loaded = ConfigArgs {
             config: Some(hidden),

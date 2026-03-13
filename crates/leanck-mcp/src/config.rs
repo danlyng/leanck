@@ -15,6 +15,7 @@ pub struct Args {
 pub struct Config {
     pub args: leanck_config::ConfigArgs,
     pub settings: leanck_config::Settings,
+    pub warnings: Vec<leanck_config::Warning>,
     pub workspace: WorkspaceRoot,
 }
 
@@ -28,6 +29,7 @@ impl Config {
                 ..Default::default()
             },
             settings: leanck_config::Settings::default(),
+            warnings: Vec::new(),
         }
     }
     pub fn from_args(args: Args, config: leanck_config::ConfigArgs) -> anyhow::Result<Self> {
@@ -35,11 +37,12 @@ impl Config {
             Some(p) => WorkspaceRoot::from_path(p),
             None => WorkspaceRoot::discover_current(),
         }?;
-        let settings = config.load(root.as_path())?.settings;
+        let loaded = config.load(root.as_path())?;
         Ok(Self {
             workspace: root,
             args: config,
-            settings,
+            settings: loaded.settings,
+            warnings: loaded.warnings,
         })
     }
 }

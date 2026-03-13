@@ -11,6 +11,8 @@ use leanck_core::workspace::has_project_marker;
 pub(crate) struct Args {
     #[arg(skip)]
     pub(crate) settings: leanck_config::Settings,
+    #[arg(skip)]
+    pub(crate) config_warnings: Vec<leanck_config::Warning>,
     #[command(flatten)]
     pub(crate) workspace: WorkspaceArgs,
 
@@ -43,7 +45,11 @@ pub(crate) fn run(args: Args) -> anyhow::Result<()> {
         None => leanck_core::workspace::WorkspaceRoot::discover_current()?.into_path_buf(),
     };
     let workspace = workspace.canonicalize().unwrap_or(workspace);
-    let mut checks = Vec::new();
+    let mut checks: Vec<_> = args
+        .config_warnings
+        .iter()
+        .map(|warning| Check::new("warning", &warning.message))
+        .collect();
     let instances = leanck_client::instances::summary(&args.settings);
     if workspace.is_dir() && has_project_marker(&workspace) {
         checks.push(Check::new("ok", "Lake project marker found"));

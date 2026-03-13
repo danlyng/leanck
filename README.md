@@ -175,7 +175,7 @@ The server modes also support explicit launches: `leanck serve mcp [--workspace 
 `leanck` works out of the box with sensible defaults and supports optional TOML configuration at `~/.config/leanck/config.toml`[^0] (user) and `leanck.toml` or `.leanck.toml` (project). If both project filenames exist in the same directory, `leanck.toml` takes precedence.
 
 ```bash
-leanck config init      # Write a template leanck.toml in the current directory
+leanck config init      # Write a minimal leanck.toml with commented examples
 leanck config show      # Print the effective configuration
 leanck config check     # Validate configuration files and report warnings
 ```

@@ -9,6 +9,7 @@ pub struct WorkspaceSelection(Arc<RwLock<Selection>>);
 
 struct Selection {
     client: Client,
+    warnings: Vec<leanck_config::Warning>,
     daemon_binary: Option<PathBuf>,
 }
 
@@ -16,6 +17,7 @@ impl WorkspaceSelection {
     pub fn new(root: WorkspaceRoot) -> Self {
         Self(Arc::new(RwLock::new(Selection {
             client: Client::new(root),
+            warnings: Vec::new(),
             daemon_binary: None,
         })))
     }
@@ -31,13 +33,27 @@ impl WorkspaceSelection {
     pub fn capture(&self) -> Client {
         self.0.read().unwrap().client.clone()
     }
+    /// Capture health metadata with the same workspace/settings snapshot.
+    pub fn capture_health(&self) -> (Client, Vec<leanck_config::Warning>) {
+        let selection = self.0.read().unwrap();
+        (selection.client.clone(), selection.warnings.clone())
+    }
     pub fn set_configured(&self, root: WorkspaceRoot, settings: leanck_config::Settings) {
+        self.set_with_warnings(root, settings, Vec::new());
+    }
+    pub fn set_with_warnings(
+        &self,
+        root: WorkspaceRoot,
+        settings: leanck_config::Settings,
+        warnings: Vec<leanck_config::Warning>,
+    ) {
         let mut client = Client::new(root).with_settings(settings);
         let mut selection = self.0.write().unwrap();
         if let Some(binary) = &selection.daemon_binary {
             client = client.with_daemon_binary(binary.clone());
         }
         selection.client = client;
+        selection.warnings = warnings;
     }
     pub fn set(&self, root: WorkspaceRoot) {
         self.set_configured(root, leanck_config::Settings::default());

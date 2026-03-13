@@ -3,6 +3,12 @@ use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Configuration sections that may only come from user or explicit layers.
+/// Register new machine-wide sections here; project filtering and warnings are
+/// driven by this list before validation, merging, or provenance recording.
+#[cfg(feature = "loader")]
+pub(crate) const MACHINE_WIDE_SECTIONS: &[&str] = &["instances"];
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {

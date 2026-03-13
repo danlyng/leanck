@@ -23,7 +23,10 @@ impl Scratch {
         let mut command = Command::new(env!("CARGO_BIN_EXE_leanck"));
         command
             .current_dir(self.0.join("project"))
-            .env("XDG_CONFIG_HOME", self.0.join("user"));
+            .env("XDG_CONFIG_HOME", self.0.join("user"))
+            .env("XDG_RUNTIME_DIR", self.0.join("runtime"))
+            .env("XDG_CACHE_HOME", self.0.join("cache"))
+            .env("TMPDIR", self.0.join("tmp"));
         command.env_remove("LEANCK_CONFIG");
         command
     }
@@ -205,6 +208,63 @@ fn validation_errors_are_json_and_init_never_overwrites() {
             .contains("widht")
     );
     assert!(dir.run(&["config", "defaults"]).status.success());
+}
+
+#[test]
+fn init_inherits_user_settings_and_offers_commented_project_conventions() {
+    let dir = Scratch::new();
+    fs::write(
+        dir.0.join("user/leanck/config.toml"),
+        "[normalize]\nwidth=72\nspelling='british'\n[normalize.rules.frontmatter]\nlicense_text='Project license.'\n",
+    ).unwrap();
+    for name in ["leanck.toml", ".leanck.toml", "custom.toml"] {
+        assert!(dir.run(&["config", "init", name]).status.success());
+        let text = fs::read_to_string(dir.0.join("project").join(name)).unwrap();
+        let active: Vec<_> = text
+            .lines()
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .collect();
+        assert_eq!(active, vec!["version = 1"]);
+        assert!(text.contains("docs/leanck.example.toml"));
+        assert!(text.contains("leanck config defaults"));
+        assert!(!text.contains("exclude"));
+        // Uncommenting every example gives valid configuration with the real defaults.
+        let (intro, examples) = text.split_once("# [normalize]").unwrap();
+        let examples = format!("{intro}[normalize]{examples}")
+            .lines()
+            .map(|line| line.strip_prefix("# ").unwrap_or(line))
+            .skip_while(|line| !line.starts_with("version = "))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(dir.0.join("examples.toml"), examples).unwrap();
+        let report = json(&dir.run(&["--config", "../examples.toml", "config", "show", "--json"]));
+        let defaults = serde_json::to_value(leanck_config::Settings::default()).unwrap();
+        for key in ["width", "spelling"] {
+            assert_eq!(
+                report["settings"]["normalize"][key],
+                defaults["normalize"][key]
+            );
+        }
+        for key in ["header_template", "license_text"] {
+            assert_eq!(
+                report["settings"]["normalize"]["rules"]["frontmatter"][key],
+                defaults["normalize"]["rules"]["frontmatter"][key]
+            );
+        }
+    }
+    let report = json(&dir.run(&["config", "show", "--json"]));
+    assert_eq!(report["settings"]["normalize"]["width"], 72);
+    assert_eq!(report["settings"]["normalize"]["spelling"], "british");
+    assert_eq!(
+        report["settings"]["normalize"]["rules"]["frontmatter"]["license_text"],
+        "Project license."
+    );
+    assert!(
+        report["sources"]["normalize.width"]
+            .as_str()
+            .unwrap()
+            .ends_with("user/leanck/config.toml")
+    );
 }
 
 #[test]
@@ -431,28 +491,56 @@ fn legacy_setting_environment_variables_do_not_change_settings_or_sources() {
 }
 
 #[test]
-fn project_configuration_cannot_set_machine_wide_instances() {
+fn project_instances_are_ignored_and_warn_only_in_doctor() {
     let dir = Scratch::new();
-    fs::write(
-        dir.0.join("project/leanck.toml"),
-        "[instances]\nlimit = 2\n",
-    )
-    .unwrap();
-    let output = dir.run(&["config", "check"]);
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("[instances]"), "{stderr}");
-    assert!(
-        stderr.contains(&dir.0.join("user/leanck/config.toml").display().to_string()),
-        "{stderr}"
-    );
     fs::write(
         dir.0.join("user/leanck/config.toml"),
         "[instances]\nlimit = 2\n",
     )
     .unwrap();
-    fs::write(dir.0.join("project/leanck.toml"), "").unwrap();
-    let report = json(&dir.run(&["config", "show", "--json"]));
-    assert_eq!(report["settings"]["instances"]["limit"], 2);
-    assert_eq!(report["settings"]["instances"]["on_limit"], "evict_idle");
+    for name in ["leanck.toml", ".leanck.toml"] {
+        let path = dir.0.join("project").join(name);
+        fs::write(
+            &path,
+            "[normalize]\nwidth=81\n[instances]\nlimit='ignored'\nunknown=true\n",
+        )
+        .unwrap();
+        let output = dir.run(&["config", "check"]);
+        assert!(output.status.success());
+        assert!(output.stderr.is_empty());
+        let output = dir.run(&["config", "show", "--json"]);
+        assert!(output.stderr.is_empty());
+        let report = json(&output);
+        assert_eq!(report["settings"]["instances"]["limit"], 2);
+        assert_eq!(report["settings"]["instances"]["on_limit"], "evict_idle");
+        assert_eq!(report["settings"]["normalize"]["width"], 81);
+        assert!(report["warnings"].as_array().unwrap().is_empty());
+        let doctor = json(&dir.run(&["doctor", "--json"]));
+        assert_eq!(doctor["ok"], true);
+        let issues = doctor["issues"].as_array().unwrap();
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0]["level"], "warning");
+        let message = issues[0]["message"].as_str().unwrap();
+        assert!(message.contains("[instances]"));
+        assert!(message.contains(&path.display().to_string()));
+        assert!(message.contains(&dir.0.join("user/leanck/config.toml").display().to_string()));
+        let output = dir.run(&["doctor"]);
+        assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout).contains("warning: [instances]"));
+        let doctor = json(&dir.run(&["doctor", "--json", "--no-config"]));
+        assert!(doctor["issues"].as_array().unwrap().is_empty());
+        fs::write(&path, "[instances]\nlimit=7\n").unwrap();
+        let explicit = json(&dir.run(&["--config", name, "config", "show", "--json"]));
+        assert_eq!(explicit["settings"]["instances"]["limit"], 7);
+        let selected = dir
+            .command()
+            .env("LEANCK_CONFIG", name)
+            .args(["doctor", "--json"])
+            .output()
+            .unwrap();
+        let selected = json(&selected);
+        assert_eq!(selected["instances"]["limit"], 7);
+        assert!(selected["issues"].as_array().unwrap().is_empty());
+        fs::remove_file(path).unwrap();
+    }
 }

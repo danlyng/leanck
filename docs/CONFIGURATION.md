@@ -4,7 +4,7 @@
 
 ## Getting started
 
-Create a project configuration with `leanck config init`, which writes `leanck.toml` in the current directory. Use `leanck config init .leanck.toml` for a hidden project file, or specify another destination: `leanck config init /path/to/config.toml`. The generated file contains defaults; remove settings you want to inherit from your user configuration. When the destination is named `leanck.toml` or `.leanck.toml`, `init` omits the machine-wide `[instances]` table, which project files cannot set.
+Create a project configuration with `leanck config init`, which writes `leanck.toml` in the current directory. Use `leanck config init .leanck.toml` for a hidden project file, or specify another destination: `leanck config init /path/to/config.toml`. The generated file sets only `version = 1` and includes commented examples for normalization width, spelling, header format, and license text, plus a reference to the full example configuration. Uncomment settings to override them; omitted settings continue to inherit from user configuration and built-in defaults. Use `leanck config defaults` to print the complete defaults.
 
 A small project configuration might contain:
 
@@ -53,7 +53,7 @@ Settings are resolved in this order:
 5. The file specified in `--config FILE`.
 6. Repeatable `--set KEY=VALUE` overrides, in command-line order.
 
-The machine-wide `[instances]` table is never read from a discovered `leanck.toml` or `.leanck.toml`; a project file that sets it is rejected with an error naming the user configuration path. It may come from any other layer, including either project filename passed explicitly with `--config` or `LEANCK_CONFIG`.
+The machine-wide `[instances]` table is ignored in a discovered `leanck.toml` or `.leanck.toml`, including any invalid values or unknown keys within that section. Other project settings are still loaded and validated. Doctor and MCP health checks report a nonfatal warning identifying the project file and user configuration path; routine commands remain quiet. Instance settings may come from any other layer, including either project filename passed explicitly with `--config` or `LEANCK_CONFIG`.
 
 Tables merge by field. Arrays replace earlier arrays, including empty arrays. Unknown keys, unsupported schema versions, malformed TOML, invalid types, invalid URLs/globs, and invalid resource limits are errors.
 

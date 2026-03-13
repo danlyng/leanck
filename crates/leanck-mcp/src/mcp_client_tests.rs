@@ -128,9 +128,12 @@ async fn switching_workspace_during_health_keeps_original_socket_display() {
     let first = Scratch::new();
     let second = Scratch::new();
     let listener = first.listener();
-    let server = LeanckServer::new(&Config::defaults(
-        WorkspaceRoot::from_path(&first.0).unwrap(),
+    let mut config = Config::defaults(WorkspaceRoot::from_path(&first.0).unwrap());
+    config.warnings.push(leanck_config::Warning::new(
+        "ignored_project_machine_wide_section",
+        "first workspace warning",
     ));
+    let server = LeanckServer::new(&config);
     let in_flight = server.clone();
     let query = tokio::spawn(async move {
         in_flight
@@ -165,6 +168,12 @@ async fn switching_workspace_during_health_keeps_original_socket_display() {
         value["lsp"]["workspace"],
         first.0.to_string_lossy().as_ref()
     );
+    assert_eq!(value["ok"], true);
+    assert_eq!(
+        value["issues"],
+        serde_json::json!([{"level":"warning", "message":"first workspace warning"}])
+    );
+    assert!(server.workspace.capture_health().1.is_empty());
 }
 
 #[test]
@@ -424,4 +433,85 @@ async fn configuration_includes_nonfatal_warnings_without_starting_a_daemon() {
             .any(|w| w["code"] == "short_transport_timeout")
     );
     assert!(!server.workspace.capture().socket().exists());
+}
+
+#[tokio::test]
+async fn ignored_project_instances_appear_in_health_and_refresh_with_workspace() {
+    let scratch = Scratch::new();
+    std::fs::write(scratch.0.join("lean-toolchain"), "").unwrap();
+    let path = scratch.0.join("leanck.toml");
+    std::fs::write(
+        &path,
+        "[normalize]\nwidth=83\n[instances]\nlimit='ignored'\n",
+    )
+    .unwrap();
+    let config = Config::from_args(
+        crate::config::Args {
+            workspace: Some(scratch.0.clone()),
+        },
+        leanck_config::ConfigArgs::default(),
+    )
+    .unwrap();
+    assert_eq!(config.settings.normalize.width, 83);
+    assert_eq!(config.warnings.len(), 1);
+    let server = LeanckServer::new(&config);
+    let listener = scratch.listener();
+    for json in [true, false] {
+        let checking = server.clone();
+        let query = tokio::spawn(async move {
+            checking
+                .health(
+                    Parameters(HealthzInput { json: Some(json) }),
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap()
+        });
+        let (mut stream, request) = request(&listener).await;
+        respond(
+            &mut stream,
+            Response::ok(
+                request.id,
+                serde_json::json!({
+                    "ok": true, "workspace": scratch.0,
+                    "protocol_version": leanck_core::api::PROTOCOL_VERSION,
+                    "server": {"pid":123,"running":true}, "idle_secs":0,
+                    "lifecycle":{"state":"ready","active_requests":0}
+                }),
+            ),
+        )
+        .await;
+        let content = query.await.unwrap();
+        let text = &content.as_text().unwrap().text;
+        if json {
+            let report: HealthReport = serde_json::from_str(text).unwrap();
+            assert!(report.ok);
+            assert_eq!(report.issues.len(), 1);
+            assert_eq!(
+                report.issues[0].level,
+                leanck_client::render::HealthIssueLevel::Warning
+            );
+            assert!(
+                report.issues[0]
+                    .message
+                    .contains(&path.display().to_string())
+            );
+        } else {
+            assert!(text.starts_with("warning: [instances]"), "{text}");
+        }
+    }
+    // Invalid replacement configs must preserve the previous warning/settings snapshot.
+    let switch = || {
+        Parameters(SetWorkspaceInput {
+            path: scratch.0.to_string_lossy().into_owned(),
+        })
+    };
+    std::fs::write(&path, "[normalize]\nwidht=83\n").unwrap();
+    assert!(server.set_workspace(switch()).await.is_err());
+    assert_eq!(server.workspace.capture_health().1.len(), 1);
+    std::fs::write(&path, "[normalize]\nwidth=84\n").unwrap();
+    server.set_workspace(switch()).await.unwrap();
+    let (client, warnings) = server.workspace.capture_health();
+    assert!(warnings.is_empty());
+    assert_eq!(client.settings().normalize.width, 84);
 }

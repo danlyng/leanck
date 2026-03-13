@@ -115,3 +115,5 @@ Use `just verify-distribution /absolute/path/to/test-project` from the repositor
 The executables load user/project TOML configuration and accept `--config FILE`, `--no-config`, and repeatable `--set KEY=VALUE`. See the [configuration reference](../docs/CONFIGURATION.md) for all settings, precedence, and lifecycle behavior. Use `leanck config show --json` to inspect effective settings and `leanck config check` to validate them.
 
 The read-only `configuration` tool includes structured configuration warnings alongside the selected workspace and settings. It does not inspect source files, read dictionaries, or start Lean. Live timeout warnings account for per-request timeout overrides.
+
+The `health` tool also reports a nonfatal warning when a discovered project configuration contains a machine-wide `[instances]` section. That section is ignored; other project settings still apply. The warning follows the selected workspace and is refreshed by `set_workspace`.

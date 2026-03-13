@@ -24,6 +24,8 @@ pub struct ConfigArgs {
 pub struct LoadedConfig {
     pub settings: Settings,
     pub files: Vec<PathBuf>,
+    /// File-loading diagnostics, displayed only by health/doctor checks.
+    pub warnings: Vec<Warning>,
     /// Dotted setting -> winning source (defaults, filename, --set).
     pub sources: BTreeMap<String, String>,
 }
@@ -75,8 +77,7 @@ fn same_file(a: &Path, b: &Path) -> bool {
 struct Layer {
     path: PathBuf,
     required: bool,
-    /// A discovered project configuration, which must not set the machine-wide
-    /// `[instances]` table.
+    /// A discovered project configuration, whose machine-wide sections are ignored.
     discovered_project: bool,
 }
 
@@ -90,19 +91,33 @@ impl Layer {
     }
 }
 
-/// Reject `[instances]` in a discovered project file's parsed `patch`.
-fn reject_project_instances(project: &Path, patch: &toml::Value) -> Result<()> {
-    if patch.get("instances").is_some() {
-        let user = user_config_path().map_or_else(
-            || "~/.config/leanck/config.toml".to_owned(),
-            |path| path.display().to_string(),
-        );
-        bail!(
-            "[instances] is machine-wide and cannot be set in project configuration {}; set it in the user configuration {user} (or with --config/LEANCK_CONFIG/--set)",
-            project.display()
-        );
-    }
-    Ok(())
+/// Ignore machine-wide settings before validating or merging a project layer.
+fn ignore_project_machine_wide_sections(
+    project: &Path,
+    patch: &mut toml::Value,
+    machine_wide_sections: &[&str],
+) -> Vec<Warning> {
+    let Some(table) = patch.as_table_mut() else {
+        return Vec::new();
+    };
+    let user = user_config_path().map_or_else(
+        || "~/.config/leanck/config.toml".to_owned(),
+        |path| path.display().to_string(),
+    );
+    machine_wide_sections
+        .iter()
+        .filter_map(|section| {
+            table.remove(*section).map(|_| {
+                Warning::new(
+                    "ignored_project_machine_wide_section",
+                    format!(
+                        "[{section}] in project configuration {} is ignored because it is machine-wide; set it in the user configuration {user} (or with --config/LEANCK_CONFIG/--set)",
+                        project.display()
+                    ),
+                )
+            })
+        })
+        .collect()
 }
 
 pub fn user_config_path() -> Option<PathBuf> {
@@ -162,6 +177,7 @@ fn load_layers(layers: &[Layer], overrides: &[String]) -> Result<LoadedConfig> {
     let mut sources = BTreeMap::new();
     record_sources(&value, "", "defaults", &mut sources);
     let mut loaded_files = Vec::new();
+    let mut warnings = Vec::new();
     for layer in layers {
         let (path, required) = (&layer.path, layer.required);
         let text = match std::fs::read_to_string(path) {
@@ -175,7 +191,11 @@ fn load_layers(layers: &[Layer], overrides: &[String]) -> Result<LoadedConfig> {
         let mut patch: toml::Value =
             toml::from_str(&text).with_context(|| format!("invalid TOML in {}", path.display()))?;
         if layer.discovered_project {
-            reject_project_instances(path, &patch)?;
+            warnings.extend(ignore_project_machine_wide_sections(
+                path,
+                &mut patch,
+                MACHINE_WIDE_SECTIONS,
+            ));
         }
         // Validate each layer's shape before merging so an override cannot hide typos.
         let _: Settings = patch
@@ -223,6 +243,7 @@ fn load_layers(layers: &[Layer], overrides: &[String]) -> Result<LoadedConfig> {
     let mut loaded = LoadedConfig {
         settings,
         files: loaded_files,
+        warnings,
         sources,
     };
     for assignment in overrides {
@@ -362,15 +383,7 @@ impl Command {
             let defaults = Settings::default();
             let text = toml::to_string_pretty(&defaults)?;
             if let Action::Init { path } = &self.action {
-                // Project files may not set the machine-wide [instances] table.
-                let text = if PROJECT_CONFIG_NAMES
-                    .iter()
-                    .any(|name| path.file_name() == Some(std::ffi::OsStr::new(name)))
-                {
-                    without_table(&text, "instances")
-                } else {
-                    text
-                };
+                let text = starter_config(&defaults)?;
                 use std::io::Write;
                 let mut file = std::fs::OpenOptions::new()
                     .write(true)
@@ -443,22 +456,29 @@ impl Command {
     }
 }
 
-/// Remove one leaf `[name]` table (header through the line before the next header)
-/// from pretty-printed TOML, preserving the order of everything else.
-fn without_table(text: &str, name: &str) -> String {
-    let header = format!("[{name}]");
-    let mut skipping = false;
-    let mut out = String::with_capacity(text.len());
-    for line in text.split_inclusive('\n') {
-        let trimmed = line.trim();
-        if trimmed.starts_with('[') {
-            skipping = trimmed == header;
-        }
-        if !skipping {
-            out.push_str(line);
-        }
-    }
-    out
+fn starter_config(defaults: &Settings) -> Result<String> {
+    let normalize = toml::Value::try_from(&defaults.normalize)?;
+    Ok(format!(
+        "# Omitted settings inherit their values; uncomment settings to override them.\n\
+         # Full example: https://github.com/danlyng/leanck/blob/HEAD/docs/leanck.example.toml\n\
+         # Print all built-in defaults with: leanck config defaults\n\
+         version = {version}\n\n\
+         # [normalize]\n\
+         # width = {width}\n\
+         # spelling = {spelling} # \"american\", \"british\", or \"off\"\n\n\
+         # [normalize.rules.frontmatter]\n\
+         # header_template = {header}\n\
+         # license_text = {license}\n",
+        version = defaults.version,
+        width = normalize["width"],
+        spelling = normalize["spelling"],
+        header = normalize["rules"]["frontmatter"]["header_template"]
+            .to_string()
+            .replace('\n', "\n# "),
+        license = normalize["rules"]["frontmatter"]["license_text"]
+            .to_string()
+            .replace('\n', "\n# "),
+    ))
 }
 
 impl Settings {
@@ -476,5 +496,57 @@ impl Settings {
             }
         }
         assignments
+    }
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+
+    #[test]
+    fn machine_wide_registry_contains_unique_schema_sections() {
+        let defaults = toml::Value::try_from(Settings::default()).unwrap();
+        let mut seen = std::collections::BTreeSet::new();
+        for section in MACHINE_WIDE_SECTIONS {
+            assert!(
+                seen.insert(section),
+                "duplicate scope registration: {section}"
+            );
+            assert!(
+                defaults.get(*section).is_some_and(toml::Value::is_table),
+                "machine-wide section is missing from the schema: {section}"
+            );
+        }
+    }
+
+    #[test]
+    fn project_filter_obeys_the_registry_and_preserves_other_sections() {
+        let mut patch = toml::from_str(
+            "[instances]\nlimit='invalid'\n[daemon]\nunknown=true\n[normalize]\nwidth=83\n",
+        )
+        .unwrap();
+        // Adding a second machine-wide section needs no filtering or warning changes.
+        let registry = ["instances", "daemon", "absent"];
+        let warnings = ignore_project_machine_wide_sections(
+            Path::new("project/leanck.toml"),
+            &mut patch,
+            &registry,
+        );
+        assert_eq!(warnings.len(), 2);
+        for (warning, section) in warnings.iter().zip(registry) {
+            assert_eq!(warning.code, "ignored_project_machine_wide_section");
+            assert!(warning.message.contains(&format!("[{section}]")));
+            assert!(patch.get(section).is_none());
+        }
+        let settings: Settings = patch.clone().try_into().unwrap();
+        assert_eq!(settings.normalize.width, 83);
+        assert!(
+            ignore_project_machine_wide_sections(
+                Path::new("project/leanck.toml"),
+                &mut patch,
+                &registry,
+            )
+            .is_empty()
+        );
     }
 }

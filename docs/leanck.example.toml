@@ -218,7 +218,7 @@ max_output_bytes = 8388608 # 8 MiB capture limit per stream.
 
 [instances]
 #! Machine-wide daemon cap. User configuration, --config/LEANCK_CONFIG, or --set only;
-#! a project leanck.toml or .leanck.toml that sets [instances] is rejected.
+#! ignored in discovered project leanck.toml or .leanck.toml files, with a health/doctor warning.
 limit = 8 # Maximum running leanckd daemons on this machine; 0 disables the cap (at most 4096).
 on_limit = "evict_idle" # At the cap: "evict_idle" stops the longest-idle daemon, "refuse", or "warn".
 

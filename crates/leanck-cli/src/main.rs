@@ -85,6 +85,9 @@ fn run(json: &mut bool) -> anyhow::Result<()> {
         &loaded.settings,
         matches.subcommand().unwrap().1,
     );
+    if let Cmd::Doctor(args) = &mut cli.command {
+        args.config_warnings = loaded.warnings;
+    }
 
     match cli.command {
         // Live Lean state.

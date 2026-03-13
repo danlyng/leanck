@@ -252,7 +252,11 @@ impl LeanckServer {
 
     pub fn new(config: &Config) -> Self {
         let workspace = WorkspaceSelection::new(config.workspace.clone());
-        workspace.set_configured(config.workspace.clone(), config.settings.clone());
+        workspace.set_with_warnings(
+            config.workspace.clone(),
+            config.settings.clone(),
+            config.warnings.clone(),
+        );
         Self {
             workspace,
             config_args: config.args.clone(),
@@ -503,8 +507,8 @@ impl LeanckServer {
         Parameters(p): Parameters<HealthzInput>,
         cancel: CancellationToken,
     ) -> Result<Content, ErrorData> {
-        let client = self.workspace.capture();
-        let report = HealthReport::from_result(
+        let (client, warnings) = self.workspace.capture_health();
+        let mut report = HealthReport::from_result(
             client
                 .health(RequestOptions {
                     cancellation: Some(cancel),
@@ -514,6 +518,12 @@ impl LeanckServer {
             &client.socket(),
         )
         .with_instances(leanck_client::instances::summary(client.settings()));
+        report.issues.extend(warnings.into_iter().map(|warning| {
+            leanck_client::render::HealthIssue {
+                level: leanck_client::render::HealthIssueLevel::Warning,
+                message: warning.message,
+            }
+        }));
         if p.json.unwrap_or(client.settings().output.json) {
             Content::json(report)
         } else {
@@ -568,12 +578,12 @@ impl LeanckServer {
         let candidate = leanck_core::workspace::WorkspaceRoot::validate_project(&p.path)
             .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
 
-        let settings = self
+        let loaded = self
             .config_args
             .load(candidate.as_path())
-            .map_err(|e| ErrorData::invalid_params(format!("configuration: {e:#}"), None))?
-            .settings;
-        self.workspace.set_configured(candidate.clone(), settings);
+            .map_err(|e| ErrorData::invalid_params(format!("configuration: {e:#}"), None))?;
+        self.workspace
+            .set_with_warnings(candidate.clone(), loaded.settings, loaded.warnings);
         Content::json(serde_json::json!({
             "ok": true,
             "workspace": candidate.as_path(),
