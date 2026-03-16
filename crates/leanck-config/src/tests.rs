@@ -2,6 +2,67 @@ use super::*;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 static NEXT: AtomicU64 = AtomicU64::new(0);
+#[test]
+fn discovered_project_update_policy_is_ignored_before_validation() {
+    let dir = Scratch::new();
+    let user = dir.file("user.toml", "[updates]\ncheck=false\n");
+    for name in ["leanck.toml", ".leanck.toml"] {
+        let project = dir.file(
+            name,
+            "[updates]\nautomatic='invalid type'\nunknown_key=true\n",
+        );
+        let loaded = ConfigArgs {
+            config: Some(user.clone()),
+            ..Default::default()
+        }
+        .load(&dir.0)
+        .unwrap();
+        assert!(!loaded.settings.updates.check);
+        assert!(!loaded.settings.updates.automatic);
+        assert_eq!(loaded.sources["updates.check"], user.display().to_string());
+        assert_eq!(loaded.sources["updates.automatic"], "defaults");
+        assert_eq!(loaded.warnings.len(), 1);
+        assert_eq!(
+            loaded.warnings[0].code,
+            "ignored_project_machine_wide_section"
+        );
+        assert!(loaded.warnings[0].message.contains("[updates]"));
+        assert!(
+            loaded.warnings[0]
+                .message
+                .contains(&project.display().to_string())
+        );
+        // Explicitly selecting the same project file trusts and validates it.
+        assert!(
+            ConfigArgs {
+                config: Some(project.clone()),
+                ..Default::default()
+            }
+            .load(&dir.0)
+            .is_err()
+        );
+        std::fs::write(&project, "[updates]\ncheck=false\nautomatic=true\n").unwrap();
+        let explicit = ConfigArgs {
+            config: Some(project.clone()),
+            ..Default::default()
+        }
+        .load(&dir.0)
+        .unwrap();
+        assert!(explicit.settings.updates.automatic);
+        assert!(explicit.warnings.is_empty());
+        let overridden = ConfigArgs {
+            config: Some(user.clone()),
+            overrides: vec!["updates.automatic=true".into()],
+            ..Default::default()
+        }
+        .load(&dir.0)
+        .unwrap();
+        assert!(overridden.settings.updates.automatic);
+        assert_eq!(overridden.sources["updates.automatic"], "--set");
+        std::fs::remove_file(project).unwrap();
+    }
+    assert!(load_files(&[], &["updates.check_interval_secs=0".into()]).is_err());
+}
 struct Scratch(PathBuf);
 impl Scratch {
     fn new() -> Self {

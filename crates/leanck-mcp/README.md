@@ -12,6 +12,7 @@ An MCP server over stdio for standalone Lean 4 tooling.
 | `build` | Run the project's `lake build`; optional targets, warnings/strict policy, JSON, timeout_ms, and max_output_bytes. |
 | `loogle` | Search declarations by constant, substring, expression, or conclusion. |
 | `health` | Check daemon reachability; compact text or `{ok, lsp, issues, instances}` JSON, where `instances` is `{running, limit, on_limit}` for daemons machine-wide. |
+| `doctor` | Probe the workspace and existing daemon without starting Lean; include available leanck release notices. Accepts `json` for structured checks and `updates` status. |
 | `set_workspace` | Switch subsequent calls to another Lake project. |
 
 Live queries go over a Unix socket to `leanck serve daemon`, which keeps one warm `lake serve` per worktree. Builds run the project's own Lake toolchain. Loogle uses HTTP, trying the local endpoint and then the main endpoint. Configure `loogle.endpoints` to select custom endpoints.
@@ -91,7 +92,7 @@ The workspace defaults to the nearest ancestor of the current directory with `la
 
 ## Daemon discovery
 
-The CLI and MCP server derive the same socket path for a worktree (see `leanck-core/src/paths.rs`). On first use, MCP connects or starts `leanck serve daemon`, using `client.daemon_bin` when configured and otherwise its own executable. Embedded library callers fall back to sibling/PATH discovery of `leanck`. The daemon exits after an hour idle. MCP `health` also starts the daemon when necessary; CLI `doctor` only probes an existing daemon.
+The CLI and MCP server derive the same socket path for a worktree (see `leanck-core/src/paths.rs`). On first use, MCP connects or starts `leanck serve daemon`, using `client.daemon_bin` when configured and otherwise its own executable. Embedded library callers fall back to sibling/PATH discovery of `leanck`. The daemon exits after an hour idle. MCP `health` also starts the daemon when necessary; CLI and MCP `doctor` only probe an existing daemon. Both MCP `health` and `doctor` append update notices and include an `updates` object in JSON. Foreground release checks use persisted intervals and may be disabled in user configuration; other MCP operations do not check for updates. MCP processes retain usage leases so native updates defer until the host releases its session.
 
 Starting a daemon respects the machine-wide `instances.limit` (see [configuration](../../docs/CONFIGURATION.md#instance-limit)). Startup failures carry structured MCP error data: `{"kind":"instance_limit","running","limit"}` when the limit is reached and no idle daemon could be stopped, and `{"kind":"daemon_exited","code","log"}` when the daemon exits before serving, with the path of its log. `set_workspace` leaves the previous daemon running; under `evict_idle` it becomes an eviction candidate once idle, and it is stopped only if it is still idle when asked, so work it has accepted is never cancelled.
 

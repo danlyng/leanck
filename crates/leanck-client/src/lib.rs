@@ -4,6 +4,7 @@
 //! reconnect use the same canonical workspace. Requests whose delivery is
 //! uncertain are never automatically replayed, including read-only operations.
 mod discovery;
+pub mod doctor;
 mod error;
 pub mod instances;
 pub mod render;

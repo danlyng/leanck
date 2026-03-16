@@ -53,7 +53,26 @@ Settings are resolved in this order:
 5. The file specified in `--config FILE`.
 6. Repeatable `--set KEY=VALUE` overrides, in command-line order.
 
-The machine-wide `[instances]` table is ignored in a discovered `leanck.toml` or `.leanck.toml`, including any invalid values or unknown keys within that section. Other project settings are still loaded and validated. Doctor and MCP health checks report a nonfatal warning identifying the project file and user configuration path; routine commands remain quiet. Instance settings may come from any other layer, including either project filename passed explicitly with `--config` or `LEANCK_CONFIG`.
+The machine-wide `[instances]` and `[updates]` tables are ignored in a discovered `leanck.toml` or `.leanck.toml`, including any invalid values or unknown keys within that section. Other project settings are still loaded and validated. Doctor and MCP health checks report a nonfatal warning identifying the project file and user configuration path; routine commands remain quiet. Machine-wide settings may come from any other layer, including either project filename passed explicitly with `--config` or `LEANCK_CONFIG`.
+
+## Updates
+
+```toml
+[updates]
+check = true
+check_interval_secs = 86400
+automatic = false
+```
+
+`check` enables foreground release checks and notices. `check_interval_secs` accepts 1 through 31536000 seconds (one year). `automatic` opts installer-managed releases into installation before eligible CLI operations when the installation is unused. `check = false` disables opportunistic checks, notices, and automatic installation; an explicit `leanck update --check` or `leanck update` is still a direct request.
+
+CLI doctor and MCP doctor/health retain available-version notices between checks and include structured `updates` status in JSON. Doctor remains non-spawning and never installs. Ordinary managed CLI invocations check when due; help, version, completion generation, configuration commands, daemon startup, and MCP startup are excluded. Source/package-manager copies do not check during ordinary operations. Both kinds can check through doctor. Release-check failures are informational and preserve earlier available-version notices.
+
+Check state defaults to `$XDG_STATE_HOME/leanck/updates`, or `~/.local/state/leanck/updates`. Each release source has a separate directory containing a `last-check` timestamp, `check.json` release metadata and diagnostics, and a stable `check.lock`. Attempts are stamped before HTTP, so failures are throttled too. Metadata and timestamps are atomically replaced. Opportunistic checks have a two-second total deadline. Unwritable state is reported rather than causing repeated unthrottled requests. Missing, corrupt, and future timestamps are handled conservatively.
+
+Version pins and archive mirrors belong to the installation receipt. A pin permits doctor to announce a newer version while preventing automatic installation. `leanck update --version latest` explicitly unpins; `--version TAG` records an exact pin. Stable checks exclude semantic prereleases and use GitHub's latest published release. Archive and checksum downloads use one exact release tag. HTTPS is required for sources, with HTTP allowed only on loopback for local testing. Checksums provide integrity against the published release, not an independent publisher signature.
+
+Each managed CLI operation, MCP server, and daemon retains a shared installation lease. Install, native update, and uninstall share an exclusive maintenance lock. Automatic updates defer while any client holds a lease; they do not evict or interrupt work. Installation bookkeeping uses the installer's state directory, including custom directories recorded in the executable's marker. Never unlink held maintenance locks. See the README's Updates section for preview, adoption, recovery, and host-registration commands.
 
 Tables merge by field. Arrays replace earlier arrays, including empty arrays. Unknown keys, unsupported schema versions, malformed TOML, invalid types, invalid URLs/globs, and invalid resource limits are errors.
 

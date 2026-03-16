@@ -436,25 +436,49 @@ async fn configuration_includes_nonfatal_warnings_without_starting_a_daemon() {
 }
 
 #[tokio::test]
-async fn ignored_project_instances_appear_in_health_and_refresh_with_workspace() {
+async fn ignored_project_machine_wide_settings_appear_in_diagnostics_and_refresh_with_workspace() {
     let scratch = Scratch::new();
     std::fs::write(scratch.0.join("lean-toolchain"), "").unwrap();
     let path = scratch.0.join("leanck.toml");
     std::fs::write(
         &path,
-        "[normalize]\nwidth=83\n[instances]\nlimit='ignored'\n",
+        "[normalize]\nwidth=83\n[instances]\nlimit='ignored'\n[updates]\ncheck='ignored'\nunknown=true\n",
     )
     .unwrap();
     let config = Config::from_args(
         crate::config::Args {
             workspace: Some(scratch.0.clone()),
         },
-        leanck_config::ConfigArgs::default(),
+        leanck_config::ConfigArgs {
+            overrides: vec!["updates.check=false".into()],
+            ..Default::default()
+        },
     )
     .unwrap();
     assert_eq!(config.settings.normalize.width, 83);
-    assert_eq!(config.warnings.len(), 1);
+    assert_eq!(config.warnings.len(), 2);
     let server = LeanckServer::new(&config);
+    for json in [true, false] {
+        let content = server
+            .doctor(Parameters(HealthzInput { json: Some(json) }))
+            .await
+            .unwrap();
+        let text = &content.as_text().unwrap().text;
+        if json {
+            let report: serde_json::Value = serde_json::from_str(text).unwrap();
+            assert_eq!(report["ok"], true);
+            assert_eq!(report["issues"].as_array().unwrap().len(), 2);
+            assert!(
+                report["issues"][1]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("[updates]")
+            );
+        } else {
+            assert!(text.contains("warning: [instances]"), "{text}");
+            assert!(text.contains("warning: [updates]"), "{text}");
+        }
+    }
     let listener = scratch.listener();
     for json in [true, false] {
         let checking = server.clone();
@@ -486,7 +510,7 @@ async fn ignored_project_instances_appear_in_health_and_refresh_with_workspace()
         if json {
             let report: HealthReport = serde_json::from_str(text).unwrap();
             assert!(report.ok);
-            assert_eq!(report.issues.len(), 1);
+            assert_eq!(report.issues.len(), 2);
             assert_eq!(
                 report.issues[0].level,
                 leanck_client::render::HealthIssueLevel::Warning
@@ -498,6 +522,7 @@ async fn ignored_project_instances_appear_in_health_and_refresh_with_workspace()
             );
         } else {
             assert!(text.starts_with("warning: [instances]"), "{text}");
+            assert!(text.contains("warning: [updates]"), "{text}");
         }
     }
     // Invalid replacement configs must preserve the previous warning/settings snapshot.
@@ -508,7 +533,7 @@ async fn ignored_project_instances_appear_in_health_and_refresh_with_workspace()
     };
     std::fs::write(&path, "[normalize]\nwidht=83\n").unwrap();
     assert!(server.set_workspace(switch()).await.is_err());
-    assert_eq!(server.workspace.capture_health().1.len(), 1);
+    assert_eq!(server.workspace.capture_health().1.len(), 2);
     std::fs::write(&path, "[normalize]\nwidth=84\n").unwrap();
     server.set_workspace(switch()).await.unwrap();
     let (client, warnings) = server.workspace.capture_health();

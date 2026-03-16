@@ -10,6 +10,7 @@ members = [
     "crates/leanck-loogle",
     "crates/leanck-normalize",
     "crates/leanckd",
+    "crates/leanck-update",
 ]
 
 [workspace.package]

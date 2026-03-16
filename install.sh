@@ -295,13 +295,19 @@ warn_skipped_option() {
     if [ "$interactive" = 0 ]; then warn "$*"; fi
 }
 # Keep a cumulative uninstall inventory, including destinations from older installs.
-record_install() { printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$work/uninstall.tsv"; }
+record_install() {
+    inventory_kind=$1; [ "$inventory_kind" != completion ] || inventory_kind=file
+    printf '%s\t%s\t%s\n' "$inventory_kind" "$2" "$3" >> "$work/uninstall.tsv"
+    if [ -n "${4:-}" ]; then
+        printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" >> "$work/sources.tsv"
+    fi
+}
 preview() { [ "$dry_run" = 1 ] || [ "$planning" = 1 ]; }
 digest_file() {
     if [ "$hash_command" = sha256sum ]; then sha256sum < "$1"; else shasum -a 256 < "$1"; fi | awk '{print $1}'
 }
 tree_digest() {
-    (cd "$1" && find . -type f ! -path ./.leanck-content-sha256 | LC_ALL=C sort | while IFS= read -r file; do
+    (cd "$1" && find . -type f ! -path ./.leanck-content-sha256 ! -name .leanck-installation.json | LC_ALL=C sort | while IFS= read -r file; do
         printf '%s %s\n' "$(digest_file "$file")" "$file"
     done) > "$work/tree-digest"
     digest_file "$work/tree-digest"
@@ -649,7 +655,9 @@ install_tree() {
     printf '%s\n' 'leanck installer v1' > "$pending/.leanck-installed"
     tree_digest "$pending" > "$pending/.leanck-content-sha256"
     commit "$pending" "$destination"
-    record_install tree "$(cat "$destination/.leanck-content-sha256")" "$destination"
+    if [ "$source_tree" = "$plugin_release" ]; then component_source=.
+    else component_source=plugin/${source_tree#"$plugin/"}; fi
+    record_install tree "$(cat "$destination/.leanck-content-sha256")" "$destination" "$component_source"
     say "Installed $destination"
 }
 
@@ -684,9 +692,9 @@ install_agents() {
             commit "$pending" "$agent_destination/${agent##*/}.$suffix"
         done
         if [ -n "$agent_links" ]; then
-            record_install link "$agent_links/${agent##*/}" "$agent_destination/${agent##*/}"
+            record_install link "$agent_links/${agent##*/}" "$agent_destination/${agent##*/}" "$agent_links/${agent##*/}"
         else
-            record_install agent "$(digest_file "$agent_destination/${agent##*/}")" "$agent_destination/${agent##*/}"
+            record_install agent "$(digest_file "$agent_destination/${agent##*/}")" "$agent_destination/${agent##*/}" "plugin/${agent#"$plugin/"}"
         fi
     done
     say "Installed agents in $agent_destination"
@@ -801,12 +809,32 @@ save_state() {
     if [ "$mode" = plugin ]; then
         plugin_bin_dir=''; [ "$bin_dir" = "$data_dir/bin" ] || plugin_bin_dir=$bin_dir
     fi
-    for key in version last_binary_path last_binary_digest last_completions_path last_completions_digest cli skills_claude skills_codex agents_claude agents_codex add_to_path standalone_bin_dir plugin_bin_dir data_dir claude_dir codex_dir codex_skills codex_agents_dir completions_dir fish_completions_dir path_file completions shell; do
+    installed_target=$arch-$platform
+    for key in mode plugin_claude plugin_codex from_repo release_url installed_version installed_target version last_binary_path last_binary_digest last_completions_path last_completions_digest cli skills_claude skills_codex agents_claude agents_codex add_to_path standalone_bin_dir plugin_bin_dir data_dir claude_dir codex_dir codex_skills codex_agents_dir completions_dir fish_completions_dir path_file completions shell; do
         eval 'value=$'"$key"
         printf '%s\t%s\n' "$key" "$value" >> "$pending"
     done
     write_location_values >> "$pending"
     commit "$pending" "$state_dir/selections.tsv"
+    if [ "$cli" = 1 ] && ! skipped "$bin_dir/leanck" && [ -f "$release/.leanck-update-protocol" ]; then
+        pending=$(mktemp "$state_dir/.leanck-install.XXXXXX")
+        cat "$work/sources.tsv" > "$pending"
+        commit "$pending" "$state_dir/sources.tsv"
+        pending=$(mktemp "$state_dir/.leanck-install.XXXXXX")
+        run_bounded "$timeout" "$bin_dir/leanck" _update receipt --state-dir "$state_dir" --binary "$bin_dir/leanck" > "$pending" || die 'could not record native update ownership'
+        commit "$pending" "$state_dir/receipt.json"
+        pending=$(mktemp "$bin_dir/.leanck-install.XXXXXX")
+        { printf '{"state_dir":'; json_string "$state_dir"; printf '}\n'; } > "$pending"
+        commit "$pending" "$bin_dir/.leanck-installation.json"
+        printf 'file\t%s\t%s\n' "$(digest_file "$bin_dir/.leanck-installation.json")" "$bin_dir/.leanck-installation.json" >> "$state_dir/uninstall.tsv"
+        if [ "$mode" = plugin ] && ! skipped "$bundle_dir"; then
+            pending=$(mktemp "$bundle_dir/plugin/bin/.leanck-install.XXXXXX")
+            { printf '{"state_dir":'; json_string "$state_dir"; printf '}\n'; } > "$pending"
+            commit "$pending" "$bundle_dir/plugin/bin/.leanck-installation.json"
+            # The discovery marker is installation metadata; exclude it from tree content hashes.
+            tree_digest "$bundle_dir" > "$bundle_dir/.leanck-content-sha256"
+        fi
+    fi
 }
 show_plan() {
     printf '\n%sReady to install leanck %s%s\n' "$bold" "$installed_version" "$reset" >&2
@@ -1388,7 +1416,7 @@ apply_extras() {
             run_bounded "$timeout" "$bin_dir/leanck" _completions "$completions" > "$pending" || die 'completion generation failed'
             chmod 644 "$pending"
             commit "$pending" "$completion_path"
-            record_install file "$(digest_file "$completion_path")" "$completion_path"
+            record_install completion "$(digest_file "$completion_path")" "$completion_path" "$completions"
         fi
     fi
     if [ "$cli" = 1 ] && [ "$add_to_path" = 1 ] && ! skipped "$path_file"; then
@@ -1436,7 +1464,7 @@ PYCODE
             chmod 755 "$pending"
             run_bounded "$timeout" "$pending" --version >&2
             commit "$pending" "$bin_dir/leanck"
-            record_install file "$(digest_file "$bin_dir/leanck")" "$bin_dir/leanck"
+            record_install file "$(digest_file "$bin_dir/leanck")" "$bin_dir/leanck" plugin/bin/leanck
             say "Installed $bin_dir/leanck ($installed_version)"
         fi
     fi
@@ -1788,7 +1816,7 @@ main() {
         say "Preparing leanck for $arch-$platform"
     fi
     work=$(mktemp -d "${TMPDIR:-/tmp}/leanck-install.XXXXXX")
-    : > "$work/plan"; : > "$work/skip"; : > "$work/journal"
+    : > "$work/plan"; : > "$work/skip"; : > "$work/journal"; : > "$work/sources.tsv"
     backup_dir=$state_dir/backups/$(date +%Y%m%dT%H%M%S)-$$
     if [ -n "$from_repo" ]; then
         prepare_repo_source
@@ -1899,6 +1927,12 @@ main() {
     fi
     if [ -n "$from_repo" ]; then build_repo_source; fi
     [ "$verbose" -lt 2 ] || say 'Applying file changes, then registering selected host plugins.'
+    if [ -f "$release/.leanck-update-protocol" ] && [ -x "$plugin/bin/leanck" ]; then
+        mkdir -p "$state_dir"
+        [ ! -L "$state_dir/maintenance.lock" ] || die 'refusing symlink maintenance lock'
+        exec 9<>"$state_dir/maintenance.lock"
+        run_bounded "$timeout" "$plugin/bin/leanck" _update lock-fd --fd 9 --binary "$bin_dir/leanck" --binary "$bundle_dir/plugin/bin/leanck" >&2 || die 'installation is busy; close leanck/MCP clients and stop daemons before retrying'
+    fi
     apply_install
     save_state
     committed=1
@@ -1906,6 +1940,11 @@ main() {
     if [ "$plugin_claude$plugin_codex" != 00 ]; then
         outcome=partial
         register_plugins
+        if [ -f "$release/.leanck-update-protocol" ] && [ "$cli" = 1 ] && ! skipped "$bin_dir/leanck"; then
+            pending=$(mktemp "$state_dir/.leanck-install.XXXXXX")
+            run_bounded "$timeout" "$bin_dir/leanck" _update receipt --state-dir "$state_dir" --binary "$bin_dir/leanck" --registration-complete > "$pending" || die 'could not record completed plugin registration'
+            commit "$pending" "$state_dir/receipt.json"
+        fi
         outcome=installed
     elif [ "$mode" = plugin ]; then
         say "Plugin files are ready in $bundle_dir for registration when an agent host is installed."

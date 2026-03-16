@@ -7,7 +7,7 @@ use std::path::PathBuf;
 /// Register new machine-wide sections here; project filtering and warnings are
 /// driven by this list before validation, merging, or provenance recording.
 #[cfg(feature = "loader")]
-pub(crate) const MACHINE_WIDE_SECTIONS: &[&str] = &["instances"];
+pub(crate) const MACHINE_WIDE_SECTIONS: &[&str] = &["instances", "updates"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -22,6 +22,7 @@ pub struct Settings {
     pub instances: Instances,
     pub diagnostics: Diagnostics,
     pub output: Output,
+    pub updates: Updates,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -36,6 +37,7 @@ impl Default for Settings {
             instances: Instances::default(),
             diagnostics: Diagnostics::default(),
             output: Output::default(),
+            updates: Updates::default(),
         }
     }
 }
@@ -193,7 +195,7 @@ impl Default for Cache {
     }
 }
 /// Machine-wide daemon cap. Read from user-level configuration only; project
-/// `leanck.toml` and `.leanck.toml` files are rejected if they set it.
+/// `leanck.toml` and `.leanck.toml` files have this section ignored with a warning.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Instances {
@@ -261,9 +263,30 @@ impl Default for Diagnostics {
 pub struct Output {
     pub json: bool,
 }
+/// User-level release checking and installation policy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Updates {
+    pub check: bool,
+    pub check_interval_secs: u64,
+    pub automatic: bool,
+}
+impl Default for Updates {
+    fn default() -> Self {
+        Self {
+            check: true,
+            check_interval_secs: 86400,
+            automatic: false,
+        }
+    }
+}
 #[cfg(feature = "loader")]
 impl Settings {
     pub fn validate(&self) -> Result<()> {
+        ensure!(
+            (1..=31_536_000).contains(&self.updates.check_interval_secs),
+            "updates.check_interval_secs must be between 1 and 31536000"
+        );
         ensure!(
             self.version == 1,
             "unsupported configuration version {}; expected 1",

@@ -33,6 +33,7 @@ fn scripts_cover_public_commands_without_loading_config_or_starting_a_daemon() {
         );
         for public in [
             "diagnostics",
+            "update",
             "normalize",
             "daemons",
             "restart-file",

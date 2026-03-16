@@ -239,6 +239,7 @@ pub struct LeanckServer {
     workspace: WorkspaceSelection,
     config_args: leanck_config::ConfigArgs,
     loogle: leanck_loogle::Client,
+    frontend_version: String,
     #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
 }
@@ -247,6 +248,11 @@ impl LeanckServer {
     /// Supply the unified executable without changing effective configuration.
     pub fn with_daemon_binary(mut self, binary: std::path::PathBuf) -> Self {
         self.workspace = self.workspace.with_daemon_binary(binary);
+        self
+    }
+
+    pub fn with_frontend_version(mut self, version: &str) -> Self {
+        self.frontend_version = version.into();
         self
     }
 
@@ -261,6 +267,7 @@ impl LeanckServer {
             workspace,
             config_args: config.args.clone(),
             loogle: leanck_loogle::Client::from_config(&config.settings.loogle),
+            frontend_version: env!("CARGO_PKG_VERSION").into(),
             tool_router: Self::tool_router(),
         }
     }
@@ -494,12 +501,46 @@ impl LeanckServer {
     }
 
     #[tool(
-        description = "Report Lean server (leanckd) reachability and status. Returns compact text; pass `json: true` for the full payload, which includes `instances`: the machine-wide count of running daemons against `instances.limit`.",
+        description = "Check the workspace and existing daemon without starting Lean, and report cached or newly checked leanck release availability. Release checks use the configured interval and can be disabled.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,
             idempotent_hint = true,
-            open_world_hint = false
+            open_world_hint = true
+        )
+    )]
+    async fn doctor(&self, Parameters(p): Parameters<HealthzInput>) -> Result<Content, ErrorData> {
+        let (client, warnings) = self.workspace.capture_health();
+        let (report, updates) = tokio::join!(
+            leanck_client::doctor::probe(client.workspace(), client.settings()),
+            leanck_update::current_status(&self.frontend_version, &client.settings().updates)
+        );
+        let report = report.with_config_warnings(warnings);
+        if p.json.unwrap_or(client.settings().output.json) {
+            let mut value = serde_json::to_value(&report)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+            value["updates"] = serde_json::to_value(&updates)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+            Content::json(value)
+        } else {
+            let mut text = report.text(false);
+            if let Some(notice) = updates.notice {
+                text.push_str(&format!("\nupdate: {notice}"));
+            }
+            if let Some(error) = updates.error {
+                text.push_str(&format!("\ninfo: update check unavailable: {error}"));
+            }
+            Ok(Content::text(text))
+        }
+    }
+
+    #[tool(
+        description = "Report Lean server (leanckd) reachability, status, and available leanck updates (checks are configurable and cached). Returns compact text; pass `json: true` for the full payload, which includes `instances`: the machine-wide count of running daemons against `instances.limit`.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true
         )
     )]
     async fn health(
@@ -508,6 +549,8 @@ impl LeanckServer {
         cancel: CancellationToken,
     ) -> Result<Content, ErrorData> {
         let (client, warnings) = self.workspace.capture_health();
+        let updates =
+            leanck_update::current_status(&self.frontend_version, &client.settings().updates).await;
         let mut report = HealthReport::from_result(
             client
                 .health(RequestOptions {
@@ -525,9 +568,20 @@ impl LeanckServer {
             }
         }));
         if p.json.unwrap_or(client.settings().output.json) {
-            Content::json(report)
+            let mut value = serde_json::to_value(&report)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+            value["updates"] = serde_json::to_value(&updates)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+            Content::json(value)
         } else {
-            Ok(Content::text(format_health_human(&report)))
+            let mut text = format_health_human(&report);
+            if let Some(notice) = updates.notice {
+                text.push_str(&format!("\nupdate: {notice}"));
+            }
+            if let Some(error) = updates.error {
+                text.push_str(&format!("\ninfo: update check unavailable: {error}"));
+            }
+            Ok(Content::text(text))
         }
     }
 
@@ -682,6 +736,7 @@ mod tests {
                 "build",
                 "configuration",
                 "diagnostics",
+                "doctor",
                 "goal",
                 "health",
                 "list",

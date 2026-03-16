@@ -51,4 +51,8 @@ Codex does not trust plugin hooks automatically. Review and trust the hook with 
 
 ## Runtime
 
+The MCP `doctor` tool checks the workspace without starting Lean and reports available leanck updates. Existing MCP `health` also reports updates while retaining its daemon-start behavior. Both keep cached notices visible between daily foreground checks unless user configuration sets `[updates].check = false`. MCP startup and ordinary proof queries do not check for updates.
+
+Installer-managed plugins can be updated with `leanck update --dry-run`, then `leanck update` (or `--yes --json` for automation). The native Rust updater preserves the installed plugin, skills, agents, completions, custom destinations, and selected host registrations. It verifies the release and retains recoverable backups. Active MCP, CLI, and daemon sessions defer installation; stop them before applying an update and restart agent hosts afterward. A partial host refresh can be retried with `leanck update --retry-registration --yes`. Opt-in `[updates].automatic = true` applies updates on later eligible CLI launches when no session is using the installation. Source builds use the source installation workflow.
+
 The MCP server and CLI start one shared `leanck serve daemon` process per worktree; it runs the project's own `lake serve`, so no editor is needed. A Lean toolchain and Lake must be available through elan in the project. See the repository README and `docs/CONFIGURATION.md` for configuration, and `crates/leanck-mcp/README.md` for the MCP tool reference.

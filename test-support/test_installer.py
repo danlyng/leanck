@@ -1431,7 +1431,7 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         self.assertIn(b"Add ", result.stderr)
         self.assertTrue(all(call[0] == "curl" for call in self.calls()))
         self.run_install()
-        self.assertEqual(list(binary.parent.iterdir()), [binary])
+        self.assertEqual(set(binary.parent.iterdir()), {binary, binary.parent / ".leanck-installation.json"})
 
     def test_skills_both_without_cli_and_pinned_version(self):
         self.run_install("--no-cli", "--skills", "both", "--version", "1.2.3")

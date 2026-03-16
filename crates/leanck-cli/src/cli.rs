@@ -35,6 +35,10 @@ pub(crate) struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum Cmd {
+    /// Check for or install a leanck release, preserving installer choices.
+    Update(crate::commands::update::Args),
+    #[command(name = "_update", hide = true)]
+    UpdateInternal(crate::commands::update::InternalArgs),
     #[command(name = "_completions", hide = true)]
     Completions(crate::completions::Args),
     /// Run the MCP server or a workspace daemon.

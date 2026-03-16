@@ -29,6 +29,10 @@ fn live(args: &mut crate::args::LiveArgs, settings: &Settings) {
 }
 pub(crate) fn apply(command: &mut Cmd, s: &Settings, matches: &ArgMatches) {
     match command {
+        Cmd::Update(a) => {
+            a.settings = s.clone();
+            a.json |= s.output.json;
+        }
         Cmd::Diagnostics(a) => {
             live(&mut a.live, s);
             a.limit = a.limit.or(Some(s.diagnostics.limit));
@@ -69,7 +73,7 @@ pub(crate) fn apply(command: &mut Cmd, s: &Settings, matches: &ArgMatches) {
                 a.width = s.normalize.width;
             }
         }
-        Cmd::Config(_) | Cmd::Serve(_) | Cmd::Completions(_) => {}
+        Cmd::Config(_) | Cmd::Serve(_) | Cmd::Completions(_) | Cmd::UpdateInternal(_) => {}
     }
 }
 

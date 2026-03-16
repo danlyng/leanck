@@ -13,7 +13,7 @@ use clap::{CommandFactory, FromArgMatches};
 use cli::{Cli, Cmd};
 
 /// Run an async command body on a fresh current-thread runtime.
-fn block_on<F: std::future::Future<Output = anyhow::Result<()>>>(fut: F) -> anyhow::Result<()> {
+fn block_on<T, F: std::future::Future<Output = anyhow::Result<T>>>(fut: F) -> anyhow::Result<T> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -71,7 +71,14 @@ fn run(json: &mut bool) -> anyhow::Result<()> {
     if let Cmd::Completions(args) = cli.command {
         return completions::run(args);
     }
+    if let Cmd::UpdateInternal(args) = cli.command {
+        return commands::update::internal(args);
+    }
     if let Cmd::Serve(args) = cli.command {
+        let _lease = block_on(commands::update::foreground(
+            &leanck_config::Settings::default(),
+            false,
+        ))?;
         return serve::run(args, cli.config);
     }
     telemetry::init_tracing();
@@ -88,8 +95,17 @@ fn run(json: &mut bool) -> anyhow::Result<()> {
     if let Cmd::Doctor(args) = &mut cli.command {
         args.config_warnings = loaded.warnings;
     }
+    let _lease = if matches!(cli.command, Cmd::Update(_)) {
+        None
+    } else {
+        block_on(commands::update::foreground(
+            &loaded.settings,
+            !matches!(cli.command, Cmd::Doctor(_)),
+        ))?
+    };
 
     match cli.command {
+        Cmd::Update(args) => block_on(commands::update::run(args)),
         // Live Lean state.
         Cmd::Diagnostics(mut args) => block_on_live(|cancel| {
             args.live.cancellation = Some(cancel);
@@ -118,13 +134,15 @@ fn run(json: &mut bool) -> anyhow::Result<()> {
         Cmd::Normalize(args) => {
             leanck_normalize::command::run_with_settings(args, &loaded.settings.normalize)
         }
-        Cmd::Config(_) | Cmd::Serve(_) | Cmd::Completions(_) => unreachable!(),
+        Cmd::Config(_) | Cmd::Serve(_) | Cmd::Completions(_) | Cmd::UpdateInternal(_) => {
+            unreachable!()
+        }
 
         // Loogle search.
         Cmd::Loogle(args) => block_on(commands::loogle::run(args)),
 
         // Lean daemon health.
-        Cmd::Doctor(args) => commands::doctor::run(args),
+        Cmd::Doctor(args) => block_on(commands::doctor::run(args)),
         Cmd::Daemons(args) => block_on(commands::daemons::run(args)),
     }
 }

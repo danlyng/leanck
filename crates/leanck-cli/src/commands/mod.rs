@@ -8,3 +8,4 @@ pub(crate) mod loogle;
 pub(crate) mod output;
 pub(crate) mod restart_file;
 pub(crate) mod sorry;
+pub(crate) mod update;

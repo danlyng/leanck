@@ -1,5 +1,5 @@
 #! Complete configuration example. Active values below match built-in defaults.
-#! Copy to leanck.toml or .leanck.toml in a project (omit [instances]), or ~/.config/leanck/config.toml
+#! Copy to leanck.toml or .leanck.toml in a project (omit [instances] and [updates]), or ~/.config/leanck/config.toml
 #! for user defaults.
 #! Precedence: defaults < user file < nearest project file < --config/LEANCK_CONFIG
 #! < --set < explicit command flags/MCP parameters.
@@ -229,3 +229,9 @@ severity = ["error"] # Any of "error", "warning", "information", "hint"; [] sele
 [output]
 #! Prefer JSON output for supported commands
 json = false
+
+# User-scoped policy. Discovered project [updates] settings are ignored with a warning.
+[updates]
+check = true
+check_interval_secs = 86400 # Between 1 second and one year.
+automatic = false # Apply on eligible managed CLI launches when no clients hold usage leases.

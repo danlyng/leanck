@@ -491,18 +491,18 @@ fn legacy_setting_environment_variables_do_not_change_settings_or_sources() {
 }
 
 #[test]
-fn project_instances_are_ignored_and_warn_only_in_doctor() {
+fn project_machine_wide_settings_are_ignored_and_warn_only_in_doctor() {
     let dir = Scratch::new();
     fs::write(
         dir.0.join("user/leanck/config.toml"),
-        "[instances]\nlimit = 2\n",
+        "[instances]\nlimit = 2\n[updates]\ncheck=false\n",
     )
     .unwrap();
     for name in ["leanck.toml", ".leanck.toml"] {
         let path = dir.0.join("project").join(name);
         fs::write(
             &path,
-            "[normalize]\nwidth=81\n[instances]\nlimit='ignored'\nunknown=true\n",
+            "[normalize]\nwidth=81\n[instances]\nlimit='ignored'\nunknown=true\n[updates]\ncheck='ignored'\nunknown=true\n",
         )
         .unwrap();
         let output = dir.run(&["config", "check"]);
@@ -514,24 +514,33 @@ fn project_instances_are_ignored_and_warn_only_in_doctor() {
         assert_eq!(report["settings"]["instances"]["limit"], 2);
         assert_eq!(report["settings"]["instances"]["on_limit"], "evict_idle");
         assert_eq!(report["settings"]["normalize"]["width"], 81);
+        assert_eq!(report["settings"]["updates"]["check"], false);
         assert!(report["warnings"].as_array().unwrap().is_empty());
         let doctor = json(&dir.run(&["doctor", "--json"]));
         assert_eq!(doctor["ok"], true);
         let issues = doctor["issues"].as_array().unwrap();
-        assert_eq!(issues.len(), 1);
-        assert_eq!(issues[0]["level"], "warning");
-        let message = issues[0]["message"].as_str().unwrap();
-        assert!(message.contains("[instances]"));
-        assert!(message.contains(&path.display().to_string()));
-        assert!(message.contains(&dir.0.join("user/leanck/config.toml").display().to_string()));
+        assert_eq!(issues.len(), 2);
+        for (issue, section) in issues.iter().zip(["instances", "updates"]) {
+            assert_eq!(issue["level"], "warning");
+            let message = issue["message"].as_str().unwrap();
+            assert!(message.contains(&format!("[{section}]")));
+            assert!(message.contains(&path.display().to_string()));
+            assert!(message.contains(&dir.0.join("user/leanck/config.toml").display().to_string()));
+        }
         let output = dir.run(&["doctor"]);
         assert!(output.status.success());
         assert!(String::from_utf8_lossy(&output.stdout).contains("warning: [instances]"));
+        assert!(String::from_utf8_lossy(&output.stdout).contains("warning: [updates]"));
         let doctor = json(&dir.run(&["doctor", "--json", "--no-config"]));
         assert!(doctor["issues"].as_array().unwrap().is_empty());
-        fs::write(&path, "[instances]\nlimit=7\n").unwrap();
+        fs::write(
+            &path,
+            "[instances]\nlimit=7\n[updates]\ncheck=false\nautomatic=true\n",
+        )
+        .unwrap();
         let explicit = json(&dir.run(&["--config", name, "config", "show", "--json"]));
         assert_eq!(explicit["settings"]["instances"]["limit"], 7);
+        assert_eq!(explicit["settings"]["updates"]["automatic"], true);
         let selected = dir
             .command()
             .env("LEANCK_CONFIG", name)

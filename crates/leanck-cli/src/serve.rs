@@ -46,7 +46,8 @@ pub(crate) fn run(args: Args, config: ConfigArgs) -> anyhow::Result<()> {
         Mode::Mcp(args) => {
             let config = leanck_mcp::config::Config::from_args(args, config)?;
             let server = leanck_mcp::mcp::LeanckServer::new(&config)
-                .with_daemon_binary(std::env::current_exe()?);
+                .with_daemon_binary(std::env::current_exe()?)
+                .with_frontend_version(env!("CARGO_PKG_VERSION"));
             runtime.block_on(leanck_mcp::serve(server))
         }
         Mode::Daemon {

@@ -47,7 +47,7 @@ digest_file() {
     if [ "$hash_command" = sha256sum ]; then sha256sum < "$1"; else shasum -a 256 < "$1"; fi | awk '{print $1}'
 }
 tree_digest() {
-    (cd "$1" && find . -type f ! -path ./.leanck-content-sha256 | LC_ALL=C sort | while IFS= read -r file; do
+    (cd "$1" && find . -type f ! -path ./.leanck-content-sha256 ! -name .leanck-installation.json | LC_ALL=C sort | while IFS= read -r file; do
         printf '%s %s\n' "$(digest_file "$file")" "$file"
     done) > "$work/tree-digest"
     digest_file "$work/tree-digest"
@@ -280,7 +280,17 @@ main() {
     # Stop before any removal, but only execute an unchanged, recorded binary.
     while IFS="$tab" read -r kind expected path; do
         if [ "$kind" = file ] && [ "${path##*/}" = leanck ] && [ -x "$path" ] && unchanged; then
-            run_bounded "$path" daemons stop --all || die 'could not stop leanck daemons; files preserved'
+            run_bounded "$path" daemons stop --all --set updates.check=false || die 'could not stop leanck daemons; files preserved'
+            break
+        fi
+    done < "$work/ordered"
+    # Share the native updater's open-file-description lock. Stop daemons before
+    # acquiring it; remaining MCP/CLI users make removal defer without mutation.
+    while IFS="$tab" read -r kind expected path; do
+        if [ "$kind" = file ] && [ "${path##*/}" = leanck ] && [ -x "$path" ] && unchanged && [ -f "${path%/*}/.leanck-installation.json" ]; then
+            [ ! -L "$state_dir/maintenance.lock" ] || die 'refusing symlink maintenance lock'
+            exec 9<>"$state_dir/maintenance.lock"
+            run_bounded "$path" _update lock-fd --fd 9 --binary "$path" || die 'installation is in use; close leanck/MCP clients before retrying'
             break
         fi
     done < "$work/ordered"
@@ -291,7 +301,7 @@ main() {
         say "Uninstall incomplete: edited files were preserved. Remaining paths are recorded in $state_dir/uninstall.tsv."
         return 1
     fi
-    rm -f "$state_dir/uninstall.tsv" "$state_dir/selections.tsv"
+    rm -f "$state_dir/uninstall.tsv" "$state_dir/selections.tsv" "$state_dir/receipt.json" "$state_dir/sources.tsv"
     say "Uninstalled leanck. Installer backups remain in $state_dir/backups. Restart your agent hosts and shell."
 }
 

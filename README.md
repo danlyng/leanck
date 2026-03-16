@@ -98,6 +98,36 @@ To also package the Claude Code / Codex plugin into `./leanck-plugin`:
 just package-plugin
 ```
 
+## Updates
+
+`leanck doctor` and the MCP `doctor` and `health` tools report available leanck releases, including cached notices between checks. Release checks run in the calling process and use a timestamp file to check at most once daily by default. There is no background updater. Unavailable release checks do not fail workspace health checks. Disabling `[updates].check` suppresses both requests and cached notices.
+
+For installer-managed releases:
+
+```sh
+leanck update --check             # Check now without installing
+leanck update --dry-run           # Verify the release and preview managed paths
+leanck update                     # Review and confirm installation
+leanck update --yes --json        # Noninteractive installation
+leanck update --version v0.35.0   # Install and remember an exact release pin
+leanck update --version latest    # Remove a remembered pin
+```
+
+The native Rust updater verifies the archive's SHA-256 checksum and version, preserves recorded component destinations and plugin hosts, regenerates completions, and retains backups. It does not invoke the shell installer. Changed managed files block installation; restore them or use the installer to review replacements. Update notices can mention newer releases while a pin keeps installation fixed. An automatic downgrade is never attempted; a manual downgrade requires an explicit version.
+
+Opt into automatic installation in your user configuration:
+
+```toml
+[updates]
+check = true
+check_interval_secs = 86400
+automatic = true
+```
+
+Managed CLI commands can apply an available update before performing their operation, then re-execute the updated binary. Active CLI, MCP, and daemon sessions defer installation; close clients and stop daemons before an explicit update. Doctor only checks and reports. MCP and daemon startup do not check or install releases, and ordinary MCP queries do not perform update checks. Source builds and package-manager installations continue to use their own upgrade method; doctor can still report releases.
+
+New installer runs record ownership in a versioned receipt and a `.leanck-installation.json` marker beside the executable. Rerun the installer to migrate older installations that lack complete mode, host, or component-source records; `leanck update --adopt --state-dir DIR` can adopt complete installer records after review. Custom state directories remain discoverable through the marker. Native updates preserve uninstall records. Interrupted file transactions are recovered before the next explicit update; keep the `update-journal.json`, adjacent `.leanck-backup-*` paths, and `update-backups-*.json` manifests for repair. External host registration is tracked separately: retry a partial registration with `leanck update --retry-registration --yes`, then restart agent hosts.
+
 ## Uninstall
 
 Run the standalone [`uninstall.sh`](uninstall.sh) from a checkout or extracted release archive:
@@ -238,6 +268,7 @@ Supported target names are `aarch64-apple-darwin`, `x86_64-apple-darwin`, `aarch
 | `crates/leanck-lake/` | Bounded `lake build` runner, output parser, and Mathlib cache coordination. |
 | `crates/leanck-loogle/` | Structured Loogle client with endpoint fallback. |
 | `crates/leanck-normalize/` | Lean source and comment normalizer (`leanck normalize` / `leanck-normalize`). |
+| `crates/leanck-update/` | Foreground release checks, installation receipts, native updates, maintenance leases, and recovery. |
 | `crates/leanck-config/` | Shared versioned TOML configuration loader and validator. |
 | `packaging/plugin/` | Plugin manifests and MCP configs for Claude Code and Codex. |
 | `leanck-skills/`, `leanck-subagents/`, `leanck-hooks/` | Agent skills, subagent definitions, and hooks bundled into the plugin. |

@@ -15,6 +15,7 @@ fn doctor_accepts_all_lake_markers_without_registry_or_daemon() {
     for marker in ["lakefile.lean", "lakefile.toml", "lean-toolchain"] {
         std::fs::write(root.join(marker), "").unwrap();
         let output = Command::new(env!("CARGO_BIN_EXE_leanck"))
+            .args(["--no-config", "--set", "updates.check=false"])
             .env_remove("XDG_RUNTIME_DIR")
             .env("XDG_CACHE_HOME", root.join("runtime-cache"))
             .args(["doctor", "--json", "--workspace"])
@@ -48,6 +49,7 @@ fn doctor_accepts_all_lake_markers_without_registry_or_daemon() {
         std::fs::remove_file(root.join(marker)).unwrap();
     }
     let output = Command::new(env!("CARGO_BIN_EXE_leanck"))
+        .args(["--no-config", "--set", "updates.check=false"])
         .args(["doctor", "--json", "--workspace"])
         .arg(&root)
         .output()
