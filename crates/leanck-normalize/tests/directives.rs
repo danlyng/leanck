@@ -259,3 +259,15 @@ fn partial_reenable_keeps_trailing_blank_lines_while_whitespace_is_off() {
     let expected = source.replace("@[simp]\ntheorem", "@[simp] theorem");
     assert_output(source, &expected);
 }
+
+#[test]
+fn a_blank_line_before_a_directive_survives_attributes_and_frontmatter() {
+    let rules = NormalizeRules::default();
+    for source in [
+        "def a := 1\n\n-- leanck: off\ndef b := 2\n",
+        "import A\n\n-- leanck: off\ndef b := 2\n",
+    ] {
+        let actual = apply(source, Options::default(), &rules).unwrap();
+        assert_eq!(actual, source);
+    }
+}

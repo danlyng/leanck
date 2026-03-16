@@ -153,6 +153,8 @@ pub fn normalize_with_stats(
     )
 }
 
+/// `guard_msgs_after` tells whether a `#guard_msgs` command follows `source`
+/// after only whitespace and line comments, such as directives that end it.
 pub(crate) fn normalize_configured(
     source: &str,
     target_width: usize,
@@ -160,6 +162,7 @@ pub(crate) fn normalize_configured(
     rules: &NormalizeRules,
     context: &Context<'_>,
     comment_layout: bool,
+    guard_msgs_after: bool,
 ) -> Result<NormalizeResult, NormalizeError> {
     let mut stats = Stats::default();
     let mut warnings = Vec::new();
@@ -179,19 +182,54 @@ pub(crate) fn normalize_configured(
     } else {
         source.to_owned()
     };
-    let mut normalized =
-        crate::frontmatter::configured(&attribute_normalized, options.frontmatter, rules, context);
-    if normalized != attribute_normalized {
+    // Collapsing to zero blank lines merges import groups, so sort them as one
+    // group now rather than again on the next run.
+    let merged_groups;
+    let frontmatter_rules = if options.collapse_blank_lines
+        && rules.whitespace.max_blank_lines == 0
+        && rules.imports.preserve_groups
+    {
+        merged_groups = NormalizeRules {
+            imports: leanck_config::ImportRules {
+                preserve_groups: false,
+                ..rules.imports.clone()
+            },
+            ..rules.clone()
+        };
+        &merged_groups
+    } else {
+        rules
+    };
+    // Convert banners before frontmatter, so that frontmatter sees the
+    // comments the next run will see.
+    let heading_normalized = if options.headings {
+        let (heading_normalized, converted) =
+            convert_heading_banners_configured(&attribute_normalized, &rules.headings);
+        stats.headings_converted = converted;
+        heading_normalized
+    } else {
+        attribute_normalized
+    };
+    let normalized = crate::frontmatter::configured(
+        &heading_normalized,
+        options.frontmatter,
+        frontmatter_rules,
+        context,
+    );
+    if normalized != heading_normalized {
         stats.frontmatter_changes = 1;
     }
-
-    if options.headings {
-        let (heading_normalized, converted) =
-            convert_heading_banners_configured(&normalized, &rules.headings);
-        normalized = heading_normalized;
-        stats.headings_converted = converted;
-    }
     let mut lines: Vec<String> = normalized.lines().map(|s| s.to_string()).collect();
+
+    // Collapse blank lines first: comment rewriting never creates collapsible
+    // runs, and a comment it leaves alone must not change afterwards.
+    if options.collapse_blank_lines {
+        stats.blank_lines_collapsed = collapse_blank_lines_configured(
+            &mut lines,
+            usize::from(rules.whitespace.max_blank_lines),
+            guard_msgs_after,
+        );
+    }
 
     if options.comments
         && (comment_layout
@@ -200,28 +238,28 @@ pub(crate) fn normalize_configured(
             || options.comment_reflow
             || options.capitalize_after_colon)
     {
-        let blocks = find_blocks_with_context(&normalized, context.seen_module_doc)?;
-        // Process from bottom to top so line indices above don't shift.
-        for block in blocks.iter().rev() {
-            if reflow_block(
-                &mut lines,
+        let collapsed = lines.join("\n");
+        // Report an unmatched delimiter at its line before collapsing.
+        let blocks =
+            find_blocks_with_context(&collapsed, context.seen_module_doc, guard_msgs_after)
+                .map_err(|error| {
+                    find_blocks_with_context(&normalized, context.seen_module_doc, guard_msgs_after)
+                        .err()
+                        .unwrap_or(error)
+                })?;
+        let (rewritten, changed) = rewrite_blocks(lines, &blocks, &mut |lines, block| {
+            reflow_block(
+                lines,
                 block,
                 target_width,
                 options,
                 rules,
                 context,
                 comment_layout,
-            )? {
-                stats.comment_blocks_changed += 1;
-            }
-        }
-    }
-
-    if options.collapse_blank_lines {
-        stats.blank_lines_collapsed = collapse_blank_lines_configured(
-            &mut lines,
-            usize::from(rules.whitespace.max_blank_lines),
-        );
+            )
+        })?;
+        lines = rewritten;
+        stats.comment_blocks_changed = changed;
     }
 
     let mut out = lines.join("\n");
@@ -232,7 +270,9 @@ pub(crate) fn normalize_configured(
         let newlines = tail.bytes().filter(|b| *b == b'\n').count();
         out.truncate(out.trim_end_matches('\n').len());
         out.extend(std::iter::repeat_n('\n', newlines));
-    } else if source.ends_with('\n') && !out.ends_with('\n') {
+    } else if source.ends_with('\n') {
+        // Restore the final line ending that lines()/join() drops, so a
+        // trailing blank line before a directive boundary is kept.
         out.push('\n');
     }
     Ok(NormalizeResult {
@@ -255,22 +295,38 @@ pub fn reflow_comments(
     normalize(source, target_width, options)
 }
 
-/// Collapse runs of consecutive blank lines into a single blank line, anywhere
-/// in the file (inside comments or not). A line counts as blank when it is
-/// empty or whitespace-only; the kept line is emptied of its whitespace.
-fn collapse_blank_lines_configured(lines: &mut Vec<String>, max: usize) -> usize {
+/// Collapse runs of consecutive blank lines to at most `max` blank lines,
+/// anywhere in the file (inside comments or not). A line counts as blank when
+/// it is empty or holds only spaces and tabs; outside doc comments the kept
+/// line is emptied of its whitespace. Inside doc comments one blank line
+/// always remains, since it separates Markdown blocks, and the code, math,
+/// and HTML that Lean reads there are left alone.
+fn collapse_blank_lines_configured(
+    lines: &mut Vec<String>,
+    max: usize,
+    guard_msgs_after: bool,
+) -> usize {
     let before = lines.len();
     let mut blanks = 0;
     let mut fence: Option<(char, usize)> = None;
     let source = lines.join("\n");
     let mut literal_lines = crate::syntax::literal_lines(&source);
-    if let Ok(blocks) = find_blocks_with_context(&source, false) {
+    let mut doc_lines = std::collections::HashSet::new();
+    if let Ok(blocks) = find_blocks_with_context(&source, false, guard_msgs_after) {
         for block in blocks {
-            literal_lines.extend(
-                crate::prose::protected_lines(&extract_content(lines, &block))
-                    .into_iter()
-                    .map(|line| block.start_line + line),
-            );
+            let range = block.start_line..=block.end_line;
+            let protected = if block.verbatim {
+                None
+            } else {
+                crate::prose::protected_lines(&lean_text(&extract_raw_content(lines, &block)))
+            };
+            match protected {
+                Some(protected) => {
+                    literal_lines.extend(protected.into_iter().map(|line| block.start_line + line));
+                    doc_lines.extend(range);
+                }
+                None => literal_lines.extend(range),
+            }
         }
     }
     let mut line_number = 0;
@@ -282,19 +338,22 @@ fn collapse_blank_lines_configured(lines: &mut Vec<String>, max: usize) -> usize
             blanks = 0;
             return true;
         }
+        let in_doc = doc_lines.contains(&number);
+        // Outside doc comments, whose Markdown is parsed above, protect code
+        // fences and display math by their delimiter lines.
         let t = line.trim_start();
-        if t.trim() == "$$" {
+        if !in_doc && t.trim() == "$$" {
             math = !math;
             blanks = 0;
             return true;
         }
-        if math {
+        if !in_doc && math {
             blanks = 0;
             return true;
         }
         let mark = t.chars().next().filter(|c| matches!(c, '`' | '~'));
         let count = mark.map_or(0, |c| t.chars().take_while(|x| *x == c).count());
-        if count >= 3 {
+        if !in_doc && count >= 3 {
             if let Some((c, n)) = fence {
                 if Some(c) == mark && count >= n {
                     fence = None;
@@ -305,16 +364,17 @@ fn collapse_blank_lines_configured(lines: &mut Vec<String>, max: usize) -> usize
             blanks = 0;
             return true;
         }
-        if fence.is_some() {
+        if !in_doc && fence.is_some() {
             return true;
         }
-        let blank = line.trim().is_empty();
-        if !blank {
+        if !is_blank(line) {
             blanks = 0;
             return true;
         }
         blanks += 1;
-        if blanks <= max {
+        if in_doc {
+            blanks <= max.max(1)
+        } else if blanks <= max {
             line.clear();
             true
         } else {
@@ -352,8 +412,13 @@ fn capitalize_after_colon(text: &str) -> String {
                 out.push(chars[i]);
                 i += 1;
             }
-            // Capitalize only when at least one space separated a letter token.
-            if i > ws_start && i < chars.len() && chars[i].is_ascii_alphabetic() {
+            // Capitalize only when at least one space separated a word. A
+            // single letter is usually a variable, as in `f: a → b`.
+            if i > ws_start
+                && i < chars.len()
+                && chars[i].is_ascii_alphabetic()
+                && chars.get(i + 1).is_some_and(|c| c.is_alphabetic())
+            {
                 out.push(chars[i].to_ascii_uppercase());
                 i += 1;
             }
@@ -395,9 +460,10 @@ fn convert_heading_banners_configured(
     let lines: Vec<&str> = source.lines().collect();
     let mut out: Vec<String> = Vec::with_capacity(lines.len());
     let mut converted = 0usize;
+    let mut cursor = LineCursor::new(source);
     let actual_comments: std::collections::HashSet<_> = crate::syntax::line_comments(source)
         .into_iter()
-        .map(|r| source[..r.start].bytes().filter(|b| *b == b'\n').count())
+        .map(|r| cursor.position(r.start).0)
         .collect();
     let mut depth = 0usize;
     let mut i = 0;
@@ -509,16 +575,31 @@ fn parse_banner(lines: &[&str], start: usize) -> Option<(String, usize)> {
     Some((title, i))
 }
 
-/// Small words left uncapitalized in the middle of a title.
+/// Whether a title word is a lone letter, such as the variable in `for x`.
+fn is_single_letter(word: &str) -> bool {
+    let mut letters = word.chars().filter(|c| c.is_alphanumeric());
+    letters.next().is_some_and(char::is_alphabetic) && letters.next().is_none()
+}
+
 fn capitalize_segments_first(text: &str) -> String {
+    // A leading `a` is more likely the article than a variable.
+    if text
+        .split_whitespace()
+        .next()
+        .is_some_and(|word| is_single_letter(word) && word != "a")
+    {
+        return text.to_owned();
+    }
     let mut chars = text.chars();
     match chars.next() {
         Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
         None => String::new(),
     }
 }
+
+/// Title-case each text part, leaving small words lowercase in the middle.
 fn title_case_with_words(text: &str, small_words: &[String]) -> String {
-    crate::prose::transform_with_offsets(text, |part, offset| {
+    let titled = crate::prose::transform_with_offsets(text, |part, offset| {
         let leading = &part[..part.len() - part.trim_start().len()];
         let trailing = &part[part.trim_end().len()..];
         if part.trim().is_empty() {
@@ -533,7 +614,8 @@ fn title_case_with_words(text: &str, small_words: &[String]) -> String {
                 text[offset + part.len()..].trim().is_empty()
             )
         )
-    })
+    });
+    titled.unwrap_or_else(|| text.to_owned())
 }
 fn title_case_plain(text: &str, small_words: &[String], at_start: bool, at_end: bool) -> String {
     let words: Vec<&str> = text.split_whitespace().collect();
@@ -551,7 +633,9 @@ fn title_case_plain(text: &str, small_words: &[String], at_start: bool, at_end: 
             continue;
         }
         let small = small_words.iter().any(|s| s.eq_ignore_ascii_case(word));
-        if small && (i != 0 || !at_start) && (i != last || !at_end) {
+        if (small && (i != 0 || !at_start) && (i != last || !at_end))
+            || (!small && is_single_letter(word))
+        {
             out.push((*word).to_string());
         } else {
             out.push(capitalize_segments(word));
@@ -597,28 +681,116 @@ struct Block {
     end_before: usize,
     /// Whether the opening delimiter is `/-!` (doc comment).
     is_doc: bool,
-    /// Whether this is the first `/-!` block in the file (module docstring).
+    /// Whether this is the first `/-!` block in the file.
+    first_doc: bool,
+    /// Whether this is the module docstring: the first `/-!` block, unless
+    /// it is a section heading.
     module_doc: bool,
     /// Byte offset of the start delimiter on `start_line`.
     start_delim_col: usize,
     /// Byte offset of the end delimiter on `end_line`.
     end_delim_col: usize,
+    /// Whether the text is exact output for `#guard_msgs`, which compares it
+    /// verbatim apart from whitespace at line breaks, so no rule may touch it.
+    verbatim: bool,
+}
+
+impl Block {
+    /// The same block in a slice of lines starting at `first_line`.
+    fn shifted(&self, first_line: usize) -> Self {
+        Self {
+            start_line: self.start_line - first_line,
+            end_line: self.end_line - first_line,
+            ..self.clone()
+        }
+    }
+
+    /// This block after its lines were replaced by `lines`, which must keep
+    /// the opening delimiter's position and the text after the closing one.
+    fn rewritten(&self, lines: &[String], after: &str) -> Self {
+        let end_line = lines.len() - 1;
+        let end_delim_col = lines[end_line].len() - after.len() - SUFFIX.len();
+        let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+        Self {
+            start_line: 0,
+            end_line,
+            end_before: end_delim_col,
+            end_delim_col,
+            module_doc: self.first_doc
+                && !is_section_heading_block(&lines, 0, self.start_after, end_line, end_delim_col),
+            ..self.clone()
+        }
+    }
+}
+
+/// Converts increasing byte offsets to (line, byte column) in linear total time.
+struct LineCursor<'a> {
+    source: &'a str,
+    offset: usize,
+    line: usize,
+    line_start: usize,
+}
+
+impl<'a> LineCursor<'a> {
+    fn new(source: &'a str) -> Self {
+        Self {
+            source,
+            offset: 0,
+            line: 0,
+            line_start: 0,
+        }
+    }
+
+    /// The position of `offset`, which must not precede the previous offset.
+    fn position(&mut self, offset: usize) -> (usize, usize) {
+        for (i, byte) in self.source.as_bytes()[self.offset..offset]
+            .iter()
+            .enumerate()
+        {
+            if *byte == b'\n' {
+                self.line += 1;
+                self.line_start = self.offset + i + 1;
+            }
+        }
+        self.offset = offset;
+        (self.line, offset - self.line_start)
+    }
+}
+
+/// Whether only whitespace and line comments separate `offset` from a
+/// `#guard_msgs` command, which `guard_msgs_after` tells for the end of
+/// `source`.
+pub(crate) fn precedes_guard_msgs(source: &str, mut offset: usize, guard_msgs_after: bool) -> bool {
+    let bytes = source.as_bytes();
+    loop {
+        while bytes.get(offset).is_some_and(u8::is_ascii_whitespace) {
+            offset += 1;
+        }
+        if offset >= bytes.len() {
+            return guard_msgs_after;
+        }
+        if !bytes[offset..].starts_with(b"--") {
+            return bytes[offset..].starts_with(b"#guard_msgs");
+        }
+        while bytes.get(offset).is_some_and(|b| *b != b'\n') {
+            offset += 1;
+        }
+    }
 }
 
 /// Scan `source` for Lean block comments.  Returns an error if any delimiter
-/// is unmatched.
-fn find_blocks_with_context(source: &str, mut seen: bool) -> Result<Vec<Block>, NormalizeError> {
+/// is unmatched. `guard_msgs_after` tells whether `#guard_msgs` follows the
+/// end of `source`; see `precedes_guard_msgs`.
+fn find_blocks_with_context(
+    source: &str,
+    mut seen: bool,
+    guard_msgs_after: bool,
+) -> Result<Vec<Block>, NormalizeError> {
     let bytes = source.as_bytes();
     let mut blocks = Vec::new();
     let mut i = 0;
     let lines: Vec<_> = source.lines().collect();
-    let position = |offset: usize| {
-        let before = &source[..offset];
-        (
-            before.bytes().filter(|c| *c == b'\n').count(),
-            before.rfind('\n').map_or(offset, |p| offset - p - 1),
-        )
-    };
+    let mut cursor = LineCursor::new(source);
     while i < bytes.len() {
         if bytes[i..].starts_with(b"--") {
             while i < bytes.len() && bytes[i] != b'\n' {
@@ -637,7 +809,8 @@ fn find_blocks_with_context(source: &str, mut seen: bool) -> Result<Vec<Block>, 
         let start = i;
         let doc = bytes[i..].starts_with(b"/-!");
         let recognized = doc || bytes[i..].starts_with(b"/--");
-        let after = i + if recognized { 3 } else { 2 };
+        // `block_end` scans for the end only after a third character, as Lean
+        // does, so `/--/` does not close itself.
         let Some(end) = crate::syntax::block_end(source, start) else {
             if recognized {
                 return Err(NormalizeError::UnmatchedOpeningDelimiter {
@@ -646,16 +819,17 @@ fn find_blocks_with_context(source: &str, mut seen: bool) -> Result<Vec<Block>, 
                     } else {
                         CommentKind::Block
                     },
-                    line: position(start).0 + 1,
+                    line: cursor.position(start).0 + 1,
                 });
             }
             break;
         };
         i = end - 2;
         if recognized {
-            let (sl, sc) = position(start);
-            let (el, ec) = position(i);
-            let module_doc = doc && !seen && !is_section_heading_block(&lines, sl, sc + 3, el, ec);
+            let (sl, sc) = cursor.position(start);
+            let (el, ec) = cursor.position(i);
+            let first_doc = doc && !seen;
+            let module_doc = first_doc && !is_section_heading_block(&lines, sl, sc + 3, el, ec);
             if doc {
                 seen = true;
             }
@@ -665,12 +839,13 @@ fn find_blocks_with_context(source: &str, mut seen: bool) -> Result<Vec<Block>, 
                 end_line: el,
                 end_before: ec,
                 is_doc: doc,
+                first_doc,
                 module_doc,
                 start_delim_col: sc,
                 end_delim_col: ec,
+                verbatim: !doc && precedes_guard_msgs(source, end, guard_msgs_after),
             });
         }
-        let _ = after;
         i += 2;
     }
     Ok(blocks)
@@ -699,12 +874,30 @@ fn is_section_heading_block(
             content.push(text);
         }
     }
+    is_section_heading_content(&content)
+}
+
+/// Whether a `/-!` comment with content `body` is a section heading, as
+/// `is_section_heading_block` decides for a block.
+pub(crate) fn is_section_heading_text(body: &str) -> bool {
+    let content: Vec<&str> = body
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    is_section_heading_content(&content)
+}
+
+fn is_section_heading_content(content: &[&str]) -> bool {
     let Some(first) = content.first() else {
         return false;
     };
+    // An ATX heading, possibly empty, as `# #` becomes once its closing
+    // sequence is dropped.
     let hashes = first.chars().take_while(|c| *c == '#').count();
-    hashes > 0
-        && first[hashes..].starts_with(char::is_whitespace)
+    let rest = &first[hashes..];
+    (1..=6).contains(&hashes)
+        && (rest.is_empty() || rest.starts_with(char::is_whitespace))
         && (hashes >= 2 || content.len() == 1)
 }
 
@@ -712,29 +905,238 @@ fn is_section_heading_block(
 // Per-block reflow
 // ---------------------------------------------------------------------------
 
+/// A rewrite of one block's lines; `None` keeps them.
+type Rewrite<'a> = dyn FnMut(&[String], &Block) -> Result<Option<Vec<String>>, NormalizeError> + 'a;
+
+/// Replace each block's lines with `rewrite`'s result in linear total time.
+/// Blocks that share a line are rewritten together, from the first to the
+/// last, so a later block sees the final indentation of its opening line.
+fn rewrite_blocks(
+    mut lines: Vec<String>,
+    blocks: &[Block],
+    rewrite: &mut Rewrite<'_>,
+) -> Result<(Vec<String>, usize), NormalizeError> {
+    let mut out = Vec::with_capacity(lines.len());
+    let mut changed = 0;
+    let mut copied = 0;
+    let mut next = 0;
+    while next < blocks.len() {
+        let group = next;
+        let first_line = blocks[next].start_line;
+        let mut last_line = blocks[next].end_line;
+        next += 1;
+        while next < blocks.len() && blocks[next].start_line <= last_line {
+            last_line = last_line.max(blocks[next].end_line);
+            next += 1;
+        }
+        out.extend(lines[copied..first_line].iter_mut().map(std::mem::take));
+        let mut local: Vec<String> = lines[first_line..=last_line]
+            .iter_mut()
+            .map(std::mem::take)
+            .collect();
+        let mut group: Vec<Block> = blocks[group..next]
+            .iter()
+            .map(|block| block.shifted(first_line))
+            .collect();
+        if group.len() == 1 {
+            changed += rewrite_group(&mut local, &mut group, rewrite)?;
+        } else {
+            // A block's last line also depends on the text after it, which
+            // the next block's rewrite changes, so repeat until neither moves.
+            let original = local.clone();
+            let mut first_round = None;
+            let mut settled = false;
+            for _ in 0..SETTLE_LIMIT {
+                let round = rewrite_group(&mut local, &mut group, rewrite)?;
+                first_round.get_or_insert(round);
+                if round == 0 {
+                    settled = true;
+                    break;
+                }
+            }
+            if settled {
+                changed += first_round.unwrap_or(0);
+            } else {
+                local = original;
+            }
+        }
+        out.extend(local);
+        copied = last_line + 1;
+    }
+    out.extend(lines.drain(copied..));
+    Ok((out, changed))
+}
+
+/// Rewrite blocks that share lines once, from the first to the last, and
+/// update their positions. Each later block opens on the previous block's
+/// closing line, whose text after the delimiter a rewrite keeps verbatim.
+fn rewrite_group(
+    local: &mut Vec<String>,
+    blocks: &mut [Block],
+    rewrite: &mut Rewrite<'_>,
+) -> Result<usize, NormalizeError> {
+    let mut changed = 0;
+    let mut added_lines = 0;
+    let mut added_columns = 0;
+    for block in blocks {
+        block.start_line = block.start_line.saturating_add_signed(added_lines);
+        block.end_line = block.end_line.saturating_add_signed(added_lines);
+        block.start_delim_col = block.start_delim_col.saturating_add_signed(added_columns);
+        block.start_after = block.start_after.saturating_add_signed(added_columns);
+        if block.start_line == block.end_line {
+            block.end_delim_col = block.end_delim_col.saturating_add_signed(added_columns);
+            block.end_before = block.end_before.saturating_add_signed(added_columns);
+        }
+        let current = &local[block.start_line..=block.end_line];
+        let (current_len, closing_len) = (current.len(), current[current.len() - 1].len());
+        added_columns = 0;
+        let Some((replacement, settled)) =
+            settle(current, &block.shifted(block.start_line), rewrite)?
+        else {
+            continue;
+        };
+        added_lines += replacement.len() as isize - current_len as isize;
+        added_columns = replacement[replacement.len() - 1].len() as isize - closing_len as isize;
+        let start_line = block.start_line;
+        *block = Block {
+            start_line,
+            end_line: start_line + settled.end_line,
+            ..settled
+        };
+        local.splice(start_line..start_line + current_len, replacement);
+        changed += 1;
+    }
+    Ok(changed)
+}
+
+/// The most rewrites of one block before giving up on reaching a fixed point.
+const SETTLE_LIMIT: usize = 4;
+
+/// Rewrite a block's lines until rewriting them again changes nothing, so a
+/// second run leaves the result alone, and return them with the block's new
+/// position. The block stays unchanged when its rewrite panics, does not
+/// settle, or would change how Lean delimits it.
+fn settle(
+    original: &[String],
+    block: &Block,
+    rewrite: &mut Rewrite<'_>,
+) -> Result<Option<(Vec<String>, Block)>, NormalizeError> {
+    let after = original[original.len() - 1][block.end_delim_col + SUFFIX.len()..].to_owned();
+    let mut current = original.to_vec();
+    let mut current_block = block.clone();
+    for round in 0..SETTLE_LIMIT {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            rewrite(&current, &current_block)
+        }));
+        let next = match result {
+            Ok(Ok(next)) => next,
+            // Only the original text may report an error; a later round
+            // failing means the first result is not stable.
+            Ok(Err(error)) if round == 0 => return Err(error),
+            Ok(Err(_)) | Err(_) => return Ok(None),
+        };
+        let Some(next) = next.filter(|next| *next != current) else {
+            return Ok((current != original).then_some((current, current_block)));
+        };
+        if !keeps_delimiters(&current, &next, &current_block) {
+            return Ok(None);
+        }
+        current_block = current_block.rewritten(&next, &after);
+        current = next;
+    }
+    Ok(None)
+}
+
+/// Whether `replacement` keeps the block's surrounding text, its delimiters,
+/// and the sequence of nested delimiters Lean finds in its body.
+fn keeps_delimiters(current: &[String], replacement: &[String], block: &Block) -> bool {
+    let original = current.join("\n");
+    let rewritten = replacement.join("\n");
+    let opening = &current[0][..block.start_after];
+    let after = &current[current.len() - 1][block.end_delim_col + SUFFIX.len()..];
+    let original_body = &original[block.start_after..original.len() - after.len() - SUFFIX.len()];
+    let Some(body) = rewritten
+        .strip_prefix(opening)
+        .and_then(|rest| rest.strip_suffix(after))
+        .and_then(|rest| rest.strip_suffix(SUFFIX))
+    else {
+        return false;
+    };
+    // Lean's scan continues through the closing delimiter, so a body ending
+    // in `/` would turn it into an opening one.
+    delimiter_tokens(&format!("{body}{SUFFIX}"))
+        == delimiter_tokens(&format!("{original_body}{SUFFIX}"))
+}
+
+/// The `/-` (true) and `-/` (false) delimiters in `text`, scanned as Lean does.
+fn delimiter_tokens(text: &str) -> Vec<bool> {
+    let bytes = text.as_bytes();
+    let mut tokens = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i..].starts_with(b"/-") {
+            tokens.push(true);
+            i += 2;
+        } else if bytes[i..].starts_with(b"-/") {
+            tokens.push(false);
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    tokens
+}
+
+/// The replacement for a block's lines, or `None` to keep them unchanged.
 fn reflow_block(
-    lines: &mut Vec<String>,
+    lines: &[String],
     block: &Block,
     target_width: usize,
     options: Options,
     rules: &NormalizeRules,
     context: &Context<'_>,
     comment_layout: bool,
-) -> Result<bool, NormalizeError> {
-    let before = lines[block.start_line..=block.end_line].join("\n");
+) -> Result<Option<Vec<String>>, NormalizeError> {
+    if block.verbatim {
+        return Ok(None);
+    }
     let prefix = if block.is_doc { "/-!" } else { "/--" };
+    let style = if !comment_layout {
+        DelimiterStyle::Off
+    } else if block.module_doc {
+        rules.comments.module
+    } else if block.is_doc {
+        rules.comments.section
+    } else {
+        rules.comments.declaration
+    };
 
     // With layout and wrapping disabled, apply prose edits directly to the raw
     // comment body so indentation, blank lines, and delimiter spacing stay exact.
-    let prose_only = !comment_layout && !options.comment_reflow;
+    let prose_only = style == DelimiterStyle::Off && !options.comment_reflow;
     let original_content = if prose_only {
         extract_raw_content(lines, block)
+    } else if !options.comment_reflow {
+        // Delimiter-only lines and their padding are not Markdown content. The
+        // reflow dependency normally removes these; layout alone must do so too.
+        trim_delimiter_padding(&extract_content(lines, block))
     } else {
         extract_content(lines, block)
     };
+    // The rules below read the body without the space after the delimiter.
+    // Leave the rare comments where that space changes Lean's Markdown, such
+    // as list nesting under a first-line item.
+    if !prose_only
+        && !crate::prose::same_structure(
+            &lean_text(&extract_raw_content(lines, block)),
+            &original_content,
+        )
+    {
+        return Ok(None);
+    }
     let mut content = original_content.clone();
     if options.headings {
-        content = crate::prose::heading_titles(&content, |title| {
+        let titled = crate::prose::heading_titles(&content, |title| {
             let title = rules
                 .headings
                 .replacements
@@ -744,11 +1146,16 @@ fn reflow_block(
             match rules.headings.case {
                 HeadingCase::Off => title.to_owned(),
                 HeadingCase::Title => title_case_with_words(title, &rules.headings.small_words),
-                HeadingCase::Sentence => crate::prose::transform(title, capitalize_segments_first),
+                HeadingCase::Sentence => crate::prose::transform(title, capitalize_segments_first)
+                    .unwrap_or_else(|| title.to_owned()),
             }
         });
+        let Some(titled) = titled else {
+            return Ok(None);
+        };
+        content = titled;
     }
-    content = crate::prose::transform(&content, |text| {
+    let edited = crate::prose::transform(&content, |text| {
         let mut text = text.to_owned();
         if let Some(spelling) = options.spelling {
             text = if let Some(dictionary) = context.dictionary {
@@ -762,169 +1169,166 @@ fn reflow_block(
         }
         text
     });
+    let Some(edited) = edited else {
+        return Ok(None);
+    };
+    content = edited.clone();
     if !options.comment_reflow && options.linkify_urls {
-        content = crate::prose::reflow_protected(
-            &content,
-            ReflowOptions {
-                widths: EdgeWidths {
-                    middle: ReflowWidth::Disabled,
-                    ..Default::default()
-                },
-                linkify_urls: true,
-            },
-        )
-        .map_err(NormalizeError::Reflow)?
-        .trim_end_matches('\n')
-        .to_owned();
+        // Without reflow, linkification only adds link syntax around URLs.
+        let Some(linked) = crate::prose::linkify(&content) else {
+            return Ok(None);
+        };
+        content = linked;
     }
     if prose_only {
         if content == original_content {
-            return Ok(false);
+            return Ok(None);
         }
         let opening = &lines[block.start_line][..block.start_after];
         let closing = &lines[block.end_line][block.end_before..];
         let replacement = format!("{opening}{content}{closing}");
-        lines.splice(
-            block.start_line..=block.end_line,
-            replacement.split('\n').map(str::to_owned),
-        );
-        return Ok(true);
+        return Ok(Some(replacement.split('\n').map(str::to_owned).collect()));
     }
-    let style = if !comment_layout {
-        DelimiterStyle::Off
-    } else if block.module_doc {
-        rules.comments.module
-    } else if block.is_doc {
-        rules.comments.section
-    } else {
-        rules.comments.declaration
-    };
-    if !options.comment_reflow && content == original_content && style == DelimiterStyle::Off {
-        return Ok(false);
-    }
-    if content.trim().is_empty() {
-        return Ok(false);
+    if content.split('\n').all(is_blank) {
+        return Ok(None);
     }
 
-    let indent = leading_whitespace(&lines[block.start_line]).to_string();
-    let indent_w = char_width(&indent);
+    // Continuation lines use the indentation of the line holding the opening
+    // delimiter, even after code such as `@[to_dual /--`, which is exactly what
+    // Lean's dedent removes again.
+    let indent = &lines[block.start_line][..indentation(&lines[block.start_line])];
+    let indent_w = char_width(indent);
+    let before = &lines[block.start_line][..block.start_delim_col];
+    let after = &lines[block.end_line][block.end_delim_col + SUFFIX.len()..];
     let layout_width = if options.comment_reflow {
         target_width
     } else {
         usize::MAX
     };
-
-    if style == DelimiterStyle::Separate
+    let separate = style == DelimiterStyle::Separate
         || (style == DelimiterStyle::Off
-            && lines[block.start_line][block.start_after..]
-                .trim()
-                .is_empty()
-            && lines[block.end_line][..block.end_before].trim().is_empty())
-    {
-        // Module docstring ── delimiters always on their own lines.
-        let reflowed;
-        let content_ref = if options.comment_reflow {
-            let effective_w = target_width.saturating_sub(indent_w).max(1);
-            reflowed = crate::prose::reflow_protected(
-                &content,
-                ReflowOptions {
-                    widths: EdgeWidths {
-                        first: ReflowWidth::Finite(effective_w),
-                        middle: ReflowWidth::Finite(effective_w),
-                        last: ReflowWidth::Finite(effective_w),
-                        single: ReflowWidth::Finite(effective_w),
-                    },
-                    linkify_urls: options.linkify_urls,
-                },
-            )
-            .map_err(NormalizeError::Reflow)?;
-            reflowed.trim_end()
-        } else {
-            content.trim_end()
-        };
-        let lines_ref: Vec<&str> = content_ref.lines().collect();
-        expand_module_doc(lines, block, &lines_ref, prefix, &indent);
+            && is_blank(&lines[block.start_line][block.start_after..])
+            && is_blank(&lines[block.end_line][..block.end_before]));
+    let budget = |used: usize| ReflowWidth::Finite(target_width.saturating_sub(used).max(1));
+    let widths = if separate {
+        // Delimiters on their own lines leave every content line the same width.
+        let width = budget(indent_w);
+        EdgeWidths {
+            first: width,
+            middle: width,
+            last: width,
+            single: width,
+        }
     } else {
-        // Normal comment ── prefer delimiters on same line as content.
-        let reflowed;
-        let content_ref = if options.comment_reflow {
-            let before = &lines[block.start_line][..block.start_delim_col];
-            let after_start = block.end_delim_col + SUFFIX.len();
-            let after = &lines[block.end_line][after_start..];
-            let continuation_w = if before.trim().is_empty() {
-                indent_w
-            } else {
-                char_width(before)
-            };
-            let opening_w = continuation_w + OPENING_OVERHEAD;
-            let closing_w = continuation_w + 1 + char_width(SUFFIX) + char_width(after);
-            let both_w = opening_w + 1 + char_width(SUFFIX) + char_width(after);
-
-            // Reserve space for delimiters only on the lines where they appear:
-            // `/-- ` on the first line, ` -/` on the last line, and both when
-            // the content remains on a single line.
-            let first_w = target_width.saturating_sub(opening_w).max(1);
-            let middle_w = target_width.saturating_sub(continuation_w).max(1);
-            let final_w = target_width.saturating_sub(closing_w).max(1);
-            let single_w = target_width.saturating_sub(both_w).max(1);
-            reflowed = crate::prose::reflow_protected(
-                &content,
-                ReflowOptions {
-                    widths: EdgeWidths {
-                        first: ReflowWidth::Finite(first_w),
-                        middle: ReflowWidth::Finite(middle_w),
-                        last: ReflowWidth::Finite(final_w),
-                        single: ReflowWidth::Finite(single_w),
-                    },
-                    linkify_urls: options.linkify_urls,
-                },
-            )
-            .map_err(NormalizeError::Reflow)?;
-            reflowed.trim_end()
-        } else {
-            content.trim_end()
+        // Reserve space for delimiters only on the lines where they appear:
+        // `/-- ` on the first line, ` -/` on the last line, and both when
+        // the content remains on a single line.
+        let opening_w = char_width(before) + OPENING_OVERHEAD;
+        let closing_w = 1 + char_width(SUFFIX) + char_width(after);
+        EdgeWidths {
+            first: budget(opening_w),
+            middle: budget(indent_w),
+            last: budget(indent_w + closing_w),
+            single: budget(opening_w + closing_w),
+        }
+    };
+    let reflowed;
+    let content_ref = if options.comment_reflow {
+        let result = crate::prose::reflow_protected(
+            &content,
+            ReflowOptions {
+                widths,
+                linkify_urls: options.linkify_urls,
+                frontmatter: false,
+            },
+        )
+        .map_err(NormalizeError::Reflow)?;
+        let Some(result) = result else {
+            return Ok(None);
         };
-        let lines_ref: Vec<&str> = content_ref.lines().collect();
-
-        if style == DelimiterStyle::Off {
-            expand_preserving(lines, block, &lines_ref, prefix, &indent);
-            return Ok(block_changed(lines, block.start_line, &before));
-        }
-        // If the original was single-line and the content is still a single
-        // line, try the true single-line format.
-        if block.start_line == block.end_line
-            && lines_ref.len() == 1
-            && try_single_line(lines, block, lines_ref[0], prefix, layout_width)
-        {
-            return Ok(block_changed(lines, block.start_line, &before));
-        }
-
-        expand_compact(lines, block, &lines_ref, prefix, &indent, layout_width);
+        reflowed = result;
+        reflowed.trim_end()
+    } else {
+        content.trim_end()
+    };
+    let content_lines: Vec<&str> = content_ref.lines().collect();
+    if content_lines.iter().all(|line| is_blank(line)) {
+        return Ok(None);
     }
 
-    Ok(block_changed(lines, block.start_line, &before))
-}
-
-fn block_changed(lines: &[String], start: usize, before: &str) -> bool {
-    let end = (start..lines.len())
-        .find(|&i| lines[i].contains(SUFFIX))
-        .unwrap_or(start);
-    lines[start..=end].join("\n") != before
+    let replacement = if separate {
+        expand_separate(before, after, &content_lines, prefix, indent)
+    } else if style == DelimiterStyle::Off {
+        expand_preserving(lines, block, &content_lines, prefix, indent)
+    } else if let Some(line) = (block.start_line == block.end_line && content_lines.len() == 1)
+        .then(|| single_line(before, after, content_lines[0], prefix, layout_width))
+        .flatten()
+    {
+        // The original was single-line and the content still is: keep the
+        // true single-line format when it fits.
+        vec![line]
+    } else {
+        expand_compact(before, after, &content_lines, prefix, indent, layout_width)
+    };
+    // Layout and wrapping must not change the Markdown structure Lean reads.
+    let joined = replacement.join("\n");
+    let body = joined.get(block.start_after..joined.len() - after.len() - SUFFIX.len());
+    if !body.is_some_and(|body| crate::prose::same_structure(&edited, &lean_text(body))) {
+        return Ok(None);
+    }
+    Ok(Some(replacement))
 }
 
 // ---------------------------------------------------------------------------
 // Content extraction
 // ---------------------------------------------------------------------------
 
+/// The comment body as Lean reads it: `String.removeLeadingSpaces` removes the
+/// smallest indentation of the later non-blank lines from every line.
+fn lean_text(raw: &str) -> String {
+    dedent(raw, 0)
+}
+
+/// The comment body as Lean reads it, without the space separating the first
+/// line from the delimiter, which is layout rather than content.
 fn extract_content(lines: &[String], block: &Block) -> String {
-    strip_common_indent(&extract_raw_content(lines, block))
+    dedent(&extract_raw_content(lines, block), 1)
+}
+
+/// Lean's dedent, removing at least `first_min` columns from the first line.
+fn dedent(raw: &str, first_min: usize) -> String {
+    let parts: Vec<&str> = raw.split('\n').collect();
+    let dedent = parts[1..]
+        .iter()
+        .filter(|line| line.contains(|c| !matches!(c, ' ' | '\t')))
+        .map(|line| indentation(line))
+        .min()
+        .unwrap_or(usize::MAX);
+    // Only ASCII spaces and tabs count, so these byte offsets are boundaries.
+    fn strip(line: &str, n: usize) -> &str {
+        &line[indentation(line).min(n)..]
+    }
+    let mut out = vec![strip(parts[0], dedent.max(first_min))];
+    out.extend(parts[1..].iter().map(|line| strip(line, dedent)));
+    out.join("\n")
+}
+
+fn trim_delimiter_padding(content: &str) -> String {
+    let mut lines: Vec<_> = content.lines().collect();
+    let first = lines.iter().position(|line| !is_blank(line));
+    let last = lines.iter().rposition(|line| !is_blank(line));
+    let (Some(first), Some(last)) = (first, last) else {
+        return String::new();
+    };
+    lines[last] = lines[last].trim_end_matches([' ', '\t']);
+    lines[first..=last].join("\n")
 }
 
 fn extract_raw_content(lines: &[String], block: &Block) -> String {
     let mut parts: Vec<&str> = Vec::new();
 
-    for li in block.start_line..=block.end_line {
-        let line = &lines[li];
+    for (offset, line) in lines[block.start_line..=block.end_line].iter().enumerate() {
+        let li = block.start_line + offset;
         let start = if li == block.start_line {
             block.start_after
         } else {
@@ -941,166 +1345,147 @@ fn extract_raw_content(lines: &[String], block: &Block) -> String {
     parts.join("\n")
 }
 
-fn strip_common_indent(s: &str) -> String {
-    let lines: Vec<&str> = s.lines().collect();
-    let min_indent = lines
-        .iter()
-        .filter(|l| !l.trim().is_empty())
-        .map(|l| l.len() - l.trim_start().len())
-        .min()
-        .unwrap_or(0);
+// ---------------------------------------------------------------------------
+// Layouts
+// ---------------------------------------------------------------------------
 
-    if min_indent == 0 {
-        return s.to_string();
+/// Both delimiters and the content on one line, when it fits.
+fn single_line(
+    before: &str,
+    after: &str,
+    content: &str,
+    prefix: &str,
+    target_width: usize,
+) -> Option<String> {
+    let candidate = format!("{before}{prefix} {content} {SUFFIX}{after}");
+    (char_width(&candidate) <= target_width).then_some(candidate)
+}
+
+/// Delimiters on their own lines, as for module docstrings.
+fn expand_separate(
+    before: &str,
+    after: &str,
+    content_lines: &[&str],
+    prefix: &str,
+    indent: &str,
+) -> Vec<String> {
+    let mut out = vec![format!("{before}{prefix}")];
+    out.extend(content_lines.iter().map(|line| indented(indent, line)));
+    out.push(format!("{indent}{SUFFIX}{after}"));
+    out
+}
+
+/// Delimiters share lines with content; no orphan `-/` unless the last line
+/// must keep its own line.
+fn expand_compact(
+    before: &str,
+    after: &str,
+    content_lines: &[&str],
+    prefix: &str,
+    indent: &str,
+    target_width: usize,
+) -> Vec<String> {
+    if let [content] = content_lines {
+        // Only one content line ─ put both delimiters on it.
+        return vec![format!("{before}{prefix} {content} {SUFFIX}{after}")];
+    }
+    let first = content_lines[0];
+    let last = content_lines[content_lines.len() - 1];
+    let mut out = Vec::with_capacity(content_lines.len() + 2);
+
+    // --- opening delimiter --------------------------------------------------
+    let first_with_prefix = format!("{before}{prefix} {first}");
+    if shares_opening_line(content_lines) && char_width(&first_with_prefix) <= target_width {
+        out.push(first_with_prefix);
+    } else {
+        // Doesn't fit or would change the content — opening delimiter on its
+        // own line, and the first content line becomes a continuation line.
+        out.push(format!("{before}{prefix}"));
+        out.push(indented(indent, first));
     }
 
-    let mut out = String::with_capacity(s.len());
-    for (i, line) in lines.iter().enumerate() {
-        if i > 0 {
-            out.push('\n');
-        }
-        if line.len() >= min_indent {
-            out.push_str(&line[min_indent..]);
-        }
+    // --- middle lines (if any) ----------------------------------------------
+    for line in &content_lines[1..content_lines.len() - 1] {
+        out.push(indented(indent, line));
+    }
+
+    // --- closing delimiter --------------------------------------------------
+    if shares_closing_line(last) {
+        out.push(format!("{indent}{last} {SUFFIX}{after}"));
+    } else {
+        out.push(indented(indent, last));
+        out.push(format!("{indent}{SUFFIX}{after}"));
     }
     out
 }
 
-// ---------------------------------------------------------------------------
-// Single-line attempt (returns false if it doesn't fit)
-// ---------------------------------------------------------------------------
-
-fn try_single_line(
-    lines: &mut Vec<String>,
+/// Keep the original choice of delimiter placement.
+fn expand_preserving(
+    lines: &[String],
     block: &Block,
-    content: &str,
-    prefix: &str,
-    target_width: usize,
-) -> bool {
-    let before: String = lines[block.start_line][..block.start_delim_col].to_string();
-    let after_start = block.end_delim_col + SUFFIX.len();
-    let after: String = lines[block.start_line][after_start..].to_string();
-
-    let candidate = format!("{before}{prefix} {content} {SUFFIX}{after}");
-
-    if char_width(&candidate) <= target_width {
-        lines[block.start_line] = candidate;
-        true
-    } else {
-        false
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Module-docstring expansion (delimiters on their own lines)
-// ---------------------------------------------------------------------------
-
-fn expand_module_doc(
-    lines: &mut Vec<String>,
-    block: &Block,
-    content_lines: &[&str],
+    content: &[&str],
     prefix: &str,
     indent: &str,
-) {
-    let before: String = lines[block.start_line][..block.start_delim_col].to_string();
-    let after_start = block.end_delim_col + SUFFIX.len();
-    let after: String = lines[block.end_line][after_start..].to_string();
-
-    let base_indent = if before.trim().is_empty() {
-        indent.to_string()
-    } else {
-        " ".repeat(char_width(&before))
-    };
-
-    let mut out: Vec<String> = Vec::new();
-    out.push(format!("{before}{prefix}"));
-
-    for cl in content_lines {
-        if cl.trim().is_empty() {
-            out.push(base_indent.clone());
+) -> Vec<String> {
+    let before = &lines[block.start_line][..block.start_delim_col];
+    let after = &lines[block.end_line][block.end_delim_col + SUFFIX.len()..];
+    let mut content = content.to_vec();
+    while content.first().is_some_and(|s| is_blank(s)) {
+        content.remove(0);
+    }
+    while content.last().is_some_and(|s| is_blank(s)) {
+        content.pop();
+    }
+    let open_separate =
+        is_blank(&lines[block.start_line][block.start_after..]) || !shares_opening_line(&content);
+    let close_separate = is_blank(&lines[block.end_line][..block.end_before])
+        || content
+            .last()
+            .is_some_and(|last| !shares_closing_line(last));
+    let mut out = Vec::new();
+    if open_separate {
+        out.push(format!("{before}{prefix}"));
+    }
+    for (i, line) in content.iter().enumerate() {
+        if i == 0 && !open_separate {
+            out.push(format!("{before}{prefix} {line}"));
         } else {
-            out.push(format!("{base_indent}{cl}"));
+            out.push(indented(indent, line));
         }
     }
-
-    if after.is_empty() {
-        out.push(format!("{base_indent}{SUFFIX}"));
-    } else {
-        out.push(format!("{base_indent}{SUFFIX}{after}"));
+    if close_separate {
+        out.push(format!("{indent}{SUFFIX}{after}"));
+    } else if let Some(last) = out.last_mut() {
+        last.push_str(&format!(" {SUFFIX}{after}"));
     }
-
-    splice_vec(lines, block.start_line, block.end_line, &out);
+    out
 }
 
-// ---------------------------------------------------------------------------
-// Compact expansion (delimiters share lines with content; no orphan -/)
-// ---------------------------------------------------------------------------
-
-fn expand_compact(
-    lines: &mut Vec<String>,
-    block: &Block,
-    content_lines: &[&str],
-    prefix: &str,
-    indent: &str,
-    target_width: usize,
-) {
-    let before: String = lines[block.start_line][..block.start_delim_col].to_string();
-    let after_start = block.end_delim_col + SUFFIX.len();
-    let after: String = lines[block.end_line][after_start..].to_string();
-
-    // Indentation for continuation lines.
-    let base_indent = if before.trim().is_empty() {
-        indent.to_string()
-    } else {
-        " ".repeat(char_width(&before))
+/// Whether the first content line can follow the opening delimiter without
+/// changing what Lean reads. Lean removes the smallest indentation of the
+/// later non-blank lines from every line, so one of them must be unindented.
+/// The first line gains the separating space, which moves a list item's
+/// content column, so the item's indented lines would no longer belong to it.
+/// Fences (Verso requires their columns) and table rows keep their own lines.
+fn shares_opening_line(content: &[&str]) -> bool {
+    let Some((first, rest)) = content.split_first() else {
+        return false;
     };
+    let indents: Vec<usize> = rest
+        .iter()
+        .filter(|line| !is_blank(line))
+        .map(|line| indentation(line))
+        .collect();
+    !first.starts_with([' ', '\t'])
+        && !is_table_row(first)
+        && !is_fence(first)
+        && indents.iter().min().is_none_or(|min| *min == 0)
+        && !(starts_list_item(first) && indents.iter().any(|indent| *indent > 0))
+}
 
-    let mut out: Vec<String> = Vec::new();
-
-    if content_lines.len() == 1 {
-        // Only one content line ─ put both delimiters on it.
-        let c = content_lines[0];
-        out.push(format!("{before}{prefix} {c} {SUFFIX}{after}"));
-    } else {
-        let first = content_lines[0];
-        let last = content_lines[content_lines.len() - 1];
-
-        // --- opening delimiter ----------------------------------------------
-        // A table row never shares a line with the delimiter: prepending
-        // `/-- ` would shift the row and break the column alignment.
-        let first_with_prefix = format!("{before}{prefix} {first}");
-        if !is_table_row(first) && char_width(&first_with_prefix) <= target_width {
-            out.push(first_with_prefix);
-        } else {
-            // Doesn't fit — opening delimiter on its own line.
-            out.push(format!("{before}{prefix}"));
-            // The first content line becomes a regular continuation line.
-            out.push(format!("{base_indent}{first}"));
-        }
-
-        // --- middle lines (if any) ------------------------------------------
-        for i in 1..content_lines.len() - 1 {
-            let line = content_lines[i];
-            if line.trim().is_empty() {
-                out.push(base_indent.clone());
-            } else {
-                out.push(format!("{base_indent}{line}"));
-            }
-        }
-
-        // --- closing delimiter (attached to the last content line, except
-        // after a table row, where the orphan rule yields to the table) ------
-        if is_table_row(last) {
-            out.push(format!("{base_indent}{last}"));
-            out.push(format!("{base_indent}{SUFFIX}{after}"));
-        } else if after.is_empty() {
-            out.push(format!("{base_indent}{last} {SUFFIX}"));
-        } else {
-            out.push(format!("{base_indent}{last} {SUFFIX}{after}"));
-        }
-    }
-
-    splice_vec(lines, block.start_line, block.end_line, &out);
+/// Whether the closing delimiter can follow the last content line.
+fn shares_closing_line(last: &str) -> bool {
+    !is_table_row(last) && !is_fence(last)
 }
 
 // ---------------------------------------------------------------------------
@@ -1111,6 +1496,46 @@ fn expand_compact(
 fn is_table_row(line: &str) -> bool {
     let t = line.trim();
     t.len() >= 2 && t.starts_with('|') && t.ends_with('|')
+}
+
+/// A code or math fence line.
+fn is_fence(line: &str) -> bool {
+    let t = line.trim_start();
+    t.starts_with("```") || t.starts_with("~~~") || t.starts_with("$$")
+}
+
+/// A line starting with a bullet or ordered list marker.
+fn starts_list_item(line: &str) -> bool {
+    let t = line.trim_start();
+    let rest = if let Some(rest) = t.strip_prefix(['*', '-', '+']) {
+        rest
+    } else {
+        let digits = t.len() - t.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        match t[digits..].strip_prefix(['.', ')']) {
+            Some(rest) if (1..=9).contains(&digits) => rest,
+            _ => return false,
+        }
+    };
+    rest.is_empty() || rest.starts_with([' ', '\t'])
+}
+
+/// A line of only ASCII spaces and tabs (and a stray carriage return), the
+/// whitespace Lean and Markdown agree on; other Unicode spaces are content.
+fn is_blank(line: &str) -> bool {
+    line.bytes().all(|b| matches!(b, b' ' | b'\t' | b'\r'))
+}
+
+/// The number of leading ASCII spaces and tabs, which Lean counts alike.
+fn indentation(line: &str) -> usize {
+    line.len() - line.trim_start_matches([' ', '\t']).len()
+}
+
+fn indented(indent: &str, line: &str) -> String {
+    if is_blank(line) {
+        String::new()
+    } else {
+        format!("{indent}{line}")
+    }
 }
 
 fn leading_whitespace(s: &str) -> &str {
@@ -1127,52 +1552,9 @@ fn char_width(s: &str) -> usize {
     s.chars().count()
 }
 
-fn splice_vec(vec: &mut Vec<String>, start: usize, end: usize, replacement: &[String]) {
-    vec.splice(start..=end, replacement.iter().cloned());
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
-
-fn expand_preserving(
-    lines: &mut Vec<String>,
-    block: &Block,
-    content: &[&str],
-    prefix: &str,
-    indent: &str,
-) {
-    let before = lines[block.start_line][..block.start_delim_col].to_owned();
-    let after = lines[block.end_line][block.end_delim_col + 2..].to_owned();
-    let open_separate = lines[block.start_line][block.start_after..]
-        .trim()
-        .is_empty();
-    let close_separate = lines[block.end_line][..block.end_before].trim().is_empty();
-    let mut content = content.to_vec();
-    while content.first().is_some_and(|s| s.trim().is_empty()) {
-        content.remove(0);
-    }
-    while content.last().is_some_and(|s| s.trim().is_empty()) {
-        content.pop();
-    }
-    let mut out = Vec::new();
-    if open_separate {
-        out.push(format!("{before}{prefix}"));
-    }
-    for (i, line) in content.iter().enumerate() {
-        if i == 0 && !open_separate {
-            out.push(format!("{before}{prefix} {}", line.trim_start()));
-        } else {
-            out.push(format!("{indent}{line}"));
-        }
-    }
-    if close_separate {
-        out.push(format!("{indent}-/{after}"));
-    } else if let Some(last) = out.last_mut() {
-        last.push_str(&format!(" -/{after}"));
-    }
-    lines.splice(block.start_line..=block.end_line, out);
-}
 
 #[cfg(test)]
 mod tests {
@@ -1847,6 +2229,72 @@ def x := 1
         assert_eq!(
             out,
             "/-- The expectation of the Gamma distribution with shape `shape` and rate `rate` is\n`shape / rate`. -/\n"
+        );
+    }
+
+    fn rewrite_with(source: &str, mut rewrite: impl FnMut(&str) -> String) -> (Vec<String>, usize) {
+        let lines: Vec<String> = source.lines().map(str::to_owned).collect();
+        let blocks = find_blocks_with_context(source, false, false).unwrap();
+        rewrite_blocks(lines, &blocks, &mut |lines, block| {
+            let text = lines[block.start_line..=block.end_line].join("\n");
+            Ok(Some(
+                rewrite(&text).split('\n').map(str::to_owned).collect(),
+            ))
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn rewrites_that_change_comment_delimiters_are_discarded() {
+        let source = "/-- a -/ def x := 1\n";
+        // A body ending in `/` turns the closing delimiter into an opening
+        // one; an extra `-/` closes the comment early; the trailing code and
+        // the opening delimiter must stay.
+        for replacement in [
+            "/-- a /-/ def x := 1",
+            "/-- a -/ b -/ def x := 1",
+            "/-- a -/ def x := 2",
+            "/- a -/ def x := 1",
+        ] {
+            let (lines, changed) = rewrite_with(source, |_| replacement.to_owned());
+            assert_eq!(lines, ["/-- a -/ def x := 1"]);
+            assert_eq!(changed, 0);
+        }
+        let (lines, changed) = rewrite_with(source, |_| "/-- b\nc -/ def x := 1".to_owned());
+        assert_eq!(lines, ["/-- b", "c -/ def x := 1"]);
+        assert_eq!(changed, 1);
+    }
+
+    #[test]
+    fn rewrites_that_panic_or_never_settle_are_discarded() {
+        let source = "/-- a -/\n/-- b -/\n/-- c -/\n";
+        let (lines, changed) = rewrite_with(source, |text| {
+            assert!(!text.contains('b'), "rewrite failed");
+            text.replace('a', "A").replace('c', "C")
+        });
+        assert_eq!(lines, ["/-- A -/", "/-- b -/", "/-- C -/"]);
+        assert_eq!(changed, 2);
+        let source = "/-- a -/\n/-- b -/ /-- c -/\n";
+        let (lines, changed) = rewrite_with(source, |text| {
+            if text.contains('x') {
+                text.replace('x', "y")
+            } else {
+                text.replace(['a', 'y'], "x")
+            }
+        });
+        assert_eq!(lines, ["/-- a -/", "/-- b -/ /-- c -/"]);
+        assert_eq!(changed, 0);
+    }
+
+    #[test]
+    fn blocks_on_a_shared_line_see_each_other_s_final_layout() {
+        // The second comment opens on the first one's closing line: it is
+        // indented like that final line, and the first comment's last line
+        // leaves room for the second comment's final opening.
+        let source = "    /-- aaaa bbbb cccc dddd eeee -/ /-! ffff -/\n";
+        assert_eq!(
+            normalize(source, 24, Options::default()).unwrap(),
+            "    /-- aaaa bbbb cccc\n    dddd eeee -/ /-!\n    ffff\n    -/\n"
         );
     }
 }

@@ -45,12 +45,12 @@ def assemble_distribution(repo, bin_dir, root, version, *, sign_binaries=True):
         manifest.write_text(json.dumps(data, indent=2) + "\n")
     catalogs = {
         ".claude-plugin/marketplace.json": {
-            "name": "leanck-installer",
+            "name": "leanck",
             "owner": {"name": "Dan Lyng"},
             "plugins": [{"name": "leanck", "source": "./plugin"}],
         },
         ".agents/plugins/marketplace.json": {
-            "name": "leanck-installer",
+            "name": "leanck",
             "plugins": [{
                 "name": "leanck",
                 "source": {"source": "local", "path": "./plugin"},

@@ -7,6 +7,6 @@ starts lower-case before normalization.
 -/
 
 /-- A compact American spelling comment with flavoured
-colourings, analysed cases, and organising behaviour that
-should become British while wrapping. -/
+colourings, analysed cases, and organising behaviour that should
+become British while wrapping. -/
 def spelling := True

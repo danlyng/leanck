@@ -3,7 +3,7 @@
 # All execution is inside main so a truncated download cannot start installation.
 
 # Prompts use a separate terminal descriptor: stdin may contain this script.
-INSTALLER_VERSION="0.4.0"
+INSTALLER_VERSION="0.5.0"
 colors() {
     bold='' cyan='' green='' yellow='' red='' reset='' out_bold='' out_reset=''
     prompt_style='' selected_style='' input_style=''
@@ -1504,11 +1504,11 @@ PYCODE
             else plan 'Would enable plugin MCP definitions'; fi
             if [ "$plugin_claude" = 1 ]; then
                 plan "Would run: claude plugin marketplace add \"$bundle_dir\""
-                plan 'Would run: claude plugin install leanck@leanck-installer --scope user'
+                plan 'Would run: claude plugin install leanck@leanck --scope user'
             fi
             if [ "$plugin_codex" = 1 ]; then
                 plan "Would run: codex plugin marketplace add \"$bundle_dir\""
-                plan 'Would run: codex plugin add leanck@leanck-installer'
+                plan 'Would run: codex plugin add leanck@leanck'
             fi
         fi
         install_tree "$plugin/codex/agents" "$data_dir/agents"
@@ -1529,11 +1529,11 @@ register_plugins() {
     if [ "$cli" = 1 ]; then PATH=$bin_dir:$PATH; export PATH; fi
     if [ "$plugin_claude" = 1 ]; then
         run_bounded "$timeout" env CLAUDE_CONFIG_DIR="$claude_dir" claude plugin marketplace add "$bundle_dir" >&2 || die 'Claude marketplace registration failed; rerun to resume'
-        run_bounded "$timeout" env CLAUDE_CONFIG_DIR="$claude_dir" claude plugin install leanck@leanck-installer --scope user >&2 || die 'Claude plugin installation failed; rerun to resume'
+        run_bounded "$timeout" env CLAUDE_CONFIG_DIR="$claude_dir" claude plugin install leanck@leanck --scope user >&2 || die 'Claude plugin installation failed; rerun to resume'
     fi
     if [ "$plugin_codex" = 1 ]; then
         run_bounded "$timeout" env CODEX_HOME="$codex_dir" codex plugin marketplace add "$bundle_dir" >&2 || die 'Codex marketplace registration failed; rerun to resume'
-        run_bounded "$timeout" env CODEX_HOME="$codex_dir" codex plugin add leanck@leanck-installer >&2 || die 'Codex plugin installation failed; rerun to resume'
+        run_bounded "$timeout" env CODEX_HOME="$codex_dir" codex plugin add leanck@leanck >&2 || die 'Codex plugin installation failed; rerun to resume'
         say 'Codex custom agents are included. Review and trust the Codex hook with /hooks.'
     fi
     say 'Restart your agent host to load the plugin.'

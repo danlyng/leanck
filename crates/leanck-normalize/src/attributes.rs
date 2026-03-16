@@ -26,7 +26,7 @@ pub fn normalize_with_count(source: &str) -> (String, usize) {
 
     while i < lines.len() {
         if is_standalone_simp(lines[i]) && i + 1 < lines.len() && starts_declaration(lines[i + 1]) {
-            let indent = leading_whitespace(lines[i]);
+            let indent = leading_whitespace(lines[i + 1]);
             let next = lines[i + 1].trim_start();
             out.push(format!("{indent}@[simp] {next}"));
             moved += 1;
@@ -115,6 +115,36 @@ fn leading_whitespace(s: &str) -> &str {
     &s[..end]
 }
 
+/// True when a line starts with an attribute group in code rather than inside a
+/// comment or string, with no comment before it as in `/- c -/ @[simp]`.
+fn is_attribute_line(line: &str, masked: &str) -> bool {
+    let masked = masked.trim_start();
+    masked.starts_with("@[") && line.trim_start().len() == masked.len()
+}
+
+/// True when an attribute group carries a comment, as in `@[to_dual /-- doc -/]`.
+fn contains_comment(group: &str) -> bool {
+    let bytes = group.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i..].starts_with(b"/-") || bytes[i..].starts_with(b"--") {
+            return true;
+        }
+        i = crate::syntax::literal_end(group, i).unwrap_or(i + 1);
+    }
+    false
+}
+
+/// Apply attribute placement policies to declaration attribute blocks.
+///
+/// Blocks whose attribute lines contain a comment are left unchanged. The
+/// comment pass runs later and may reshape such a comment, for example collapsing
+/// a multiline doc comment inside `@[to_dual /-- ... -/]` onto one line, so
+/// placement must not depend on comment layout or a second run would move what
+/// the first left in place.
+///
+/// The declaration line keeps its own indentation; attributes join it or sit
+/// above it at that column, so `  @[simp]\ntheorem` becomes `@[simp] theorem`.
 pub(crate) fn configured(
     source: &str,
     rules: &leanck_config::AttributeRules,
@@ -131,30 +161,32 @@ pub(crate) fn configured(
     while i < lines.len() {
         if !code
             .get(i)
-            .is_some_and(|s| s.trim_start().starts_with("@["))
+            .is_some_and(|masked| is_attribute_line(lines[i], masked))
         {
             out.push(lines[i].to_owned());
             i += 1;
             continue;
         }
         let start = i;
-        let indent = leading_whitespace(lines[i]);
         let mut attrs = Vec::new();
         let mut conflicting = false;
+        let mut commented = false;
         let mut declaration = None;
         loop {
-            let mut rest = lines[i].trim_start();
-            let mut masked = code[i].trim_start();
-            while masked.starts_with("@[") {
+            let (line, masked) = (lines[i], code[i]);
+            // The source and its mask share byte offsets, so one position walks
+            // both; the mask hides brackets inside strings and comments.
+            let mut pos = line.len() - line.trim_start().len();
+            while masked[pos..].starts_with("@[") {
                 let mut depth = 0;
                 let mut end = None;
-                for (j, c) in masked.char_indices().skip(1) {
+                for (j, c) in masked[pos..].char_indices().skip(1) {
                     if c == '[' {
                         depth += 1;
                     } else if c == ']' {
                         depth -= 1;
                         if depth == 0 {
-                            end = Some(j + 1);
+                            end = Some(pos + j + 1);
                             break;
                         }
                     }
@@ -162,7 +194,8 @@ pub(crate) fn configured(
                 let Some(end) = end else {
                     break;
                 };
-                let group = &rest[..end];
+                let group = &line[pos..end];
+                commented |= contains_comment(group);
                 let mut positions = group[2..group.len() - 1]
                     .split(',')
                     .filter_map(|s| s.split_whitespace().next())
@@ -181,32 +214,34 @@ pub(crate) fn configured(
                     P::Off
                 };
                 attrs.push((group.to_owned(), placement));
-                rest = rest[end..].trim_start();
-                masked = masked[end..].trim_start();
+                // Masked whitespace that is not source whitespace is a comment.
+                let gap = masked[end..].len() - masked[end..].trim_start().len();
+                commented |= !line[end..end + gap].trim().is_empty();
+                pos = end + gap;
             }
-            if starts_declaration(masked) {
-                declaration = Some(rest.to_owned());
+            let rest = &masked[pos..];
+            if starts_declaration(rest) {
+                declaration = Some((leading_whitespace(line), &line[pos..]));
                 i += 1;
                 break;
             }
-            if masked.trim().is_empty() && !rest.trim().is_empty() {
-                i += 1;
-                break;
-            }
-            if !masked.is_empty() || i + 1 >= lines.len() {
+            if !rest.is_empty() || i + 1 >= lines.len() {
                 i += 1;
                 break;
             }
             i += 1;
-            if !code[i].trim_start().starts_with("@[") {
-                if starts_declaration(code[i]) {
-                    declaration = Some(lines[i].trim_start().to_owned());
+            if !is_attribute_line(lines[i], code[i]) {
+                // A comment before the declaration keyword is an intervening comment.
+                if starts_declaration(code[i])
+                    && lines[i].trim_start().len() == code[i].trim_start().len()
+                {
+                    declaration = Some((leading_whitespace(lines[i]), lines[i].trim_start()));
                     i += 1;
                 }
                 break;
             }
         }
-        let Some(declaration) = declaration else {
+        let Some((indent, declaration)) = declaration.filter(|_| !commented) else {
             out.extend(lines[start..i].iter().map(|s| s.to_string()));
             continue;
         };
@@ -240,7 +275,23 @@ pub(crate) fn configured(
                 .collect::<Vec<_>>()
                 .join(" ")
         );
-        let long = rules.above_when_long && candidate.chars().count() > width;
+        // Comment reflow lays out a doc comment on the declaration line to the
+        // width itself, moving the code after it to its last line, so only the
+        // text before it counts; otherwise the next run could decide
+        // differently once the comment is wrapped. Other block comments keep
+        // their layout and count like code.
+        let doc_comment = crate::syntax::spans(declaration)
+            .into_iter()
+            .find(|(kind, range)| {
+                *kind == crate::syntax::Span::BlockComment
+                    && (declaration[range.start..].starts_with("/--")
+                        || declaration[range.start..].starts_with("/-!"))
+            })
+            .map(|(_, range)| range.start);
+        let measured = doc_comment.map_or(candidate.as_str(), |k| {
+            candidate[..candidate.len() - declaration.len() + k].trim_end()
+        });
+        let long = rules.above_when_long && measured.chars().count() > width;
         let mut rendered = Vec::new();
         for (attr, p) in &attrs {
             if *p == P::Above || long {
@@ -257,7 +308,13 @@ pub(crate) fn configured(
         }
         out.extend(rendered);
     }
-    (out.join("\n"), changed, warnings)
+    let mut out = out.join("\n");
+    // lines()/join() drop the final line ending, which would also drop a
+    // trailing blank line, such as one before a directive.
+    if source.ends_with('\n') {
+        out.push('\n');
+    }
+    (out, changed, warnings)
 }
 
 #[cfg(test)]
@@ -277,6 +334,12 @@ mod tests {
     fn preserves_indentation() {
         let src = "  @[simp]\n  lemma foo : True := trivial\n";
         assert_eq!(normalize(src), "  @[simp] lemma foo : True := trivial");
+    }
+
+    #[test]
+    fn uses_declaration_indentation() {
+        let src = "  @[simp]\nlemma foo : True := trivial\n";
+        assert_eq!(normalize(src), "@[simp] lemma foo : True := trivial");
     }
 
     #[test]

@@ -114,6 +114,55 @@ fn precedence_user_project_explicit_config_selector_and_set() {
     assert!(report["files"].as_array().unwrap().is_empty());
 }
 #[test]
+fn normalize_without_reflow_formats_delimiters_and_preserves_paragraphs() {
+    let dir = Scratch::new();
+    fs::write(
+        dir.0.join("project/.leanck.toml"),
+        "[normalize]\nwidth = 60\ncomment_reflow = false\n",
+    )
+    .unwrap();
+    let paragraph = "This Markdown paragraph is longer than the configured width and must keep its line breaks until reflow is enabled.";
+    let source = format!(
+        "/-! # Module\n\n{paragraph}\n-/\n\n/--\n# Result\n\n{paragraph}\nSee the reference. -/\ntheorem demo : True := by trivial\n"
+    );
+    let expected = format!(
+        "/-!\n# Module\n\n{paragraph}\n-/\n\n/-- # Result\n\n{paragraph}\nSee the reference. -/\ntheorem demo : True := by trivial\n"
+    );
+    let path = dir.0.join("project/Example.lean");
+    fs::write(&path, source).unwrap();
+    let output = dir.run(&["normalize", "Example.lean"]);
+    assert!(output.status.success(), "{:?}", output);
+    assert_eq!(fs::read_to_string(&path).unwrap(), expected);
+    assert!(
+        dir.run(&["normalize", "--dry-run", "Example.lean"])
+            .status
+            .success()
+    );
+    let output = dir.run(&[
+        "normalize",
+        "--set",
+        "normalize.comment_reflow=true",
+        "Example.lean",
+    ]);
+    assert!(output.status.success(), "{:?}", output);
+    let wrapped = fs::read_to_string(&path).unwrap();
+    assert!(!wrapped.contains(paragraph));
+    assert!(wrapped.lines().all(|line| line.chars().count() <= 60));
+    assert!(wrapped.lines().all(|line| line.trim_end() == line));
+    assert!(
+        dir.run(&[
+            "normalize",
+            "--set",
+            "normalize.comment_reflow=true",
+            "--dry-run",
+            "Example.lean",
+        ])
+        .status
+        .success()
+    );
+}
+
+#[test]
 fn normalize_uses_target_config_dry_run_excludes_and_flags() {
     let dir = Scratch::new();
     fs::create_dir_all(dir.0.join("project/generated")).unwrap();

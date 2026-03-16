@@ -13,9 +13,9 @@ import Alpha
 /-!
 # color center
 
-this module doc has a terribly long sentence with color and
-organisation details: it should be capitalized after the colon and
-wrapped at a narrow width.
+this module doc has a terribly long sentence with color and organisation
+details: it should be capitalized after the colon and wrapped at a
+narrow width.
 
 * a bullet with a continuation line that has extra content about
   marginalizing cases and favoring stable indentation and this

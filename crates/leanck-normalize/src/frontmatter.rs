@@ -44,13 +44,92 @@ pub fn normalize_with_options(source: &str, _year: i32, options: Options) -> Str
 // Line classification
 // ---------------------------------------------------------------------------
 
+/// Whether a line begins with Lean 4.28's `[public] [meta] import` command.
 fn is_import(line: &str) -> bool {
-    let t = line.trim_start();
-    t.starts_with("import ") || t.starts_with("public import ")
+    let mut words = line.split_whitespace().peekable();
+    words.next_if_eq(&"public");
+    words.next_if_eq(&"meta");
+    words.next() == Some("import")
 }
 
-fn is_public_import(line: &str) -> bool {
-    line.trim_start().starts_with("public import ")
+/// A line holding exactly one `[public] [meta] import [all] Name` command.
+struct Import<'a> {
+    public: bool,
+    meta: bool,
+    words: Vec<&'a str>,
+}
+
+fn parse_import(line: &str) -> Option<Import<'_>> {
+    let words: Vec<_> = line.split_whitespace().collect();
+    let mut rest = words.as_slice();
+    let mut keyword = |word| {
+        let found = rest.first() == Some(&word);
+        if found {
+            rest = &rest[1..];
+        }
+        found
+    };
+    let public = keyword("public");
+    let meta = keyword("meta");
+    if !keyword("import") {
+        return None;
+    }
+    keyword("all");
+    matches!(rest, [name] if !is_import_keyword(name)).then_some(Import {
+        public,
+        meta,
+        words,
+    })
+}
+
+fn is_import_keyword(word: &str) -> bool {
+    matches!(word, "import" | "public" | "meta" | "all")
+}
+
+/// The code seen by frontmatter: strings and comments are masked, but `/--`
+/// openers stay visible because a declaration docstring begins a command and
+/// so ends the module header. Module docstrings stay transparent, so one
+/// misplaced before the imports can still be reordered after them.
+fn code_view(source: &str) -> String {
+    let mut view = crate::syntax::code_mask(source).into_bytes();
+    for (kind, range) in crate::syntax::spans(source) {
+        if kind == crate::syntax::Span::BlockComment && source[range.start..].starts_with("/--") {
+            view[range.start..range.start + 3].copy_from_slice(b"/--");
+        }
+    }
+    String::from_utf8(view).expect("restoring an ASCII opener keeps the view UTF-8")
+}
+
+/// Number of leading lines in Lean's module header: optional `module` and
+/// `prelude`, then the imports. Lean accepts imports nowhere else.
+fn header_lines(view: &str) -> usize {
+    let mut words = view
+        .lines()
+        .enumerate()
+        .flat_map(|(n, line)| line.split_whitespace().map(move |word| (n, word)))
+        .peekable();
+    let mut end = 0;
+    for keyword in ["module", "prelude"] {
+        if let Some((n, _)) = words.next_if(|(_, word)| *word == keyword) {
+            end = n + 1;
+        }
+    }
+    loop {
+        let mut command = words.clone();
+        command.next_if(|(_, word)| *word == "public");
+        command.next_if(|(_, word)| *word == "meta");
+        if command.next_if(|(_, word)| *word == "import").is_none() {
+            return end;
+        }
+        command.next_if(|(_, word)| *word == "all");
+        match command.next() {
+            Some((n, name)) if !is_import_keyword(name) => {
+                end = n + 1;
+                words = command;
+            }
+            _ => return end,
+        }
+    }
 }
 
 /// Matches `@[expose] public section` and `@[expose] public noncomputable
@@ -126,9 +205,10 @@ pub(crate) fn configured(
             if let Some(header) = replacement {
                 out.replace_range(range, &header);
             } else if rules.frontmatter.normalize_existing {
-                let body = &out[range.start + 2..range.end - 2];
-                let body = body.lines().map(str::trim).collect::<Vec<_>>().join("\n");
-                let normalized = format!("/-\n{}\n-/", body.trim());
+                let normalized = format!(
+                    "/-\n{}\n-/",
+                    delimited_body(&out[range.start + 2..range.end - 2])
+                );
                 out.replace_range(range, &normalized);
             }
         }
@@ -139,12 +219,15 @@ pub(crate) fn configured(
     }
     let mut lines: Vec<_> = out.lines().map(str::to_owned).collect();
     if options.sort_imports {
-        sort_imports_configured(&mut lines, &rules.imports);
+        let view = code_view(&out);
+        sort_imports_configured(&mut lines, &view, &rules.imports);
     }
     let mut out = reorder(&lines.join("\n"), &rules.frontmatter, context.module_name);
-    if source.ends_with('\n') && !out.ends_with('\n') {
-        out.push('\n');
-    }
+    // Keep the source's trailing line endings, which lines()/join() and
+    // reordering drop, so a blank line before a directive survives.
+    let tail = &source[source.trim_end_matches(['\r', '\n']).len()..];
+    out.truncate(out.trim_end_matches(['\r', '\n']).len());
+    out.extend(std::iter::repeat_n('\n', tail.matches('\n').count()));
     out
 }
 
@@ -272,6 +355,26 @@ fn matches_header_template(header: &str, rules: &leanck_config::FrontmatterRules
     regex::Regex::new(&pattern).is_ok_and(|regex| regex.is_match(&body))
 }
 
+/// Trim only the whitespace next to the delimiters of a header body: blank
+/// lines after `/-`, spaces before text on the opening line, and whitespace
+/// before `-/`. Indentation inside the comment is retained.
+fn delimited_body(body: &str) -> &str {
+    let mut body = body.trim_end();
+    if body
+        .lines()
+        .next()
+        .is_none_or(|first| !first.trim().is_empty())
+    {
+        return body.trim_start();
+    }
+    while let Some((first, rest)) = body.split_once('\n')
+        && first.trim().is_empty()
+    {
+        body = rest;
+    }
+    body
+}
+
 fn comment_body(comment: &str) -> String {
     let comment = comment.trim();
     comment[2..comment.len() - 2]
@@ -296,49 +399,67 @@ fn append_literal_pattern(pattern: &mut String, literal: &str) {
     }
 }
 
-fn sort_imports_configured(lines: &mut Vec<String>, rules: &leanck_config::ImportRules) {
+/// Sort and deduplicate runs of import lines in Lean's module header. A line
+/// joins a run only when it is one complete import command with no comment, so
+/// the code view and the raw text agree on every line that moves.
+fn sort_imports_configured(
+    lines: &mut Vec<String>,
+    view: &str,
+    rules: &leanck_config::ImportRules,
+) {
     use leanck_config::ImportOrder;
     if rules.order == ImportOrder::Off && !rules.deduplicate {
         return;
     }
+    let code: Vec<_> = view.lines().collect();
+    let header = header_lines(view).min(lines.len());
+    let imports: Vec<_> = (0..header)
+        .map(|i| {
+            if code.get(i) != Some(&lines[i].as_str()) {
+                return None;
+            }
+            let import = parse_import(&lines[i])?;
+            Some((import.public, import.meta, import.words.join(" ")))
+        })
+        .collect();
+    let mut out = Vec::with_capacity(lines.len());
     let mut i = 0;
-    while i < lines.len() {
-        let masked = crate::syntax::code_mask(&lines.join("\n"));
-        let code: Vec<_> = masked.lines().collect();
-        if !is_import(code.get(i).copied().unwrap_or("")) || lines[i].contains("--") {
+    while i < header {
+        if imports[i].is_none() {
+            out.push(std::mem::take(&mut lines[i]));
             i += 1;
             continue;
         }
         let start = i;
         i += 1;
-        while i < lines.len()
-            && ((is_import(code.get(i).copied().unwrap_or("")) && !lines[i].contains("--"))
-                || (!rules.preserve_groups && lines[i].trim().is_empty()))
+        while i < header
+            && (imports[i].is_some() || (!rules.preserve_groups && lines[i].trim().is_empty()))
         {
             i += 1;
         }
-        let last = (start..i).rev().find(|j| is_import(&lines[*j])).unwrap() + 1;
-        let mut imports: Vec<_> = lines[start..last]
-            .iter()
-            .filter(|l| is_import(l))
-            .cloned()
+        // Blank lines after the run's last import stay outside it.
+        while imports[i - 1].is_none() {
+            i -= 1;
+        }
+        let mut run: Vec<_> = (start..i)
+            .filter_map(|j| {
+                let (public, meta, words) = imports[j].clone()?;
+                Some((public, meta, words, std::mem::take(&mut lines[j])))
+            })
             .collect();
         if rules.order == ImportOrder::Alphabetical {
-            imports.sort_by_key(|l| {
-                (
-                    rules.public_first && !is_public_import(l),
-                    l.trim().to_owned(),
-                )
+            run.sort_by_cached_key(|(public, meta, _, line)| {
+                (rules.public_first && !public, !meta, line.trim().to_owned())
             });
         }
         if rules.deduplicate {
             let mut seen = std::collections::HashSet::new();
-            imports.retain(|l| seen.insert(l.trim().to_owned()));
+            run.retain(|(_, _, words, _)| seen.insert(words.clone()));
         }
-        let count = imports.len();
-        lines.splice(start..last, imports);
-        i = start + count;
+        out.extend(run.into_iter().map(|(_, _, _, line)| line));
     }
+    out.extend(lines.drain(header..));
+    *lines = out;
 }
 
 /// Only the recognized initial prefix is reordered; body declarations are a barrier.
@@ -349,8 +470,12 @@ fn reorder(
 ) -> String {
     use leanck_config::FrontmatterPart as P;
     let lines: Vec<_> = source.lines().collect();
-    let mask = crate::syntax::code_mask(source);
-    let code: Vec<_> = mask.lines().collect();
+    let line_starts: Vec<_> = std::iter::once(0)
+        .chain(source.match_indices('\n').map(|(n, _)| n + 1))
+        .collect();
+    let view = code_view(source);
+    let code: Vec<_> = view.lines().collect();
+    let header = header_lines(&view);
     let mut blocks: Vec<(P, String)> = Vec::new();
     let mut i = 0;
     while i < lines.len() {
@@ -361,24 +486,38 @@ fn reorder(
         let t = lines[i].trim_start();
         let start = i;
         let part = if t.starts_with("/-") && !t.starts_with("/--") {
-            let part = if t.starts_with("/-!") {
-                P::Docstring
-            } else {
-                P::Header
-            };
-            let remaining = lines[i..].join("\n");
-            let Some(end) = remaining.find("-/") else {
+            // Only a comment that opens the file is a header. A later plain
+            // comment is unrecognized content, so hoisting it cannot turn it
+            // into a header on the next run.
+            let open = line_starts[i] + lines[i].len() - t.len();
+            let Some(end) = crate::syntax::block_end(source, open) else {
                 break;
             };
-            let count = remaining[..end + 2].lines().count();
-            i += count;
+            // A section heading, such as a converted banner, belongs to the
+            // body rather than being the module docstring. Comment reflow
+            // makes the same distinction.
+            let part = if t.starts_with("/-!") {
+                if crate::reflow::is_section_heading_text(&source[open + 3..end - 2]) {
+                    break;
+                }
+                P::Docstring
+            } else if blocks.is_empty() {
+                P::Header
+            } else {
+                break;
+            };
+            let last = i + source[open..end].matches('\n').count();
+            if !lines[last][end - line_starts[last]..].trim().is_empty() {
+                break;
+            }
+            i = last + 1;
             part
-        } else if code.get(i).is_some_and(|c| c.trim() == "module") {
+        } else if i < header && code.get(i).is_some_and(|c| c.trim() == "module") {
             i += 1;
             P::Module
-        } else if is_import(code.get(i).copied().unwrap_or("")) {
+        } else if i < header && is_import(code.get(i).copied().unwrap_or("")) {
             i += 1;
-            while i < lines.len()
+            while i < header
                 && (is_import(code.get(i).copied().unwrap_or("")) || lines[i].trim().is_empty())
             {
                 i += 1;
@@ -547,8 +686,9 @@ mod tests {
 
     #[test]
     fn section_is_moved_after_docstring() {
-        let src =
-            "/-\nx\n-/\nmodule\n\nimport Foo\n\n@[expose] public section\n\n/-!\n# Title\n-/\n";
+        // A docstring that is only a title is a section heading, so these
+        // module docstrings have a body.
+        let src = "/-\nx\n-/\nmodule\n\nimport Foo\n\n@[expose] public section\n\n/-!\n# Title\n\nBody.\n-/\n";
         let out = normalize(src, YEAR);
         let section = out
             .lines()
@@ -561,8 +701,7 @@ mod tests {
 
     #[test]
     fn noncomputable_section_is_carried_along() {
-        let src =
-            "/-\nx\n-/\nmodule\n\n@[expose] public noncomputable section\n\n/-!\n# Title\n-/\n";
+        let src = "/-\nx\n-/\nmodule\n\n@[expose] public noncomputable section\n\n/-!\n# Title\n\nBody.\n-/\n";
         let out = normalize(src, YEAR);
         let lines: Vec<&str> = out.lines().collect();
         let section = lines
@@ -575,7 +714,7 @@ mod tests {
 
     #[test]
     fn section_already_after_docstring_stays() {
-        let src = "/-\nx\n-/\nmodule\n\n/-!\n# Title\n-/\n\n@[expose] public section\n";
+        let src = "/-\nx\n-/\nmodule\n\n/-!\n# Title\n\nBody.\n-/\n\n@[expose] public section\n";
         let out = normalize(src, YEAR);
         // Idempotent: running again yields the same text.
         assert_eq!(normalize(&out, YEAR), out);
@@ -583,8 +722,7 @@ mod tests {
 
     #[test]
     fn namespace_between_docstring_and_section_moves_after_section() {
-        let src =
-            "/-\nx\n-/\nmodule\n\n/-!\n# Title\n-/\n\nnamespace Foo\n\n@[expose] public section\n";
+        let src = "/-\nx\n-/\nmodule\n\n/-!\n# Title\n\nBody.\n-/\n\nnamespace Foo\n\n@[expose] public section\n";
         let out = normalize(src, YEAR);
         let lines: Vec<&str> = out.lines().collect();
         let title = lines.iter().position(|l| l.contains("# Title")).unwrap();
@@ -598,8 +736,7 @@ mod tests {
     fn namespace_moves_when_section_precedes_docstring() {
         // section before docstring, namespace already after: section is moved
         // after the docstring, and the namespace ends up after the section.
-        let src =
-            "/-\nx\n-/\nmodule\n\n@[expose] public section\n\n/-!\n# Title\n-/\n\nnamespace Foo\n";
+        let src = "/-\nx\n-/\nmodule\n\n@[expose] public section\n\n/-!\n# Title\n\nBody.\n-/\n\nnamespace Foo\n";
         let out = normalize(src, YEAR);
         let lines: Vec<&str> = out.lines().collect();
         let title = lines.iter().position(|l| l.contains("# Title")).unwrap();
@@ -614,7 +751,7 @@ mod tests {
     fn inverse_case_docstring_last_is_fully_reordered() {
         // Original order: section, namespace, docstring, body. Must become
         // docstring, section, namespace, body.
-        let src = "/-\nx\n-/\nmodule\n\n@[expose] public section\n\nnamespace Foo\n\n/-!\n# Title\n-/\n\ndef foo := 1\n";
+        let src = "/-\nx\n-/\nmodule\n\n@[expose] public section\n\nnamespace Foo\n\n/-!\n# Title\n\nBody.\n-/\n\ndef foo := 1\n";
         let out = normalize(src, YEAR);
         let lines: Vec<&str> = out.lines().collect();
         let title = lines.iter().position(|l| l.contains("# Title")).unwrap();

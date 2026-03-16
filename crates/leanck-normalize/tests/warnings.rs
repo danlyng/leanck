@@ -58,7 +58,19 @@ fn no_reflow_linkification_also_applies_with_unchanged_delimiter_layout() {
         "{}",
         result.output
     );
-    assert!(result.output.starts_with("/--\n"));
+    assert_eq!(
+        result.output,
+        source.replace(
+            "https://example.test",
+            "[https://example.test](https://example.test)"
+        )
+    );
+    assert_eq!(
+        normalize_with_context(&result.output, 10, options, &rules, &Context::default())
+            .unwrap()
+            .output,
+        result.output
+    );
 }
 
 #[test]

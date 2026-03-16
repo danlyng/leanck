@@ -15,7 +15,7 @@ members = [
 
 [workspace.package]
 edition = "2024"
-version = "0.36.1"
+version = "0.39.0"
 
 [workspace.dependencies]
 anyhow = "1.0.102"
@@ -36,7 +36,6 @@ libc = "0.2.186"
 lsp-server = "0.10.0"
 lsp-types = "0.95.1"
 markdown = "1.0.0"
-markdown-reflow = { version = "0.5.0", git = "https://github.com/danlyng/markdown-reflow.git", rev = "7da4b3abc1505533dd0bf02456ef0b7e6e712797" }
 regex = "1.12.3"
 reqwest = { version = "0.13.3", features = ["json", "query"] }
 rmcp = "1.7.0"

@@ -93,6 +93,7 @@ fn fixture_path(case: &str, kind: &str) -> std::path::PathBuf {
 
 fn run_normalizer(case: &Case, input: &str) -> String {
     let mut child = Command::new(env!("CARGO_BIN_EXE_leanck-normalize"))
+        .arg("--no-config")
         .args(case.extra_args)
         .args(["--width", case.width])
         .stdin(Stdio::piped())

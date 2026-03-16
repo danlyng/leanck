@@ -204,16 +204,19 @@ pub fn run_with_settings(args: Args, settings: &leanck_config::Normalize) -> any
                     "note: stdin has no file history; missing attribution header left absent"
                 );
             }
-            let result = crate::normalize_with_context(
-                &input,
-                args.width,
-                options,
-                &settings.rules,
-                &crate::Context {
-                    dictionary: dictionary.as_ref(),
-                    ..Default::default()
-                },
-            )?;
+            let _panics = PanicCapture::install();
+            let result = catch_panic(|| {
+                Ok(crate::normalize_with_context(
+                    &input,
+                    args.width,
+                    options,
+                    &settings.rules,
+                    &crate::Context {
+                        dictionary: dictionary.as_ref(),
+                        ..Default::default()
+                    },
+                )?)
+            })?;
             for warning in &result.warnings {
                 if let Some(line) = warning.line {
                     eprintln!("warning: stdin:{line}: {}", warning.message);
@@ -275,9 +278,19 @@ fn run_path(
     let mut changed = 0;
     let mut failed = 0;
     let mut totals = Stats::default();
+    // Directory runs group missing-history notes by reason, so a tree outside
+    // any repository yields one note rather than one per file.
+    let mut history_notes: std::collections::BTreeMap<String, Vec<&Path>> = Default::default();
+    let _panics = PanicCapture::install();
     for path in &files {
-        let result = (|| -> anyhow::Result<_> {
+        let result = catch_panic(|| -> anyhow::Result<_> {
             let original = fs::read_to_string(path)?;
+            #[cfg(debug_assertions)]
+            if std::env::var("LEANCK_NORMALIZE_TEST_PANIC")
+                .is_ok_and(|marker| !marker.is_empty() && original.contains(&marker))
+            {
+                panic!("test panic requested by LEANCK_NORMALIZE_TEST_PANIC");
+            }
             let existing_header = crate::frontmatter::leading_header(&original).is_some();
             let mut replacement_history_error = None;
             let history = if (path.extension().is_some_and(|e| e == "lean")
@@ -293,6 +306,8 @@ fn run_path(
                     Err(reason) => {
                         if existing_header {
                             replacement_history_error = Some(reason);
+                        } else if is_dir && !args.verbose {
+                            history_notes.entry(reason).or_default().push(path);
                         } else {
                             eprintln!(
                                 "note: {}: {reason}; missing attribution header left absent",
@@ -338,10 +353,10 @@ fn run_path(
                 return Ok(None);
             }
             if !args.dry_run {
-                fs::write(path, &result.output)?;
+                write_atomically(path, &result.output)?;
             }
             Ok(Some(result.stats))
-        })();
+        });
         match result {
             Ok(Some(stats)) => {
                 changed += 1;
@@ -365,6 +380,18 @@ fn run_path(
                 failed += 1;
                 eprintln!("error in {}: {error:#}", path.display());
             }
+        }
+    }
+    for (reason, paths) in &history_notes {
+        match paths.as_slice() {
+            [path] => eprintln!(
+                "note: {}: {reason}; missing attribution header left absent",
+                path.display()
+            ),
+            _ => eprintln!(
+                "note: {reason}; missing attribution headers left absent in {} files (use --verbose to list them)",
+                paths.len()
+            ),
         }
     }
     if is_dir {
@@ -396,6 +423,152 @@ fn run_path(
         "{changed} file(s) need normalization"
     );
     Ok(())
+}
+
+type PanicHook = Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Sync + Send>;
+
+std::thread_local! {
+    static LAST_PANIC: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// While installed, panics on this thread are recorded for the file being
+/// normalized instead of printed; other threads keep the previous hook.
+struct PanicCapture(Option<std::sync::Arc<PanicHook>>);
+
+impl PanicCapture {
+    fn install() -> Self {
+        let previous = std::sync::Arc::new(std::panic::take_hook());
+        let fallback = previous.clone();
+        let thread = std::thread::current().id();
+        std::panic::set_hook(Box::new(move |info| {
+            if std::thread::current().id() == thread {
+                let message = info.to_string().replace('\n', " ");
+                LAST_PANIC.with(|last| *last.borrow_mut() = Some(message));
+            } else {
+                fallback(info);
+            }
+        }));
+        Self(Some(previous))
+    }
+}
+
+impl Drop for PanicCapture {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        drop(std::panic::take_hook());
+        if let Some(previous) = self.0.take() {
+            match std::sync::Arc::try_unwrap(previous) {
+                Ok(previous) => std::panic::set_hook(previous),
+                Err(previous) => std::panic::set_hook(Box::new(move |info| previous(info))),
+            }
+        }
+    }
+}
+
+/// Turn a panic while normalizing one file into that file's error, so the
+/// remaining files are still processed and the summary is still printed.
+fn catch_panic<T>(f: impl FnOnce() -> anyhow::Result<T>) -> anyhow::Result<T> {
+    // Forget panics that were caught and handled while normalizing earlier files.
+    LAST_PANIC.with(|last| last.borrow_mut().take());
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|payload| {
+        let message = LAST_PANIC
+            .with(|last| last.borrow_mut().take())
+            .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "panic".to_owned());
+        Err(anyhow::anyhow!(
+            "internal error ({message}); file left unchanged"
+        ))
+    })
+}
+
+/// Replace a file through a temporary sibling and a rename, so an interrupted
+/// run never leaves a partially written source. Permissions are preserved, and
+/// a symbolic link is followed so the link itself stays in place. A rename
+/// would separate the file from its other hard links and give it the new
+/// file's owner and group, and it needs a writable directory, so in those
+/// cases the file is overwritten in place, as an editor would. Extended
+/// attributes and access control lists are not copied to the new file. There
+/// is no fsync: it guards only against power loss and more than triples the
+/// time of a large directory run.
+fn write_atomically(path: &Path, contents: &str) -> io::Result<()> {
+    use std::io::Write;
+    let target = fs::canonicalize(path)?;
+    let (Some(dir), Some(name)) = (target.parent(), target.file_name()) else {
+        return Err(io::Error::other("cannot replace a path without a parent"));
+    };
+    let metadata = fs::metadata(&target)?;
+    if has_other_links(&metadata) {
+        return fs::write(&target, contents);
+    }
+    let mut attempt = 0;
+    loop {
+        let temp = dir.join(format!(
+            ".{}.leanck-{}-{attempt}.tmp",
+            name.to_string_lossy(),
+            std::process::id()
+        ));
+        let mut file = match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists && attempt < 100 => {
+                attempt += 1;
+                continue;
+            }
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                return fs::write(&target, contents);
+            }
+            Err(error) => {
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!("cannot create {}: {error}", temp.display()),
+                ));
+            }
+        };
+        if !same_owner(&metadata, &file.metadata()?) {
+            drop(file);
+            let _ = fs::remove_file(&temp);
+            return fs::write(&target, contents);
+        }
+        let result = file
+            .write_all(contents.as_bytes())
+            .and_then(|()| file.set_permissions(metadata.permissions()))
+            .and_then(|()| fs::rename(&temp, &target));
+        if result.is_err() {
+            let _ = fs::remove_file(&temp);
+        }
+        return result;
+    }
+}
+
+/// Whether other hard links share the file, which a rename would leave with
+/// the old contents.
+#[cfg(unix)]
+fn has_other_links(metadata: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    metadata.nlink() > 1
+}
+
+#[cfg(not(unix))]
+fn has_other_links(_: &fs::Metadata) -> bool {
+    false
+}
+
+/// Whether two files have the same owner and group.
+#[cfg(unix)]
+fn same_owner(a: &fs::Metadata, b: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    (a.uid(), a.gid()) == (b.uid(), b.gid())
+}
+
+#[cfg(not(unix))]
+fn same_owner(_: &fs::Metadata, _: &fs::Metadata) -> bool {
+    true
 }
 
 /// Hidden entries and symlinks are always skipped during recursive traversal.

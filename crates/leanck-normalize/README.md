@@ -23,7 +23,7 @@ flags.
 
 ## Acknowledgments
 
-The UK/US English replacement dictionaries are provided by Marcus Deacey (https://github.com/mdeacey/english-spelling-mapper) under license:
+The UK/US English replacement dictionaries are provided by Marcus Deacey (https://github.com/mdeacey/english-spelling-mapper) under the license below. Some entries that are wrong or ambiguous in mathematical prose are excluded when the maps are applied and exported; the exclusion lists are in `src/spelling.rs`.
 ```
 MIT License
 
@@ -64,4 +64,6 @@ The pure `normalize_with_context` API accepts explicit history and compiled dict
 
 Project configuration may be named `leanck.toml` or `.leanck.toml`; `leanck.toml` wins when both exist in the same directory. The `normalize.rules.frontmatter.author_map` table maps exact, case-sensitive Git names after mailmap resolution to display strings in generated or explicitly replaced headers. Exclusions apply first; unmapped names and retained existing headers stay unchanged. For example, `author_map = { "git-handle" = "Full Name" }` inside `[normalize.rules.frontmatter]` changes both the author list and copyright attribution. The pure API applies the same mapping to supplied history.
 
-Normalization returns nonfatal diagnostics in `NormalizeResult.warnings`; command entry points print warnings on stderr. Config inspection exposes warnings that do not depend on source content. URL linkification works independently of comment wrapping, using the pinned Markdown engine's disabled-width transformation mode.
+Normalization returns nonfatal diagnostics in `NormalizeResult.warnings`; command entry points print warnings on stderr. Config inspection exposes warnings that do not depend on source content. URL linkification works independently of comment wrapping: without reflow it only inserts `[url](url)` around bare URLs and leaves the rest of the comment text unchanged.
+
+A comment rewrite is kept only when it reads as the same Markdown and keeps the Lean comment delimiters, and only once rewriting it again changes nothing; otherwise the comment is left byte-identical. A panic while normalizing a file in directory mode is reported as an error for that file, which is left unchanged, and the remaining files are still processed. Files are rewritten through a temporary sibling and a rename, keeping permissions and following symbolic links. A file with other hard links, a file whose owner or group a new file would not get, or a file in a directory that cannot be written is overwritten in place instead; extended attributes and access control lists are not carried over by a rename.

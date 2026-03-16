@@ -117,7 +117,7 @@ template = "/-! {hashes} {title} -/"
 
 #! These rules apply when `normalize.spelling` is not `off`.
 [normalize.rules.spelling]
-use_builtin = true # Set false to ignore built-in dictionaries; supply custom dictionaries below.
+use_builtin = true # Set false to ignore built-in dictionaries (applied minus documented exclusions); supply custom dictionaries below.
 #! Relative file paths to JSON word-to-replacement files, e.g. {"origin":"destination"}.
 #! Precedence: built-in map < files in order < inline replacements < protected words.
 #! Export the built-in map with: leanck normalize --export-dictionary american
@@ -146,9 +146,9 @@ above_when_long = false # If "same_line": Move above when the combined line exce
 #! Import rules. Only applied when normalize.frontmatter and normalize.sort_imports are true.
 [normalize.rules.imports]
 order = "alphabetical" # "off" skips sorting; grouping/deduplication remain enabled.
-public_first = true # Put public imports first within each sortable group.
+public_first = true # Put public imports first within each sortable group; meta imports sort first within each.
 preserve_groups = true # Keep blank-line-separated groups; never sort across comments.
-deduplicate = true # Remove exact duplicate import lines within each sortable group.
+deduplicate = true # Remove duplicate import lines (ignoring whitespace) within each sortable group.
 
 [normalize.rules.comments]
 #! Each accepts "compact", "separate", or "off" delimiter placement:

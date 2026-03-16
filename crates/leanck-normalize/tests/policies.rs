@@ -145,7 +145,6 @@ fn directives_disable_all_or_specific_rules_and_preserve_line_endings() {
     );
     let input = "/-- colour -/\r\n";
     assert_eq!(apply(input, &rules), "/-- color -/\r\n");
-    let mut rules = rules;
     rules.whitespace.line_endings = LineEndings::Lf;
     rules.whitespace.final_newline = FinalNewline::Remove;
     assert_eq!(apply(input, &rules), "/-- color -/");

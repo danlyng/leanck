@@ -1680,9 +1680,9 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         calls = [c for c in self.calls() if c[0] != "curl"]
         self.assertEqual(calls, [
             ["claude", "plugin", "marketplace", "add", str(bundle)],
-            ["claude", "plugin", "install", "leanck@leanck-installer", "--scope", "user"],
+            ["claude", "plugin", "install", "leanck@leanck", "--scope", "user"],
             ["codex", "plugin", "marketplace", "add", str(bundle)],
-            ["codex", "plugin", "add", "leanck@leanck-installer"],
+            ["codex", "plugin", "add", "leanck@leanck"],
         ])
         self.assertIn("data/leanck/bin", (self.home / ".zshrc").read_text())
         self.run_install("--all")
@@ -1797,6 +1797,9 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
             for host in ("claude", "codex"):
                 manifest = json.load(archive.extractfile(f"leanck/plugin/.{host}-plugin/plugin.json"))
                 self.assertEqual(manifest["version"], "1.2.3")
+                path = ".claude-plugin" if host == "claude" else ".agents/plugins"
+                catalog = json.load(archive.extractfile(f"leanck/{path}/marketplace.json"))
+                self.assertEqual(catalog["name"], "leanck")
             catalog = json.load(archive.extractfile("leanck/.agents/plugins/marketplace.json"))
             self.assertEqual(catalog["plugins"][0]["source"]["path"], "./plugin")
 
@@ -1855,8 +1858,8 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         self.log.write_text("")
         self.run_uninstall()
         self.assertEqual(self.calls(), [
-            ["codex", "plugin", "remove", "leanck@leanck-installer"],
-            ["codex", "plugin", "marketplace", "remove", "leanck-installer"],
+            ["codex", "plugin", "remove", "leanck@leanck"],
+            ["codex", "plugin", "marketplace", "remove", "leanck"],
         ])
         self.assertFalse((self.home / "data/leanck/bundle").exists())
         self.assertFalse((self.home / "data/leanck/agents").exists())
@@ -1904,7 +1907,7 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         del self.env["LEANCK_TEST_HOST_FAILURE"]
         self.log.write_text("")
         self.run_uninstall()
-        self.assertNotIn(["claude", "plugin", "uninstall", "leanck@leanck-installer", "--scope", "user"], self.calls())
+        self.assertNotIn(["claude", "plugin", "uninstall", "leanck@leanck", "--scope", "user"], self.calls())
 
     def test_uninstall_rejects_symlink_parents_and_tree_links(self):
         self.run_install("--skills", "claude", "--agents", "codex")

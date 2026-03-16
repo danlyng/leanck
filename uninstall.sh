@@ -168,15 +168,15 @@ remove_record() {
         command -v "$expected" >/dev/null 2>&1 || die "$expected is unavailable; restore it to unregister the plugin, then rerun"
         if [ "$expected" = claude ]; then
             if [ "$kind" = host ]; then
-                run_bounded env CLAUDE_CONFIG_DIR="$path" claude plugin uninstall leanck@leanck-installer --scope user || return 1
+                run_bounded env CLAUDE_CONFIG_DIR="$path" claude plugin uninstall leanck@leanck --scope user || return 1
             else
-                run_bounded env CLAUDE_CONFIG_DIR="$path" claude plugin marketplace remove leanck-installer --scope user || return 1
+                run_bounded env CLAUDE_CONFIG_DIR="$path" claude plugin marketplace remove leanck --scope user || return 1
             fi
         else
             if [ "$kind" = host ]; then
-                run_bounded env CODEX_HOME="$path" codex plugin remove leanck@leanck-installer || return 1
+                run_bounded env CODEX_HOME="$path" codex plugin remove leanck@leanck || return 1
             else
-                run_bounded env CODEX_HOME="$path" codex plugin marketplace remove leanck-installer || return 1
+                run_bounded env CODEX_HOME="$path" codex plugin marketplace remove leanck || return 1
             fi
         fi
     elif [ -e "$path" ] || [ -L "$path" ]; then

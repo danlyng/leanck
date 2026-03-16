@@ -1,5 +1,5 @@
 use regex::Regex;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::LazyLock;
 
 /// Controls which direction to auto-correct comment spellings.
@@ -124,7 +124,11 @@ impl Dictionary {
         // Pass 1 – exact dictionary matches (longest-first). This also covers
         // multi-token keys like "battle-axe" that the inflection pass cannot.
         let exact = self.regex.replace_all(text, |caps: &regex::Captures| {
-            let matched = caps.get(0).unwrap().as_str();
+            let found = caps.get(0).unwrap();
+            let matched = found.as_str();
+            if identifier_like(text, found.range()) {
+                return matched.to_owned();
+            }
             let key = if self.case_sensitive {
                 matched.to_owned()
             } else {
@@ -148,7 +152,11 @@ impl Dictionary {
             return exact.into_owned();
         }
         WORD.replace_all(&exact, |caps: &regex::Captures| {
-            let matched = caps.get(0).unwrap().as_str();
+            let found = caps.get(0).unwrap();
+            let matched = found.as_str();
+            if identifier_like(&exact, found.range()) {
+                return matched.to_owned();
+            }
             let key = if self.case_sensitive {
                 matched.to_owned()
             } else {
@@ -204,7 +212,24 @@ impl Dictionary {
                     // "programing", which the dictionary corrects to the
                     // consonant-doubled "programming"). Defer to the dictionary
                     // when it has an opinion on the inflected result.
-                    let inflected = inflect(&replacement, infl);
+                    //
+                    // Where the replacement is a prefix of the base and the
+                    // inflected word doubles the replacement's final consonant,
+                    // both spellings double it before `-ed` and `-ing`: British
+                    // "fulfil" still gives "fulfilled" and "fulfilling", and
+                    // American "program" gives "programmed", not "programed".
+                    let doubled = replacement.chars().last().filter(|c| {
+                        matches!(infl, Inflection::Past | Inflection::Gerund)
+                            && c.is_ascii_alphabetic()
+                            && !matches!(c, 'a' | 'e' | 'i' | 'o' | 'u' | 'y')
+                            && base.starts_with(replacement.as_str())
+                            && word.starts_with(&format!("{replacement}{c}"))
+                    });
+                    let inflected = match (doubled, infl) {
+                        (Some(c), Inflection::Past) => format!("{replacement}{c}ed"),
+                        (Some(c), _) => format!("{replacement}{c}ing"),
+                        (None, _) => inflect(&replacement, infl),
+                    };
                     return Some(
                         self.replacements
                             .get(&inflected)
@@ -316,6 +341,56 @@ fn candidate_bases(word: &str) -> Vec<String> {
     bases
 }
 
+// ---------------------------------------------------------------------------
+// Lean names in prose
+// ---------------------------------------------------------------------------
+
+/// True when the word at `range` is part of a Lean name rather than an English
+/// word, so its spelling is part of the name and must not change.
+///
+/// Word-boundary matching already skips words joined to letters, digits, or
+/// `_` (`colour_space`, `colour2`, and `ColourSpace`, which as a whole is not a
+/// dictionary word). This also skips names joined by characters that are not
+/// regex word characters: a dot (`Colour.red`, `foo.normalise`, `.colour`), a
+/// prime (`colour'`, `colour'_def`), or a subscript (`colour₁`), and words with
+/// internal capitals (`colourIn`, but not `COLOUR`). A sentence-final period (`the colour.`),
+/// possessives (`colour's`, `colours'`), and quotes (`'colour'`, `'the colour'`) stay prose.
+fn identifier_like(text: &str, range: std::ops::Range<usize>) -> bool {
+    let word = &text[range.clone()];
+    let before = text[..range.start].chars().next_back();
+    let mut after = text[range.end..].chars();
+    let (next, following) = (after.next(), after.next());
+    let name_char = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+    // Capitals after the first letter, unless the whole word is capitalized.
+    let camel_case =
+        word.chars().skip(1).any(char::is_uppercase) && word.chars().any(char::is_lowercase);
+    let primed = next == Some('\'')
+        && !following.is_some_and(|c| c.is_alphabetic())
+        && !in_single_quotes(&text[..range.start])
+        && !word.ends_with(['s', 'S']);
+    camel_case
+        || primed
+        || before == Some('.')
+        || (next == Some('.') && name_char(following))
+        || name_char(before)
+        || name_char(next)
+}
+
+/// Whether `before` ends inside a phrase opened by a single quote at the
+/// start of a word in the same paragraph, so that a quote after the next
+/// word closes the phrase rather than priming a name.
+fn in_single_quotes(before: &str) -> bool {
+    let Some(quote) = before.rfind('\'') else {
+        return false;
+    };
+    let opens = before[..quote]
+        .chars()
+        .next_back()
+        .is_none_or(|c| c.is_whitespace() || "([{\"“".contains(c));
+    let phrase = &before[quote + 1..];
+    opens && !phrase.starts_with(char::is_whitespace) && !phrase.contains("\n\n")
+}
+
 /// Mirror the case of `original` onto `replacement`.
 fn preserve_case(original: &str, replacement: &str) -> String {
     if original.is_empty() {
@@ -341,11 +416,125 @@ fn preserve_case(original: &str, replacement: &str) -> String {
 // Static dictionaries (embedded at compile time)
 // ---------------------------------------------------------------------------
 
-static B2A: LazyLock<Dictionary> =
-    LazyLock::new(|| Dictionary::from_json(include_str!("../assets/british_to_american_sp.json")));
+// The asset files are third-party (see the crate README) and stay verbatim.
+// These entries are removed from them because the replacement is wrong, or the
+// source word has another common meaning, in mathematical and software prose.
+// Inflections of a removed word are no longer inferred either. Users can restore
+// an entry through `normalize.rules.spelling.replacements`.
 
-static A2B: LazyLock<Dictionary> =
-    LazyLock::new(|| Dictionary::from_json(include_str!("../assets/american_to_british_sp.json")));
+/// Removed from the British → American dictionary.
+const BRITISH_TO_AMERICAN_EXCLUSIONS: &[&str] = &[
+    // American usage has the same spelling ("gauge theory", "cancellation").
+    "aesthete",
+    "aesthetic",
+    "archaeological",
+    "cancellation",
+    "dialogue",
+    "epilogue",
+    "exorcise",
+    "fillet",
+    "gauge",
+    "glamour",
+    "monologue",
+    "prologue",
+    "travelogue",
+    // "Analogue" (an analogous object, a q-analogue) is standard in American
+    // mathematics; "analog" is only the electronics sense.
+    "analogue",
+    // American plurals are also "buses" and "gases"; "busses" means kisses.
+    "buses",
+    "gases",
+    "minibuses",
+    // A different word or unit, not a spelling variant.
+    "bevvy",
+    "gryphon",
+    "mum",
+    "tonne",
+];
+
+/// Removed from the American → British dictionary.
+const AMERICAN_TO_BRITISH_EXCLUSIONS: &[&str] = &[
+    // British keeps these spellings in common senses ("computer program", "disk
+    // drive", "first draft", "check" as a verb, "analog signal", "dialog box"),
+    // where the British variant names something else ("storey", "tyre", "metre").
+    "analog",
+    "check",
+    "dialog",
+    "disk",
+    "draft",
+    "meter",
+    "program",
+    "story",
+    "tire",
+    "ton",
+    // British distinguishes noun from verb: the noun stays "practice", and the
+    // verb "license" (with "licensing") stays.
+    "license",
+    "licensing",
+    "practice",
+    // Mathematical names and variables ("Gram matrix", "ax + b"), a programming
+    // language, and SI units that British English also spells "-gram".
+    "ax",
+    "centigram",
+    "gram",
+    "kilogram",
+    "milligram",
+    "prolog",
+    // Standard British spellings too; the replacement is a rare or archaic variant.
+    "almanac",
+    "banister",
+    "cipher",
+    "connection",
+    "gluing",
+    "inflection",
+    "inquire",
+    "install",
+    "jail",
+    "medieval",
+    "misspelled",
+    "pizzazz",
+    "presidium",
+    "primeval",
+    "siphon",
+    "wagon",
+    // Not British spellings: misspellings, plurals of another word, or another word.
+    "bevy",
+    "busses",
+    "edema",
+    "externalization",
+    "filet",
+    "gasses",
+    "griffon",
+    "minibusses",
+];
+
+/// A built-in dictionary without its excluded entries, as sorted JSON.
+fn builtin_dictionary(json: &str, exclusions: &[&str]) -> String {
+    let mut map: BTreeMap<String, String> =
+        serde_json::from_str(json).expect("failed to parse spelling dictionary JSON");
+    for word in exclusions {
+        map.remove(*word);
+    }
+    serde_json::to_string_pretty(&map).expect("failed to serialize spelling dictionary") + "\n"
+}
+
+static B2A_JSON: LazyLock<String> = LazyLock::new(|| {
+    builtin_dictionary(
+        include_str!("../assets/british_to_american_sp.json"),
+        BRITISH_TO_AMERICAN_EXCLUSIONS,
+    )
+});
+
+static A2B_JSON: LazyLock<String> = LazyLock::new(|| {
+    builtin_dictionary(
+        include_str!("../assets/american_to_british_sp.json"),
+        AMERICAN_TO_BRITISH_EXCLUSIONS,
+    )
+});
+
+static B2A: LazyLock<Dictionary> = LazyLock::new(|| Dictionary::from_json(&B2A_JSON));
+
+static A2B: LazyLock<Dictionary> = LazyLock::new(|| Dictionary::from_json(&A2B_JSON));
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -359,15 +548,12 @@ pub fn correct_spelling(text: &str, direction: SpellingDirection) -> String {
     }
 }
 
-/// Editable built-in dictionaries, in their original JSON representation.
+/// Editable built-in dictionaries as applied, in JSON: the bundled maps without
+/// the entries this crate excludes.
 pub fn builtin_json(direction: SpellingDirection) -> &'static str {
     match direction {
-        SpellingDirection::BritishToAmerican => {
-            include_str!("../assets/british_to_american_sp.json")
-        }
-        SpellingDirection::AmericanToBritish => {
-            include_str!("../assets/american_to_british_sp.json")
-        }
+        SpellingDirection::BritishToAmerican => &B2A_JSON,
+        SpellingDirection::AmericanToBritish => &A2B_JSON,
     }
 }
 pub fn configured_map(
@@ -524,6 +710,142 @@ mod tests {
     fn already_converted_words_are_untouched() {
         assert_eq!(b2a("marginalized"), "marginalized");
         assert_eq!(b2a("colorful coloring"), "colorful coloring");
+    }
+
+    #[test]
+    fn lean_names_in_prose_keep_their_spelling() {
+        for name in [
+            "Colour.red",
+            "foo.normalise",
+            ".colour",
+            "Colour.Space.red",
+            "colour'",
+            "colour''",
+            "colour'_def",
+            "colour₁",
+            "colour_space",
+            "colour2",
+            "ColourSpace",
+            "colourIn",
+            "COLOURed",
+        ] {
+            let source = format!("see {name} here");
+            assert_eq!(b2a(&source), source);
+        }
+        let source = "see Color.red, foo.normalize, and center'";
+        assert_eq!(a2b(source), source);
+    }
+
+    #[test]
+    fn prose_punctuation_next_to_words_is_still_corrected() {
+        for (british, american) in [
+            ("the colour.", "the color."),
+            ("the colour. Next", "the color. Next"),
+            ("the colour.\nNext", "the color.\nNext"),
+            ("(the colour.)", "(the color.)"),
+            ("we normalise...", "we normalize..."),
+            ("the colour's hue", "the color's hue"),
+            ("the colours' hues", "the colors' hues"),
+            ("the word 'colour'", "the word 'color'"),
+            ("COLOUR", "COLOR"),
+        ] {
+            assert_eq!(b2a(british), american);
+        }
+    }
+
+    #[test]
+    fn british_inflections_keep_a_doubled_final_l() {
+        assert_eq!(
+            a2b("fulfilled fulfilling fulfills distilled enrolling instills appalled"),
+            "fulfilled fulfilling fulfils distilled enrolling instils appalled"
+        );
+        assert_eq!(a2b("fulfill distill"), "fulfil distil");
+    }
+
+    #[test]
+    fn american_inflections_keep_a_doubled_final_consonant() {
+        assert_eq!(
+            b2a("programmed programming programmes"),
+            "programmed programming programs"
+        );
+    }
+
+    #[test]
+    fn every_exclusion_names_a_bundled_entry() {
+        for (json, exclusions) in [
+            (
+                include_str!("../assets/british_to_american_sp.json"),
+                BRITISH_TO_AMERICAN_EXCLUSIONS,
+            ),
+            (
+                include_str!("../assets/american_to_british_sp.json"),
+                AMERICAN_TO_BRITISH_EXCLUSIONS,
+            ),
+        ] {
+            let map: HashMap<String, String> = serde_json::from_str(json).unwrap();
+            for word in exclusions {
+                assert!(map.contains_key(*word), "{word} is not a bundled entry");
+            }
+        }
+    }
+
+    #[test]
+    fn excluded_entries_and_their_inflections_are_left_alone() {
+        let source = "gauge gauges gauged tonne tonnes cancellation buses gases analogue \
+                      analogues dialogue prologue aesthetic";
+        assert_eq!(b2a(source), source);
+        let source = "program programs check checked checking story stories tire tired \
+                      license licensed licensing practice practices meter meters ton tons \
+                      draft drafts disk disks analog dialog Gram gram grams ax install \
+                      gluing gluings";
+        assert_eq!(a2b(source), source);
+    }
+
+    #[test]
+    fn retained_entries_still_apply() {
+        assert_eq!(
+            b2a("cancelled storey storeys draught licence programme metre disc analyse"),
+            "canceled story stories draft license program meter disk analyze"
+        );
+        assert_eq!(
+            a2b("canceled cancelation practicing licenses? centimeter catalog"),
+            "cancelled cancellation practising licenses? centimetre catalogue"
+        );
+    }
+
+    #[test]
+    fn exported_dictionaries_are_the_applied_dictionaries() {
+        for (direction, exclusions) in [
+            (
+                SpellingDirection::BritishToAmerican,
+                BRITISH_TO_AMERICAN_EXCLUSIONS,
+            ),
+            (
+                SpellingDirection::AmericanToBritish,
+                AMERICAN_TO_BRITISH_EXCLUSIONS,
+            ),
+        ] {
+            let exported: BTreeMap<String, String> =
+                serde_json::from_str(builtin_json(direction)).unwrap();
+            assert!(exported.len() > 400);
+            for word in exclusions {
+                assert!(!exported.contains_key(*word));
+                assert_eq!(correct_spelling(word, direction), *word);
+            }
+            for (word, replacement) in &exported {
+                assert_eq!(correct_spelling(word, direction), *replacement);
+            }
+            let configured = configured_map(
+                direction,
+                &leanck_config::DictionaryRules::default(),
+                &HashMap::new(),
+            )
+            .unwrap();
+            let words = exported.keys().map(String::as_str);
+            for word in words.chain(exclusions.iter().copied()) {
+                assert_eq!(configured.correct(word), correct_spelling(word, direction));
+            }
+        }
     }
 
     #[test]

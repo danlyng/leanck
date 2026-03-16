@@ -771,16 +771,12 @@ pub async fn register(receipt: &mut Receipt) -> Result<Outcome> {
                     vec![
                         "plugin".into(),
                         "install".into(),
-                        "leanck@leanck-installer".into(),
+                        "leanck@leanck".into(),
                         "--scope".into(),
                         "user".into(),
                     ]
                 } else {
-                    vec![
-                        "plugin".into(),
-                        "add".into(),
-                        "leanck@leanck-installer".into(),
-                    ]
+                    vec!["plugin".into(), "add".into(), "leanck@leanck".into()]
                 },
             ];
             for args in calls {

@@ -96,6 +96,9 @@ pub fn normalize_with_context(
     let mut stats = Stats::default();
     let mut warnings = options.configuration(width, rules).warnings();
     let mut cursor = 0;
+    // Lines before `cursor`, counted once per segment to stay linear.
+    let mut cursor_line = 0;
+    let newlines = |text: &str| text.bytes().filter(|b| *b == b'\n').count();
     let mut disabled = BTreeSet::new();
     let directives = if rules.directives {
         crate::syntax::line_comments(source)
@@ -126,7 +129,7 @@ pub fn normalize_with_context(
         } else {
             names.split(',').map(str::trim).collect()
         };
-        let line = source[..start].bytes().filter(|b| *b == b'\n').count() + 1;
+        let line = cursor_line + newlines(&source[cursor..start]) + 1;
         let mut selected = BTreeSet::new();
         for name in names {
             if name == "all" {
@@ -179,11 +182,13 @@ pub fn normalize_with_context(
             &mut out,
             &mut stats,
             &mut warnings,
-            source[..cursor].bytes().filter(|b| *b == b'\n').count(),
+            cursor_line,
+            crate::reflow::precedes_guard_msgs(source, start, false),
         )?;
         first = false;
         let end = range.end + usize::from(source.as_bytes().get(range.end) == Some(&b'\n'));
         out.push_str(&source[start..end]);
+        cursor_line += newlines(&source[cursor..end]);
         cursor = end;
         if verb == "off" {
             disabled.extend(selected);
@@ -207,9 +212,21 @@ pub fn normalize_with_context(
         &mut out,
         &mut stats,
         &mut warnings,
-        source[..cursor].bytes().filter(|b| *b == b'\n').count(),
+        cursor_line,
+        false,
     )?;
     if !disabled.contains(&Rule::Whitespace) {
+        if options.collapse_blank_lines {
+            // Blank lines at the end of the file separate nothing.
+            let mut end = out.len();
+            while out[..end].ends_with('\n') {
+                end -= 1 + usize::from(out[..end - 1].ends_with('\r'));
+            }
+            if end < out.len() {
+                let ending = if out[end..].starts_with("\r\n") { 2 } else { 1 };
+                out.truncate(end + ending);
+            }
+        }
         let final_newline = match rules.whitespace.final_newline {
             FinalNewline::Off => source.ends_with('\n'),
             FinalNewline::Ensure => true,
@@ -217,9 +234,18 @@ pub fn normalize_with_context(
         };
         if final_newline {
             if !out.ends_with('\n') {
+                // A lone carriage return before the new line ending would be
+                // trailing whitespace on its line, which the next run removes.
+                if out.ends_with('\r') {
+                    out.pop();
+                }
+                // Unchanged line endings continue the style of the last line.
+                let crlf = match out.rfind('\n') {
+                    Some(end) => out[..end].ends_with('\r'),
+                    None => source.contains("\r\n"),
+                };
                 if rules.whitespace.line_endings == LineEndings::Crlf
-                    || (rules.whitespace.line_endings == LineEndings::Off
-                        && source.contains("\r\n"))
+                    || (rules.whitespace.line_endings == LineEndings::Off && crlf)
                 {
                     out.push_str("\r\n");
                 } else {
@@ -253,6 +279,7 @@ fn append_segment(
     stats: &mut Stats,
     warnings: &mut Vec<leanck_config::Warning>,
     line_offset: usize,
+    guard_msgs_after: bool,
 ) -> Result<(), NormalizeError> {
     if source.is_empty() {
         return Ok(());
@@ -288,6 +315,7 @@ fn append_segment(
         rules,
         &context,
         comment_layout,
+        guard_msgs_after,
     )?;
     let style = if disabled.contains(&Rule::Whitespace) {
         LineEndings::Off
@@ -296,6 +324,18 @@ fn append_segment(
     };
     if style == LineEndings::Crlf || (style == LineEndings::Off && source.contains("\r\n")) {
         out.push_str(&result.output.replace('\n', "\r\n"));
+    } else if style == LineEndings::Lf {
+        // A carriage return left before a line feed would read as a CRLF
+        // line ending in the next run, which removes it; remove it now.
+        for line in result.output.split_inclusive('\n') {
+            match line.strip_suffix('\n') {
+                Some(line) => {
+                    out.push_str(line.trim_end_matches('\r'));
+                    out.push('\n');
+                }
+                None => out.push_str(line),
+            }
+        }
     } else {
         out.push_str(&result.output);
     }
