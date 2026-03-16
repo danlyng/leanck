@@ -187,6 +187,14 @@ impl Fixture {
             .parse()
             .unwrap();
         self.daemon_identity = Some((pid, leanck_core::instances::process_start_id(pid)));
+        let slot = scan(self.runtime().directory())
+            .into_iter()
+            .find(|entry| entry.record.pid == pid)
+            .expect("daemon's instance slot");
+        assert_eq!(
+            slot.record.version.as_deref(),
+            Some(env!("CARGO_PKG_VERSION"))
+        );
         assert_eq!(health.lifecycle.state, LifecycleState::Ready);
         health
     }

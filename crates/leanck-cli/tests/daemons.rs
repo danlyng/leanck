@@ -58,6 +58,65 @@ fn json(output: &Output) -> serde_json::Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
+fn terminal_listing(cache: &Path, cwd: &Path, verbose: bool, columns: u16) -> String {
+    use std::fs::File;
+    use std::os::fd::FromRawFd;
+    let mut master = -1;
+    let mut slave = -1;
+    let mut size = libc::winsize {
+        ws_row: 40,
+        ws_col: columns,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // SAFETY: openpty receives valid writable fd pointers and a valid window size.
+    assert_eq!(
+        unsafe {
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut size,
+            )
+        },
+        0
+    );
+    // SAFETY: a successful openpty returned descriptors owned by this scope.
+    let mut master = unsafe { File::from_raw_fd(master) };
+    // SAFETY: the slave descriptor is distinct from the master and is owned here.
+    let slave = unsafe { File::from_raw_fd(slave) };
+    let mut command = Command::new(env!("CARGO_BIN_EXE_leanck"));
+    command
+        .env_remove("XDG_RUNTIME_DIR")
+        .env("XDG_CACHE_HOME", cache)
+        .env("TERM", "xterm-256color")
+        .env("NO_COLOR", "1")
+        .env_remove("LEANCK_CONFIG")
+        .current_dir(cwd)
+        .args(["--no-config", "daemons", "list"])
+        .stdin(std::process::Stdio::null())
+        .stdout(slave)
+        .stderr(std::process::Stdio::null());
+    if verbose {
+        command.arg("--verbose");
+    }
+    let mut child = command.spawn().unwrap();
+    drop(command);
+    let mut output = Vec::new();
+    let mut chunk = [0_u8; 4096];
+    loop {
+        match master.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(length) => output.extend_from_slice(&chunk[..length]),
+            Err(error) if error.raw_os_error() == Some(libc::EIO) => break,
+            Err(error) => panic!("read terminal: {error}"),
+        }
+    }
+    assert!(child.wait().unwrap().success());
+    String::from_utf8(output).unwrap().replace('\r', "")
+}
+
 #[test]
 fn listing_with_no_slot_directory_is_empty_and_creates_nothing() {
     let scratch = Scratch::new("empty");
@@ -168,6 +227,24 @@ fn fake_daemon(
     active: u64,
     busy_at_shutdown: bool,
 ) -> (u32, JoinHandle<Vec<String>>) {
+    fake_daemon_version(
+        slots,
+        slot,
+        worktree,
+        active,
+        busy_at_shutdown,
+        Some(env!("CARGO_PKG_VERSION")),
+    )
+}
+
+fn fake_daemon_version(
+    slots: &Path,
+    slot: u32,
+    worktree: &Path,
+    active: u64,
+    busy_at_shutdown: bool,
+    version: Option<&str>,
+) -> (u32, JoinHandle<Vec<String>>) {
     std::fs::create_dir_all(worktree).unwrap();
     let mut child: Child = Command::new("sleep").arg("60").spawn().unwrap();
     let pid = child.id();
@@ -179,6 +256,7 @@ fn fake_daemon(
         "worktree": worktree,
         "socket": socket,
         "started_at": leanck_core::instances::now_unix_secs(),
+        "version": version,
     });
     std::fs::write(
         slots.join(format!("leanck-slot-{slot}.lock")),
@@ -231,6 +309,95 @@ fn fake_daemon(
         served
     });
     (pid, server)
+}
+
+#[test]
+fn verbose_inventory_and_incompatible_stop_use_semver_not_executable_paths() {
+    let scratch = Scratch::new("versions");
+    let cache = scratch.cache();
+    let slots = cache.join("leanck");
+    std::fs::create_dir_all(&slots).unwrap();
+    let mut compatible = semver::Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+    compatible.patch += 1;
+    let compatible = compatible.to_string();
+    let incompatible = format!(
+        "{}.0.0",
+        semver::Version::parse(env!("CARGO_PKG_VERSION"))
+            .unwrap()
+            .major
+            + 1
+    );
+    let versions = [
+        Some(compatible.as_str()),
+        Some(incompatible.as_str()),
+        None,
+        Some("development"),
+    ];
+    let mut servers = Vec::new();
+    // Every process uses /bin/sleep, at a different path than the CLI. Only
+    // the version recorded by the running daemon determines compatibility.
+    for (slot, version) in versions.into_iter().enumerate() {
+        servers.push(
+            fake_daemon_version(
+                &slots,
+                slot as u32,
+                &scratch.0.join(format!("wt{slot}")),
+                0,
+                false,
+                version,
+            )
+            .1,
+        );
+    }
+    let plain = json(&leanck(&cache, &scratch.0, &["daemons", "list", "--json"]));
+    let verbose = json(&leanck(
+        &cache,
+        &scratch.0,
+        &["daemons", "list", "--verbose", "--json"],
+    ));
+    let wide = terminal_listing(&cache, &scratch.0, false, 160);
+    let narrow = terminal_listing(&cache, &scratch.0, true, 40);
+    let stopped = json(&leanck(
+        &cache,
+        &scratch.0,
+        &["daemons", "stop", "--incompatible", "--json"],
+    ));
+    let remaining = json(&leanck(&cache, &scratch.0, &["daemons", "list", "--json"]));
+    // Clean up every child before checking assertions.
+    let _ = leanck(&cache, &scratch.0, &["daemons", "stop", "--all"]);
+    for server in servers {
+        assert_eq!(server.join().unwrap().last().unwrap(), "shutdown");
+    }
+    for (text, width) in [(&wide, 160), (&narrow, 40)] {
+        assert!(text.contains('│'), "{text}");
+        assert!(text.contains("Worktree"), "{text}");
+        assert!(
+            text.lines().all(|line| line.chars().count() <= width),
+            "{text}"
+        );
+        assert!(
+            !text.contains('\u{1b}'),
+            "NO_COLOR must suppress ANSI escapes"
+        );
+    }
+    assert!(!wide.contains("Version"));
+    assert!(!wide.contains("Compatible"));
+    assert!(narrow.contains("Version"));
+    assert!(narrow.contains("Compatible"));
+    assert!(plain.get("incompatible").is_none());
+    assert!(plain.get("cli_version").is_none());
+    assert!(plain["daemons"][0].get("version").is_none());
+    assert_eq!(verbose["incompatible"], 1, "{verbose}");
+    assert_eq!(verbose["cli_version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(verbose["daemons"][0]["version"], compatible);
+    assert_eq!(verbose["daemons"][0]["compatible"], true);
+    assert_eq!(verbose["daemons"][1]["version"], incompatible);
+    assert_eq!(verbose["daemons"][1]["compatible"], false);
+    assert!(verbose["daemons"][2]["compatible"].is_null());
+    assert!(verbose["daemons"][3]["compatible"].is_null());
+    assert_eq!(stopped["stopped"].as_array().unwrap().len(), 1, "{stopped}");
+    assert_eq!(stopped["skipped"].as_array().unwrap().len(), 3);
+    assert_eq!(remaining["running"], 3);
 }
 
 #[test]

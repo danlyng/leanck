@@ -115,7 +115,16 @@ mod tests {
         let Cmd::Daemons(args) = Cli::try_parse_from(["leanck", "daemons"]).unwrap().command else {
             unreachable!()
         };
-        assert!(args.action.is_none() && !args.json);
+        assert!(args.action.is_none() && !args.json && !args.verbose);
+        for argv in [
+            vec!["leanck", "daemons", "list", "--verbose", "--json"],
+            vec!["leanck", "daemons", "-v"],
+        ] {
+            let Cmd::Daemons(args) = Cli::try_parse_from(argv).unwrap().command else {
+                unreachable!()
+            };
+            assert!(args.verbose);
+        }
         let Cmd::Daemons(args) = Cli::try_parse_from(["leanck", "daemons", "list", "--json"])
             .unwrap()
             .command
@@ -151,6 +160,7 @@ mod tests {
             vec!["leanck", "daemons", "stop"],
             vec!["leanck", "daemons", "stop", "--idle", "--all"],
             vec!["leanck", "daemons", "stop", "/wt", "--all"],
+            vec!["leanck", "daemons", "stop", "--incompatible", "--all"],
         ] {
             assert!(Cli::try_parse_from(argv).is_err());
         }

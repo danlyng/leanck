@@ -74,7 +74,7 @@ Use `--standalone` for the standalone CLI and optional skills and custom agents.
 
 Codex agent definitions use the `leanck/` subdirectory in both modes by default; advanced config or `--codex-agents-dir DIR` overrides the agent destination. Additional locations can also be selected with repeatable `--extra-skills-dir DIR`, `--extra-claude-agents-dir DIR`, and `--extra-codex-agents-dir DIR` flags. The installer honors [`CODEX_HOME`](https://learn.chatgpt.com/docs/config-file/config-advanced#config-and-state-locations), which defaults to `~/.codex`; `--codex-dir DIR` explicitly overrides that location. Unchanged installer-managed definitions from the former flat `agents/` layout are backed up and migrated into `agents/leanck/`. Unrelated files and local edits are preserved.
 
-Native updates preserve the installed MCP setting. Plugin remains the default on each run. Standalone mode reuses previous component and destination choices; command-line flags override them. A pinned `--version` remains pinned until you choose `latest`. After upgrading, run `leanck daemons stop --all` to retire daemons using the previous executable. Existing files from another source and locally edited managed components require a keep/replace/cancel choice, or `--force` in automation. Older managed copies without content fingerprints are treated as conflicts. Replacements retain numbered backups with a `manifest.tsv` mapping original paths to backup paths. File installation failures restore prior files; host plugin registration can leave partial external changes, which the installer reports so the same selections can be rerun.
+Native updates preserve the installed MCP setting. Plugin remains the default on each run. Standalone mode reuses previous component and destination choices; command-line flags override them. A pinned `--version` remains pinned until you choose `latest`. After approval and before replacing files, the installer offers to stop running daemons whose version is SemVer-incompatible with the CLI being installed; `--yes` accepts automatically. Compatible daemons and daemons with an unknown version are left running. Existing files from another source and locally edited managed components require a keep/replace/cancel choice, or `--force` in automation. Older managed copies without content fingerprints are treated as conflicts. Replacements retain numbered backups with a `manifest.tsv` mapping original paths to backup paths. File installation failures restore prior files; host plugin registration can leave partial external changes, which the installer reports so the same selections can be rerun.
 
 Shell completions support Bash, Zsh, Fish, PowerShell, and Elvish; select a shell in advanced config or with `--completions SHELL`, or disable them with `--completions none`. Completion directories honor `XDG_CONFIG_HOME` or `XDG_DATA_HOME` as appropriate; `--completions-dir DIR` overrides the selected destination, and `--fish-completions-dir DIR` sets the Fish default. Bash and Fish use their standard completion directories. For Zsh, include the completion directory in `fpath` before calling `compinit`; for PowerShell, load the generated script from your profile; for Elvish, load it with `use leanck`. These completion choices do not edit startup files. Completion defaults follow the detected supported shell, with saved choices and explicit flags taking precedence. Plugin installs offer PATH setup by default; standalone installs keep the existing opt-in prompt or `--add-to-path`; `--verbose` includes the exact profile and command after advanced configuration, and the installer preserves the rest of the profile. Use `--shell fish|bash|zsh` and `--path-file FILE` to customize it. Shell startup files are otherwise untouched. `--no-add-to-path` disables a remembered profile update, and `--cli` enables the executable after a previous `--no-cli` selection.
 
@@ -151,7 +151,9 @@ leanck doctor
 
 # List leanckd daemons on this machine, or stop the idle ones
 leanck daemons
+leanck daemons list --verbose    # Running versions and SemVer compatibility
 leanck daemons stop --idle
+leanck daemons stop --incompatible
 
 # Wait for elaboration and report errors (or add --severity error,warning / --all-severities)
 leanck diagnostics Main.lean
@@ -179,6 +181,8 @@ leanck loogle --constant Nat.add --conclusion "_ <= _"
 # Normalize comments, imports, and frontmatter
 leanck normalize Main.lean
 ```
+
+Daemon listings use a table on a terminal and switch to stacked field/value tables on narrow screens. Redirected output stays compact. `--verbose` adds the running daemon version and compatibility with the CLI; `--verbose --json` also includes an `incompatible` count. Versions are recorded at daemon startup, independent of executable paths. Stable versions are compatible within the same major version, or within the same minor version for `0.x`; `0.0.x` requires the same patch. Prereleases require an exact version match, ignoring build metadata. Missing or malformed versions are unknown and are never selected by `stop --incompatible`. This release policy is separate from wire-protocol negotiation.
 
 ## How it works
 

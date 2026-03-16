@@ -365,6 +365,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "comfy-table"
+version = "8.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b96a46ad395a5e00676eddaca4a45ed78b29c08be5a878d35e4b071c625637dd"
+dependencies = [
+ "crossterm",
+ "unicode-segmentation",
+ "unicode-width",
+]
+
+[[package]]
 name = "compact_str"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1354,12 +1365,13 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
 name = "leanck-cli"
-version = "0.39.0"
+version = "0.40.0"
 dependencies = [
  "anyhow",
  "clap",
  "clap_complete",
  "color-print",
+ "comfy-table",
  "flate2",
  "leanck-client",
  "leanck-config",
@@ -1371,6 +1383,7 @@ dependencies = [
  "leanck-update",
  "leanckd",
  "libc",
+ "semver",
  "serde",
  "serde_json",
  "tar",

@@ -119,6 +119,7 @@ fn acquire_slot(
     runtime: &RuntimePaths,
     worktree: &Path,
     instances: &leanck_config::Instances,
+    version: Option<String>,
 ) -> Result<SlotLock> {
     let record = SlotRecord {
         pid: std::process::id(),
@@ -128,6 +129,7 @@ fn acquire_slot(
         socket: runtime.socket(),
         started_at: now_unix_secs(),
         start_id: process_start_id(std::process::id()),
+        version,
     };
     let policy = match instances.on_limit {
         OnLimit::Warn => SlotPolicy::Continue,
@@ -185,6 +187,26 @@ pub async fn run_with_runtime_directory(
     settings: leanck_config::Settings,
     directory: Option<PathBuf>,
 ) -> Result<()> {
+    run_configured(worktree, settings, directory, None).await
+}
+
+/// Run a daemon hosted by a versioned executable. The version is recorded in
+/// its instance slot, including during warmup and protocol-incompatible health.
+pub async fn run_with_version(
+    worktree: &Path,
+    settings: leanck_config::Settings,
+    directory: Option<PathBuf>,
+    version: &str,
+) -> Result<()> {
+    run_configured(worktree, settings, directory, Some(version.to_owned())).await
+}
+
+async fn run_configured(
+    worktree: &Path,
+    settings: leanck_config::Settings,
+    directory: Option<PathBuf>,
+    version: Option<String>,
+) -> Result<()> {
     settings
         .validate()
         .map_err(|e| Error::BadRequest(format!("configuration: {e:#}")))?;
@@ -197,7 +219,7 @@ pub async fn run_with_runtime_directory(
         return Ok(());
     };
     // Returning an error here drops the worktree lock; nothing else was written yet.
-    let slot = acquire_slot(&runtime, worktree, &settings.instances)?;
+    let slot = acquire_slot(&runtime, worktree, &settings.instances, version)?;
     let owner = RuntimeOwner {
         socket: runtime.socket(),
         pid: runtime.pid(),

@@ -61,6 +61,9 @@ pub struct DaemonInfo {
     pub uptime_secs: u64,
     pub state: DaemonState,
     pub health: Option<HealthResult>,
+    /// Running host version, displayed only by verbose frontends.
+    #[serde(skip)]
+    pub version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -186,6 +189,7 @@ async fn list_across(dirs: &[PathBuf], settings: &Settings) -> Vec<DaemonInfo> {
                 started_at: record.started_at,
                 state,
                 health,
+                version: record.version,
                 error,
             }
         });
@@ -471,6 +475,7 @@ mod tests {
                     socket,
                     started_at,
                     start_id: None,
+                    version: None,
                 },
             );
         }
@@ -607,6 +612,7 @@ mod tests {
                     socket: socket.clone(),
                     started_at,
                     start_id: None,
+                    version: None,
                 },
             );
             servers.push(serve(
@@ -654,6 +660,7 @@ mod tests {
             uptime_secs: 0,
             state: DaemonState::Ready,
             health: None,
+            version: None,
             error: None,
         };
         let started = Instant::now();

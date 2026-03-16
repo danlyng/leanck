@@ -11,9 +11,13 @@ use leanck_client::{
 use leanck_config::Settings;
 use leanck_core::paths::RuntimePaths;
 use serde::Serialize;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::task::JoinSet;
+
+mod compatibility;
+mod table;
 
 const AFTER_HELP: &str = color_print::cstr!(
     r#"<underline,bold>Examples:</>
@@ -32,6 +36,9 @@ pub(crate) struct Args {
     /// Print machine-readable JSON instead of compact text.
     #[arg(long, global = true)]
     pub(crate) json: bool,
+    /// Show daemon versions and SemVer compatibility with this CLI.
+    #[arg(long, short, global = true)]
+    pub(crate) verbose: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -47,7 +54,7 @@ pub(crate) enum Action {
     ArgGroup::new("target")
         .required(true)
         .multiple(false)
-        .args(["worktree", "idle", "all"])
+        .args(["worktree", "idle", "all", "incompatible"])
 ))]
 pub(crate) struct StopArgs {
     /// Worktree whose daemon to stop.
@@ -60,6 +67,9 @@ pub(crate) struct StopArgs {
     /// Stop every daemon that is serving its socket.
     #[arg(long)]
     pub(crate) all: bool,
+    /// Stop only daemons with a known SemVer-incompatible version.
+    #[arg(long)]
+    pub(crate) incompatible: bool,
     /// Seconds to wait for each daemon to exit.
     #[arg(long, value_name = "SECS", default_value_t = 15)]
     pub(crate) wait: u64,
@@ -67,7 +77,7 @@ pub(crate) struct StopArgs {
 
 pub(crate) async fn run(args: Args) -> anyhow::Result<()> {
     match args.action {
-        None | Some(Action::List) => list(&args.settings, args.json).await,
+        None | Some(Action::List) => list(&args.settings, args.json, args.verbose).await,
         Some(Action::Stop(stop_args)) => stop(&args.settings, stop_args, args.json).await,
     }
 }
@@ -93,13 +103,48 @@ struct Listing<'a> {
     summary: Summary,
 }
 
-async fn list(settings: &Settings, json: bool) -> anyhow::Result<()> {
+#[derive(Serialize)]
+struct VerboseDaemon<'a> {
+    #[serde(flatten)]
+    daemon: &'a DaemonInfo,
+    version: Option<&'a str>,
+    compatible: Option<bool>,
+}
+
+async fn list(settings: &Settings, json: bool, verbose: bool) -> anyhow::Result<()> {
     let daemons = instances::list(settings).await;
     let summary = Summary {
         running: daemons.len() as u64,
         limit: settings.instances.limit,
         on_limit: settings.instances.on_limit,
     };
+    if json && verbose {
+        let daemons: Vec<_> = daemons
+            .iter()
+            .map(|daemon| VerboseDaemon {
+                version: daemon.version.as_deref(),
+                compatible: compatibility::check(daemon.version.as_deref()),
+                daemon,
+            })
+            .collect();
+        #[derive(Serialize)]
+        struct VerboseListing<'a> {
+            daemons: &'a [VerboseDaemon<'a>],
+            cli_version: &'static str,
+            incompatible: usize,
+            #[serde(flatten)]
+            summary: Summary,
+        }
+        return print_json(&VerboseListing {
+            cli_version: env!("CARGO_PKG_VERSION"),
+            incompatible: daemons
+                .iter()
+                .filter(|info| info.compatible == Some(false))
+                .count(),
+            daemons: &daemons,
+            summary,
+        });
+    }
     if json {
         return print_json(&Listing {
             daemons: &daemons,
@@ -110,11 +155,43 @@ async fn list(settings: &Settings, json: bool) -> anyhow::Result<()> {
         println!("no leanck daemons running");
         return Ok(());
     }
-    let rows: Vec<Vec<String>> = daemons.iter().map(row).collect();
+    if std::io::stdout().is_terminal() {
+        let width = comfy_table::Table::new().width().unwrap_or(80);
+        println!("{}", table::render(&daemons, verbose, width));
+        println!("{}", summary_line(&summary));
+        if verbose {
+            println!("CLI version {}", env!("CARGO_PKG_VERSION"));
+        }
+        return Ok(());
+    }
+    let rows: Vec<Vec<String>> = daemons
+        .iter()
+        .map(|info| {
+            let mut cells = row(info);
+            if verbose {
+                cells.push(format!(
+                    "version {}",
+                    info.version.as_deref().unwrap_or("unknown")
+                ));
+                cells.push(format!(
+                    "compatible {}",
+                    match compatibility::check(info.version.as_deref()) {
+                        Some(true) => "yes",
+                        Some(false) => "no",
+                        None => "unknown",
+                    }
+                ));
+            }
+            cells
+        })
+        .collect();
     for line in align(&rows) {
         println!("{line}");
     }
     println!("{}", summary_line(&summary));
+    if verbose {
+        println!("CLI version {}", env!("CARGO_PKG_VERSION"));
+    }
     Ok(())
 }
 
@@ -280,7 +357,11 @@ async fn stop(settings: &Settings, args: StopArgs, json: bool) -> anyhow::Result
         }
     } else {
         for info in daemons {
-            let reason = if args.idle {
+            let reason = if args.incompatible
+                && compatibility::check(info.version.as_deref()) != Some(false)
+            {
+                Some("version is compatible or unknown".into())
+            } else if args.idle {
                 not_idle_reason(&info)
             } else if info.state == DaemonState::Starting {
                 not_serving_reason(&info)
@@ -460,6 +541,7 @@ mod tests {
             uptime_secs: 75,
             state: DaemonState::Starting,
             health: None,
+            version: None,
             error: None,
         };
         let mut other = info.clone();

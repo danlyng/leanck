@@ -57,10 +57,11 @@ pub(crate) fn run(args: Args, config: ConfigArgs) -> anyhow::Result<()> {
             let root = leanck_core::workspace::WorkspaceRoot::from_path(worktree)?;
             let settings = config.load(root.as_path())?.settings;
             runtime
-                .block_on(leanckd::run_with_runtime_directory(
+                .block_on(leanckd::run_with_version(
                     root.as_path(),
                     settings,
                     runtime_dir,
+                    env!("CARGO_PKG_VERSION"),
                 ))
                 .map_err(anyhow::Error::from)
         }

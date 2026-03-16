@@ -555,6 +555,7 @@ mod tests {
             socket,
             started_at: now_unix_secs(),
             start_id: None,
+            version: None,
         };
         std::fs::write(
             slot_path(dir, slot),

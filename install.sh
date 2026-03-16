@@ -363,18 +363,55 @@ commit() {
     fi
     pending=''
 }
+# Format only human-readable command output; captured stdout stays untouched.
+command_output() {
+    case "$1" in
+        python3|leanck) source_label='' ;;
+        *) source_label=" ($1)" ;;
+    esac
+    LC_ALL=C awk -v source="$source_label" -v default_level="${2:-INFO}" -v quiet="$quiet" \
+        -v cyan="$cyan" -v yellow="$yellow" -v red="$red" -v reset="$reset" '
+    {
+        text=tolower($0); level=default_level; color=cyan
+        if (text ~ /(^|[^[:alnum:]_])(error|err|fatal|panic)([^[:alnum:]_]|$)/) level="ERR"
+        else if (text ~ /(^|[^[:alnum:]_])(warning|warn)([^[:alnum:]_]|$)/) level="WARN"
+        if (level == "ERR") color=red
+        else if (level == "WARN") color=yellow
+        if (quiet != 1 || level != "INFO") {
+            printf "%s[%s]%s%s %s\n", color, level, reset, source, $0
+            fflush()
+        }
+    }' >&2
+}
+run_logged() {
+    logged_limit=$1 logged_source=$2; shift 2
+    run_bounded "$logged_limit" "$logged_source" --log-stdout "$@"
+}
 # Bound external commands without depending on GNU timeout (absent on macOS).
 # The watchdog's trap also reaps its sleep when a fast command finishes.
 run_bounded() {
-    command_limit=$1; shift
-    "$@" &
+    command_limit=$1 command_source=$2; shift 2
+    command_log_stdout=0
+    if [ "${1:-}" = --log-stdout ]; then command_log_stdout=1; shift; fi
+    command_pipe=$work/command-output
+    mkfifo "$command_pipe"
+    command_output "$command_source" < "$command_pipe" &
+    command_logger=$!
+    if [ "$command_log_stdout" = 1 ]; then
+        mkfifo "$command_pipe.stdout"
+        command_output "$command_source" < "$command_pipe.stdout" &
+        command_stdout_logger=$!
+        "$@" > "$command_pipe.stdout" 2> "$command_pipe" &
+    else
+        "$@" 2> "$command_pipe" &
+    fi
     active_child=$!
     (
         sleeper=''
         trap '[ -z "$sleeper" ] || kill "$sleeper" 2>/dev/null; exit 0' TERM INT HUP
         sleep "$command_limit" & sleeper=$!
         wait "$sleeper" || exit 0
-        printf 'Command timed out after %s seconds: %s\n' "$command_limit" "$1" >&2
+        printf 'Command timed out after %s seconds: %s\n' "$command_limit" "$1" | command_output "$command_source" ERR
         kill -TERM "$active_child" 2>/dev/null || exit 0
         sleep 1 & sleeper=$!
         wait "$sleeper" || exit 0
@@ -386,6 +423,13 @@ run_bounded() {
     kill "$command_watchdog" 2>/dev/null || :
     wait "$command_watchdog" 2>/dev/null || :
     command_watchdog=''
+    wait "$command_logger" || :
+    command_logger=''
+    if [ -n "$command_stdout_logger" ]; then
+        wait "$command_stdout_logger" || :
+        command_stdout_logger=''
+    fi
+    rm -f "$command_pipe" "$command_pipe.stdout"
     return "$command_status"
 }
 stop_command() {
@@ -400,6 +444,17 @@ stop_command() {
         wait "$command_watchdog" 2>/dev/null || :
         command_watchdog=''
     fi
+    if [ -n "$command_logger" ]; then
+        kill "$command_logger" 2>/dev/null || :
+        wait "$command_logger" 2>/dev/null || :
+        command_logger=''
+    fi
+    if [ -n "$command_stdout_logger" ]; then
+        kill "$command_stdout_logger" 2>/dev/null || :
+        wait "$command_stdout_logger" 2>/dev/null || :
+        command_stdout_logger=''
+    fi
+    if [ -n "$work" ]; then rm -f "$work/command-output" "$work/command-output.stdout"; fi
 }
 rollback() {
     [ -s "$work/journal" ] || return 0
@@ -408,11 +463,11 @@ rollback() {
     awk '{line[NR]=$0} END {for(i=NR;i>0;i--) print line[i]}' "$work/journal" > "$work/rollback"
     tab=$(printf '\t')
     while IFS="$tab" read -r destination backup; do
-        if ! run_bounded 10 rm -rf "$destination"; then
+        if ! run_bounded 10 rm rm -rf "$destination"; then
             warn "Could not remove $destination during rollback; use the backups in $backup_dir"; continue
         fi
         if [ "$backup" != '-' ]; then
-            run_bounded 10 cp -p -R -P "$backup" "$destination" || warn "Restore $destination from $backup"
+            run_bounded 10 cp cp -p -R -P "$backup" "$destination" || warn "Restore $destination from $backup"
         fi
     done < "$work/rollback"
 }
@@ -523,7 +578,7 @@ download() {
                 return 0 ;;
         esac
     fi
-    cat "$2.error" >&2
+    command_output curl ERR < "$2.error"
     die "download failed: $1; check the release/tag and network connection"
 }
 
@@ -569,28 +624,28 @@ repo_command() {
     exec "$@"
 }
 build_repo_source() {
-    run_bounded "$timeout" python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' ||
+    run_logged "$timeout" python3 python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' ||
         die 'local source installation requires Python 3.11 or newer on PATH'
     if [ "$cli" = 1 ]; then
         for command in cargo rustc; do
             command -v "$command" >/dev/null 2>&1 || die "local builds require $command on PATH"
         done
-        run_bounded "$timeout" repo_command rustc -vV > "$work/rustc-version" || die 'could not determine the native Rust target'
+        run_bounded "$timeout" rustc repo_command rustc -vV > "$work/rustc-version" || die 'could not determine the native Rust target'
         native_target=$(awk '/^host: / {print $2; exit}' "$work/rustc-version")
         case "$native_target" in ''|*[!0-9A-Za-z_-]*) die 'could not determine the native Rust target' ;; esac
         say "Building leanck from $from_repo"
-        run_bounded "$timeout" repo_command cargo build --release --locked --package leanck-cli \
+        run_logged "$timeout" cargo repo_command cargo build --release --locked --package leanck-cli \
             --manifest-path "$from_repo/Cargo.toml" --target-dir "$from_repo/target" --target "$native_target" >&2 ||
             die 'local build failed; check the build output, or increase --timeout for a slow build'
         local_bin_dir=$from_repo/target/$native_target/release
     fi
     say 'Packaging local skills, agents, and plugin configuration'
     if [ "$cli" = 1 ]; then
-        run_bounded "$timeout" python3 "$from_repo/packaging/package_local.py" \
+        run_logged "$timeout" python3 python3 "$from_repo/packaging/package_local.py" \
             --bin-dir "$local_bin_dir" --output "$work/local-install" --version "$source_version" --inventory "$release" >&2 ||
             die 'could not package local source; no installation files were changed'
     else
-        run_bounded "$timeout" python3 "$from_repo/packaging/package_local.py" \
+        run_logged "$timeout" python3 python3 "$from_repo/packaging/package_local.py" \
             --output "$work/local-install" --version "$source_version" --inventory "$release" >&2 ||
             die 'could not package local source; no installation files were changed'
     fi
@@ -765,8 +820,8 @@ cleanup() {
         [ -n "$error" ] || error="Installer exited with status $exit_status; rerun with --verbose for details"
     fi
     emit_json
-    if [ -n "$pending" ]; then run_bounded 10 rm -rf "$pending"; fi
-    if [ -n "$work" ]; then run_bounded 10 rm -rf "$work"; fi
+    if [ -n "$pending" ]; then run_bounded 10 rm rm -rf "$pending"; fi
+    if [ -n "$work" ]; then run_bounded 10 rm rm -rf "$work"; fi
     exit "$exit_status"
 }
 load_state() {
@@ -822,7 +877,7 @@ save_state() {
         cat "$work/sources.tsv" > "$pending"
         commit "$pending" "$state_dir/sources.tsv"
         pending=$(mktemp "$state_dir/.leanck-install.XXXXXX")
-        run_bounded "$timeout" "$bin_dir/leanck" _update receipt --state-dir "$state_dir" --binary "$bin_dir/leanck" > "$pending" || die 'could not record native update ownership'
+        run_bounded "$timeout" leanck "$bin_dir/leanck" _update receipt --state-dir "$state_dir" --binary "$bin_dir/leanck" > "$pending" || die 'could not record native update ownership'
         commit "$pending" "$state_dir/receipt.json"
         pending=$(mktemp "$bin_dir/.leanck-install.XXXXXX")
         { printf '{"state_dir":'; json_string "$state_dir"; printf '}\n'; } > "$pending"
@@ -1420,7 +1475,7 @@ apply_extras() {
         else
             pending=$(mktemp "$completion_dir/.leanck-install.XXXXXX")
             # Preserve generator headers: Zsh's compinit reads #compdef on the first line.
-            run_bounded "$timeout" "$bin_dir/leanck" _completions "$completions" > "$pending" || die 'completion generation failed'
+            run_bounded "$timeout" leanck "$bin_dir/leanck" _completions "$completions" > "$pending" || die 'completion generation failed'
             chmod 644 "$pending"
             commit "$pending" "$completion_path"
             record_install completion "$(digest_file "$completion_path")" "$completion_path" "$completions"
@@ -1449,7 +1504,7 @@ apply_install() {
         # write user caches, so even this preparation belongs after confirmation.
         plugin_release=$work/configured
         cp -R "$release" "$plugin_release"
-        python3 - "$plugin_release/plugin" "$bin_dir/leanck" "$mcp_enabled" <<'PYCODE'
+        cat > "$work/configure-plugin.py" <<'PYCODE'
 import json
 from pathlib import Path
 import sys
@@ -1466,6 +1521,7 @@ if sys.argv[3] == '0':
     data.pop('mcpServers', None)
     manifest.write_text(json.dumps(data, indent=2) + '\n')
 PYCODE
+        run_logged "$timeout" python3 python3 "$work/configure-plugin.py" "$plugin_release/plugin" "$bin_dir/leanck" "$mcp_enabled"
     fi
     if [ "$cli" = 1 ] && ! skipped "$bin_dir/leanck"; then
         [ ! -d "$bin_dir/leanck" ] || die "$bin_dir/leanck is a directory"
@@ -1477,7 +1533,7 @@ PYCODE
             pending=$(mktemp "$bin_dir/.leanck-install.XXXXXX")
             cp "$plugin/bin/leanck" "$pending"
             chmod 755 "$pending"
-            run_bounded "$timeout" "$pending" --version >&2
+            run_logged "$timeout" leanck "$pending" --version >&2
             commit "$pending" "$bin_dir/leanck"
             record_install file "$(digest_file "$bin_dir/leanck")" "$bin_dir/leanck" plugin/bin/leanck
             say "Installed $bin_dir/leanck ($installed_version)"
@@ -1520,6 +1576,29 @@ PYCODE
     apply_extras
 }
 
+offer_incompatible_daemons() {
+    daemon_control_binary=$1
+    # Inventory/control never starts a daemon. Keep its JSON off installer stdout.
+    if ! run_bounded "$timeout" leanck "$daemon_control_binary" daemons list --verbose --json --no-config --set updates.check=false > "$work/daemons.json"; then
+        warn 'Could not check for incompatible leanck daemons.'
+        return 0
+    fi
+    incompatible_count=$(awk '$1 == "\"incompatible\":" && $2 ~ /^[0-9]+,?$/ {gsub(/,/, "", $2); print $2; exit}' "$work/daemons.json")
+    case "$incompatible_count" in
+        ''|*[!0-9]*) warn 'Could not read the incompatible daemon count.'; return 0 ;;
+        0) return 0 ;;
+    esac
+    warn "$incompatible_count incompatible leanck daemon(s) are running."
+    if [ "$interactive" = 1 ]; then
+        yes_no 'Stop incompatible leanck daemons now?' yes
+        [ "$answer" = 1 ] || return 0
+    elif [ "$yes" != 1 ]; then
+        return 0
+    fi
+    run_logged "$timeout" leanck "$daemon_control_binary" daemons stop --incompatible --no-config --set updates.check=false ||
+        warn 'Could not stop all incompatible leanck daemons; retry with leanck daemons stop --incompatible.'
+}
+
 register_plugins() {
     [ "$plugin_claude$plugin_codex" != 00 ] || return 0
     skipped "$bundle_dir" && return 0
@@ -1528,15 +1607,15 @@ register_plugins() {
     # Make the installed CLI available to host registration hooks in this process.
     if [ "$cli" = 1 ]; then PATH=$bin_dir:$PATH; export PATH; fi
     if [ "$plugin_claude" = 1 ]; then
-        run_bounded "$timeout" env CLAUDE_CONFIG_DIR="$claude_dir" claude plugin marketplace add "$bundle_dir" >&2 || die 'Claude marketplace registration failed; rerun to resume'
-        run_bounded "$timeout" env CLAUDE_CONFIG_DIR="$claude_dir" claude plugin install leanck@leanck --scope user >&2 || die 'Claude plugin installation failed; rerun to resume'
+        run_logged "$timeout" claude env CLAUDE_CONFIG_DIR="$claude_dir" claude plugin marketplace add "$bundle_dir" >&2 || die 'Claude marketplace registration failed; rerun to resume'
+        run_logged "$timeout" claude env CLAUDE_CONFIG_DIR="$claude_dir" claude plugin install leanck@leanck --scope user >&2 || die 'Claude plugin installation failed; rerun to resume'
     fi
     if [ "$plugin_codex" = 1 ]; then
-        run_bounded "$timeout" env CODEX_HOME="$codex_dir" codex plugin marketplace add "$bundle_dir" >&2 || die 'Codex marketplace registration failed; rerun to resume'
-        run_bounded "$timeout" env CODEX_HOME="$codex_dir" codex plugin add leanck@leanck >&2 || die 'Codex plugin installation failed; rerun to resume'
-        say 'Codex custom agents are included. Review and trust the Codex hook with /hooks.'
+        run_logged "$timeout" codex env CODEX_HOME="$codex_dir" codex plugin marketplace add "$bundle_dir" >&2 || die 'Codex marketplace registration failed; rerun to resume'
+        run_logged "$timeout" codex env CODEX_HOME="$codex_dir" codex plugin add leanck@leanck >&2 || die 'Codex plugin installation failed; rerun to resume'
+        # say 'Codex custom agents are included. Review and trust the Codex hook with /hooks.'
     fi
-    say 'Restart your agent host to load the plugin.'
+    say '✅Plugins registered. Restart agents to load the plugin.'
 }
 
 prepare_plan() {
@@ -1555,7 +1634,7 @@ prepare_plan() {
     : > "$work/skip"
     : > "$work/warnings"
     if [ "$cli" = 1 ] && [ "$add_to_path" = 0 ]; then
-        warn_skipped_option 'leanck will not be added to PATH; agents may not be able to execute leanck. Add its executable directory to the PATH used by your agent host.'
+        warn_skipped_option 'leanck will not be added to PATH; agents may not be able to execute leanck.'
     fi
     has_components ||
         die 'nothing selected; omit --no-cli or select --skills or --agents'
@@ -1609,7 +1688,7 @@ prepare_plan() {
         if [ -e "$completion_dir" ] || [ -L "$completion_dir" ]; then
             [ -d "$completion_dir" ] || die "completions directory is not a directory: $completion_dir; choose another path in advanced config or with --completions-dir"
         else
-            warn_skipped_option "Completions directory does not exist: $completion_dir; skipping shell completions. Choose an existing directory in advanced config or with --completions-dir."
+            warn_skipped_option "Completions directory does not exist: $completion_dir; skipping shell completions."
             printf '%s\n' "$completion_path" >> "$work/skip"
             plan "Skip shell completions (directory missing): $completion_dir"
         fi
@@ -1656,7 +1735,7 @@ main() {
     work='' pending='' installed_version='' timeout=300 add_to_path=0 mcp_enabled=0
     from_repo='' extra_skills='' extra_claude_agents='' extra_codex_agents=''
     codex_agents_dir='' completions_dir=''
-    active_child='' command_watchdog=''
+    active_child='' command_watchdog='' command_logger='' command_stdout_logger=''
     last_binary_path='' last_binary_digest='' last_completions_path='' last_completions_digest=''
     colors
     trap cleanup 0
@@ -1806,8 +1885,8 @@ main() {
            case "$version" in ''|*[!0-9A-Za-z.+-]*) die 'invalid release version' ;; esac
            release_path=download/v$version ;;
     esac
-    prerequisites=mktemp
-    [ -n "$from_repo" ] || prerequisites='curl tar mktemp'
+    prerequisites='mktemp mkfifo'
+    [ -n "$from_repo" ] || prerequisites='curl tar mktemp mkfifo'
     for command in $prerequisites; do
         command -v "$command" >/dev/null 2>&1 || die "required command is missing: $command"
     done
@@ -1863,16 +1942,16 @@ main() {
             fi
             [ "$expected" = "${actual%% *}" ] || die 'SHA-256 checksum mismatch; nothing installed'
             # Release bundles contain regular files/directories only, under a single leanck/ root.
-            tar -tzf "$work/$archive" > "$work/members"
+            run_bounded "$timeout" tar tar -tzf "$work/$archive" > "$work/members"
             while IFS= read -r member; do
                 case "$member" in leanck|leanck/*) ;; *) die "unsafe archive member: $member" ;; esac
                 case "/$member/" in */../*|*/./*) die "unsafe archive member: $member" ;; esac
             done < "$work/members"
-            tar -tvzf "$work/$archive" > "$work/types"
+            run_bounded "$timeout" tar tar -tvzf "$work/$archive" > "$work/types"
             while IFS= read -r entry; do
                 case "$entry" in [-d]*) ;; *) die 'archive contains a link or special file' ;; esac
             done < "$work/types"
-            tar -xzf "$work/$archive" -C "$work"
+            run_logged "$timeout" tar tar -xzf "$work/$archive" -C "$work"
             release=$work/leanck
             plugin=$release/plugin
             [ -f "$release/.leanck-release" ] && [ -x "$plugin/bin/leanck" ] &&
@@ -1946,15 +2025,16 @@ main() {
         return 0
     fi
     if [ "$plugin_codex" = 1 ]; then
-        run_bounded "$timeout" env CODEX_HOME="$codex_dir" codex plugin add --help >/dev/null 2>&1 || die 'update Codex to a version with codex plugin add'
+        run_logged "$timeout" codex env CODEX_HOME="$codex_dir" codex plugin add --help >/dev/null 2>&1 || die 'update Codex to a version with codex plugin add'
     fi
     if [ -n "$from_repo" ]; then build_repo_source; fi
+    if [ "$cli" = 1 ] && ! skipped "$bin_dir/leanck"; then offer_incompatible_daemons "$plugin/bin/leanck"; fi
     [ "$verbose" -lt 2 ] || say 'Applying file changes, then registering selected host plugins.'
     if [ -f "$release/.leanck-update-protocol" ] && [ -x "$plugin/bin/leanck" ]; then
         mkdir -p "$state_dir"
         [ ! -L "$state_dir/maintenance.lock" ] || die 'refusing symlink maintenance lock'
         exec 9<>"$state_dir/maintenance.lock"
-        run_bounded "$timeout" "$plugin/bin/leanck" _update lock-fd --fd 9 --binary "$bin_dir/leanck" --binary "$bundle_dir/plugin/bin/leanck" >&2 || die 'installation is busy; close leanck/MCP clients and stop daemons before retrying'
+        run_logged "$timeout" leanck "$plugin/bin/leanck" _update lock-fd --fd 9 --binary "$bin_dir/leanck" --binary "$bundle_dir/plugin/bin/leanck" >&2 || die 'installation is busy; close leanck/MCP clients and stop daemons before retrying'
     fi
     apply_install
     save_state
@@ -1965,7 +2045,7 @@ main() {
         register_plugins
         if [ -f "$release/.leanck-update-protocol" ] && [ "$cli" = 1 ] && ! skipped "$bin_dir/leanck"; then
             pending=$(mktemp "$state_dir/.leanck-install.XXXXXX")
-            run_bounded "$timeout" "$bin_dir/leanck" _update receipt --state-dir "$state_dir" --binary "$bin_dir/leanck" --registration-complete > "$pending" || die 'could not record completed plugin registration'
+            run_bounded "$timeout" leanck "$bin_dir/leanck" _update receipt --state-dir "$state_dir" --binary "$bin_dir/leanck" --registration-complete > "$pending" || die 'could not record completed plugin registration'
             commit "$pending" "$state_dir/receipt.json"
         fi
         outcome=installed
@@ -1979,7 +2059,6 @@ main() {
             *) if [ "$add_to_path" = 0 ] || skipped "$path_file"; then say "Add $bin_dir to PATH in your shell and agent host."
                else say 'Open a new shell to load the PATH change; restart the agent host as needed.'; fi ;;
         esac
-        say 'After an upgrade, stop old daemons with: leanck daemons stop --all'
         if [ "$completions" != none ] && ! skipped "$completion_path"; then
             say "Shell completions ($completions): $completion_path"
             case "$completions" in
@@ -1993,7 +2072,9 @@ main() {
         say 'Standalone skills and agents require an existing leanck on PATH.'
     fi
     if [ "$quiet" = 0 ]; then printf '%sDone.%s\n' "$bold" "$reset" >&2; fi
-    say 'Live queries require the Lean project toolchain and Lake (usually through elan).'
+    if ! command -v lake >/dev/null 2>&1; then
+        warn '`lake` is not detected. Install info: https://lean-lang.org/install/'
+    fi
 }
 
 main "$@"

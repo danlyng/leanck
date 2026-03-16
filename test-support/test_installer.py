@@ -39,9 +39,20 @@ class InstallerTests(unittest.TestCase):
         binaries.mkdir()
         executable(binaries / "leanck", '''#!/bin/sh
 if [ -n "${LEANCK_TEST_BINARY_EXECUTIONS:-}" ]; then
-    printf 'leanck %s %s\\n' "${1:-}" "${2:-}" >> "$LEANCK_TEST_BINARY_EXECUTIONS"
+    { printf leanck; printf ' %s' "$@"; printf '\\n'; } >> "$LEANCK_TEST_BINARY_EXECUTIONS"
 fi
-if [ "${1:-}" = _completions ]; then
+if [ "${1:-}" = daemons ]; then
+    if [ "${2:-}" = list ]; then
+        [ -z "${LEANCK_TEST_DAEMON_LIST_FAILURE:-}" ] || exit 1
+        printf '{\\n  "incompatible": %s\\n}\\n' "${LEANCK_TEST_INCOMPATIBLE_DAEMONS:-0}"
+    else
+        [ -z "${LEANCK_TEST_DAEMON_STOP_FAILURE:-}" ] || exit 1
+        printf 'stopped incompatible daemons\\n'
+    fi
+elif [ "${1:-}" = _completions ]; then
+    if [ -n "${LEANCK_TEST_COMMAND_OUTPUT:-}" ]; then
+        printf 'warning: completion diagnostic\\n' >&2
+    fi
     [ -z "${LEANCK_TEST_COMPLETION_FAILURE:-}" ] || exit 1
     case "$2" in
         fish) printf 'complete -c leanck -f\\n' ;;
@@ -134,6 +145,11 @@ if os.environ.get('LEANCK_TEST_HOST_CONFIG_LOG'):
         log.write(json.dumps([name, os.environ.get('CODEX_HOME'), os.environ.get('CLAUDE_CONFIG_DIR')]) + '\\n')
 if '--help' in sys.argv:
     sys.exit(0)
+if os.environ.get('LEANCK_TEST_COMMAND_OUTPUT'):
+    print('host stdout')
+    print('host stderr', file=sys.stderr)
+    print('Warning: host warning', file=sys.stderr)
+    print('error: host error', end='', file=sys.stderr)
 if os.environ.get('LEANCK_TEST_HOST_DELAY') == name:
     time.sleep(10)
 with open(os.environ['LEANCK_TEST_LOG'], 'a') as log:
@@ -148,6 +164,9 @@ sys.exit(1 if os.environ.get('LEANCK_TEST_HOST_FAILURE') == name else 0)
 import json, os, sys
 with open(os.environ['LEANCK_TEST_SOURCE_EXECUTIONS'], 'a') as log:
     log.write(json.dumps(['python3', *sys.argv[1:]]) + '\\n')
+if os.environ.get('LEANCK_TEST_COMMAND_OUTPUT') and sys.argv[1] == '-c':
+    print('installer helper stdout', flush=True)
+    print('warning: installer helper warning', file=sys.stderr)
 os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
 ''')
         executable(self.commands / "rustc", f"#!{sys.executable}\n" + '''
@@ -161,6 +180,10 @@ import json, os, pathlib, sys, time, tomllib
 args = sys.argv[1:]
 with open(os.environ['LEANCK_TEST_SOURCE_EXECUTIONS'], 'a') as log:
     log.write(json.dumps(['cargo', *args]) + '\\n')
+if os.environ.get('LEANCK_TEST_COMMAND_OUTPUT'):
+    print('build stdout')
+    print('Compiling leanck', file=sys.stderr)
+    print('warning: build warning', file=sys.stderr)
 if os.environ.get('LEANCK_TEST_BUILD_DELAY'):
     time.sleep(10)
 if os.environ.get('LEANCK_TEST_BUILD_FAILURE'):
@@ -355,9 +378,17 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
     def test_local_repo_standalone_installs_built_cli_and_selected_components(self):
         source = self.source_checkout()
         self.mock_source_tools()
+        self.env["LEANCK_TEST_COMMAND_OUTPUT"] = "1"
         self.make_completion_dir("bash")
         result = self.run_install("--from-repo", str(source), "--skills", "both", "--agents", "both", "--completions", "bash")
         self.assertIn(b"local source", result.stderr)
+        self.assertIn(b"[INFO] (cargo) build stdout\n", result.stderr)
+        self.assertIn(b"[INFO] (cargo) Compiling leanck\n", result.stderr)
+        self.assertIn(b"[WARN] (cargo) warning: build warning\n", result.stderr)
+        self.assertIn(b"[INFO] installer helper stdout\n", result.stderr)
+        self.assertIn(b"[WARN] warning: installer helper warning\n", result.stderr)
+        self.assertNotIn(b"(python3)", result.stderr)
+        self.assertNotIn(b"(leanck)", result.stderr)
         for path in (".local/bin/leanck", "claude/skills/new-proof/SKILL.md", ".agents/skills/new-proof/SKILL.md", "claude/agents/new-expert.md", "codex/agents/leanck/new-grind.toml", "data/bash-completion/completions/leanck"):
             self.assertTrue((self.home / path).is_file(), path)
         self.assertFalse((self.home / "data/leanck/bundle").exists())
@@ -524,6 +555,77 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         self.assertNotIn(b"\x1b", result.stdout + result.stderr)
         result = self.run_install("--json", "--quiet")
         self.assertEqual(json.loads(result.stdout)["status"], "installed")
+
+    def test_subcommand_output_has_severity_and_source_with_clean_json(self):
+        self.env["LEANCK_TEST_COMMAND_OUTPUT"] = "1"
+        result = self.run_install("--all", "--json", "--no-color")
+        self.assertEqual(json.loads(result.stdout)["status"], "installed")
+        for host in (b"claude", b"codex"):
+            for level, message in ((b"INFO", b"host stdout"), (b"INFO", b"host stderr"),
+                                   (b"WARN", b"Warning: host warning"), (b"ERR", b"error: host error")):
+                self.assertIn(b"[" + level + b"] (" + host + b") " + message + b"\n", result.stderr)
+        self.assertIn(b"[INFO] leanck 1.2.3\n", result.stderr)
+        self.assertNotIn(b"(leanck)", result.stderr)
+        self.assertNotIn(b"\x1b", result.stderr)
+
+    def test_no_incompatible_daemons_produces_no_offer_or_static_reminder(self):
+        result = self.run_install("--json")
+        self.assertEqual(json.loads(result.stdout)["status"], "installed")
+        self.assertIn("leanck daemons list --verbose --json", self.binary_executions.read_text())
+        self.assertNotIn("leanck daemons stop", self.binary_executions.read_text())
+        self.assertNotIn(b"incompatible leanck daemon", result.stderr)
+        self.assertNotIn(b"After an upgrade, stop old daemons", result.stderr)
+
+    def test_yes_stops_only_incompatible_daemons_and_keeps_json_clean(self):
+        self.env["LEANCK_TEST_INCOMPATIBLE_DAEMONS"] = "2"
+        result = self.run_install("--json")
+        self.assertEqual(json.loads(result.stdout)["status"], "installed")
+        self.assertIn(b"2 incompatible leanck daemon(s) are running.", result.stderr)
+        calls = self.binary_executions.read_text()
+        self.assertIn("leanck daemons stop --incompatible", calls)
+        self.assertNotIn("daemons stop --all", calls)
+
+    def test_incompatible_daemon_offer_accepts_or_declines_in_terminal(self):
+        self.env["LEANCK_TEST_INCOMPATIBLE_DAEMONS"] = "1"
+        for answer in ("no", "yes"):
+            with self.subTest(answer=answer):
+                self.binary_executions.unlink(missing_ok=True)
+                def drive(t):
+                    self.plugin_config(t)
+                    t.choose(PLUGIN_PROMPT, "Continue")
+                    t.prompt("Stop incompatible leanck daemons now?", answer)
+                code, output = self.run_interactive(drive)
+                self.assertEqual(code, 0, output.decode())
+                self.assertEqual("daemons stop --incompatible" in self.binary_executions.read_text(), answer == "yes")
+
+    def test_daemon_maintenance_failures_warn_without_failing_install(self):
+        self.env["LEANCK_TEST_INCOMPATIBLE_DAEMONS"] = "1"
+        for failure, warning in (("LEANCK_TEST_DAEMON_LIST_FAILURE", b"Could not check for incompatible"),
+                                 ("LEANCK_TEST_DAEMON_STOP_FAILURE", b"Could not stop all incompatible")):
+            with self.subTest(failure=failure):
+                self.env[failure] = "1"
+                result = self.run_install("--json")
+                self.assertEqual(json.loads(result.stdout)["status"], "installed")
+                self.assertIn(warning, result.stderr)
+                del self.env[failure]
+
+    def test_quiet_subcommands_keep_warnings_errors_and_failure_status(self):
+        self.env["LEANCK_TEST_COMMAND_OUTPUT"] = "1"
+        self.env["LEANCK_TEST_HOST_FAILURE"] = "claude"
+        result = self.run_install("--plugin", "claude", "--json", "--quiet", success=False)
+        self.assertEqual(json.loads(result.stdout)["status"], "partial")
+        self.assertNotIn(b"[INFO]", result.stderr)
+        self.assertIn(b"[WARN] (claude) Warning: host warning\n", result.stderr)
+        self.assertIn(b"[ERR] (claude) error: host error\n", result.stderr)
+
+    def test_completion_stdout_is_preserved_while_diagnostics_are_prefixed(self):
+        self.env["LEANCK_TEST_COMMAND_OUTPUT"] = "1"
+        directory = self.make_completion_dir("zsh")
+        result = self.run_install("--completions", "zsh", "--json")
+        self.assertEqual(json.loads(result.stdout)["status"], "installed")
+        self.assertEqual((directory / "_leanck").read_text(), "#compdef leanck\n")
+        self.assertIn(b"[WARN] warning: completion diagnostic\n", result.stderr)
+        self.assertNotIn(b"(leanck)", result.stderr)
 
     def test_terminal_configuration_and_explicit_approval_before_writes(self):
 
@@ -1337,7 +1439,7 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         started = time.monotonic()
         result = self.run_install("--plugin", "claude", "--timeout", "1", "--json", success=False)
         self.assertLess(time.monotonic() - started, 8)
-        self.assertIn(b"Command timed out", result.stderr)
+        self.assertIn(b"[ERR] (claude) Command timed out", result.stderr)
         self.assertEqual(json.loads(result.stdout)["status"], "partial")
         self.assertTrue((self.home / "data/leanck/bin/leanck").is_file())
 
@@ -1498,20 +1600,28 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
             self.assertFalse((self.home / path).is_symlink(), path)
 
     def test_standalone_installs_only_cli_and_can_upgrade(self):
+        self.env["PATH"] = f"{self.commands}:/usr/bin:/bin:/usr/sbin:/sbin"
         result = self.run_install("--completions", "none")
         binary = self.home / ".local/bin/leanck"
         self.assertTrue(os.access(binary, os.X_OK))
         self.assertFalse((self.home / "data").exists())
         self.assertFalse((self.home / "claude").exists())
         self.assertIn(b"Add ", result.stderr)
+        warning = b"[WARN] `lake` is not detected. Install info: https://lean-lang.org/install/\n"
+        self.assertIn(warning, result.stderr)
+        self.assertNotIn(b"Live queries require", result.stderr)
         self.assertTrue(all(call[0] == "curl" for call in self.calls()))
-        self.run_install()
+        executable(self.commands / "lake", "#!/bin/sh\nexit 1\n")
+        result = self.run_install()
+        self.assertNotIn(warning, result.stderr)
+        self.assertNotIn(b"Live queries require", result.stderr)
         self.assertEqual(set(binary.parent.iterdir()), {binary, binary.parent / ".leanck-installation.json"})
 
     def test_skills_both_without_cli_and_pinned_version(self):
+        expected_skills = {path.name for path in (REPO / "leanck-skills").iterdir() if path.is_dir()}
         self.run_install("--no-cli", "--skills", "both", "--version", "1.2.3")
         for directory in (self.home / "claude/skills", self.home / ".agents/skills"):
-            self.assertEqual(len(list(directory.iterdir())), 3)
+            self.assertEqual({path.name for path in directory.iterdir()}, expected_skills)
             self.assertTrue((directory / "lean-proving/reference/search-queries.md").is_file())
         self.assertFalse((self.home / ".local/bin/leanck").exists())
         self.assertIn("/download/v1.2.3/", self.calls()[0][-1])
@@ -1641,6 +1751,7 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
                 self.env["LEANCK_TEST_HTTP_ASSET"] = asset
                 result = self.run_install(success=False)
                 self.assertIn(b"download failed", result.stderr)
+                self.assertIn(b"[ERR] (curl) simulated HTTP 404\n", result.stderr)
                 self.assertNotIn(b"Would install", result.stderr)
                 self.assert_dry_run_unchanged(before)
 

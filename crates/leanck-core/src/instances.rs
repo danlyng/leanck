@@ -67,6 +67,9 @@ pub struct SlotRecord {
     /// step never changes it. Absent where the platform has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_id: Option<u64>,
+    /// Version of the CLI executable hosting this daemon; older records omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 }
 
 /// How acquisition treats a full set of slots below the limit.
@@ -471,7 +474,25 @@ mod tests {
             socket: PathBuf::from(format!("/run/leanck-{pid}.sock")),
             started_at: *STARTED,
             start_id: None,
+            version: None,
         }
+    }
+
+    #[test]
+    fn slot_versions_are_optional_and_roundtrip() {
+        let mut slot = record(std::process::id());
+        let legacy = serde_json::to_value(&slot).unwrap();
+        assert!(legacy.get("version").is_none());
+        assert_eq!(
+            serde_json::from_value::<SlotRecord>(legacy)
+                .unwrap()
+                .version,
+            None
+        );
+        slot.version = Some("0.40.0".into());
+        let encoded = serde_json::to_value(&slot).unwrap();
+        assert_eq!(encoded["version"], "0.40.0");
+        assert_eq!(serde_json::from_value::<SlotRecord>(encoded).unwrap(), slot);
     }
 
     fn acquired(outcome: SlotOutcome) -> (SlotLock, u64) {
