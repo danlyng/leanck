@@ -371,10 +371,16 @@ pub enum Action {
     Defaults,
     /// Show loaded files and the winning source of every setting.
     Sources,
-    /// Create a configuration file without overwriting an existing file.
+    /// Set up configuration interactively, or write a starter file without a terminal.
     Init {
-        #[arg(default_value = "leanck.toml")]
-        path: PathBuf,
+        /// Destination file (default: leanck.toml in the current directory).
+        path: Option<PathBuf>,
+        /// Configure user defaults for all projects instead of project settings.
+        #[arg(long, conflicts_with = "path")]
+        user: bool,
+        /// Write a starter file without prompts; never overwrite an existing file.
+        #[arg(long)]
+        no_interactive: bool,
     },
 }
 impl Command {
@@ -382,13 +388,32 @@ impl Command {
         if matches!(self.action, Action::Defaults | Action::Init { .. }) {
             let defaults = Settings::default();
             let text = toml::to_string_pretty(&defaults)?;
-            if let Action::Init { path } = &self.action {
+            if let Action::Init {
+                path,
+                user,
+                no_interactive,
+            } = &self.action
+            {
+                #[cfg(feature = "wizard")]
+                if crate::wizard::interactive(self.json, *no_interactive) {
+                    return crate::wizard::run(
+                        path.as_deref(),
+                        *user,
+                        self.workspace.as_deref(),
+                        args,
+                    );
+                }
+                let _ = no_interactive;
+                let path = init_path(path.as_deref(), *user, self.workspace.as_deref())?;
                 let text = starter_config(&defaults)?;
+                if *user {
+                    std::fs::create_dir_all(path.parent().context("user config has no parent")?)?;
+                }
                 use std::io::Write;
                 let mut file = std::fs::OpenOptions::new()
                     .write(true)
                     .create_new(true)
-                    .open(path)
+                    .open(&path)
                     .with_context(|| {
                         format!(
                             "cannot create {}; existing files are never overwritten",
@@ -456,7 +481,33 @@ impl Command {
     }
 }
 
-fn starter_config(defaults: &Settings) -> Result<String> {
+pub(crate) fn init_path(
+    path: Option<&Path>,
+    user: bool,
+    workspace: Option<&Path>,
+) -> Result<PathBuf> {
+    if user {
+        user_config_path().context("cannot locate user configuration; set HOME or XDG_CONFIG_HOME")
+    } else if let Some(path) = path {
+        Ok(path.to_owned())
+    } else {
+        let base = workspace.map(Path::to_owned).unwrap_or_default();
+        let base = if base.is_file() {
+            base.parent().context("workspace has no parent")?
+        } else {
+            &base
+        };
+        // Reuse the hidden project configuration if it already exists here.
+        let hidden = base.join(".leanck.toml");
+        Ok(if !base.join("leanck.toml").exists() && hidden.exists() {
+            hidden
+        } else {
+            base.join("leanck.toml")
+        })
+    }
+}
+
+pub(crate) fn starter_config(defaults: &Settings) -> Result<String> {
     let normalize = toml::Value::try_from(&defaults.normalize)?;
     Ok(format!(
         "# Omitted settings inherit their values; uncomment settings to override them.\n\

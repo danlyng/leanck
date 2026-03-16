@@ -11,7 +11,7 @@ leanck-config = { workspace = true, default-features = true }
 leanck-core = { workspace = true, features = ["schema"] }
 leanck-lake.workspace = true
 leanck-loogle.workspace = true
-leanck-update = { version = "0.1.0", path = "../leanck-update" }
+leanck-update = { version = "0.36.1", path = "../leanck-update" }
 rmcp = { workspace = true, features = ["server", "transport-io", "macros", "schemars"] }
 serde.workspace = true
 serde_json.workspace = true

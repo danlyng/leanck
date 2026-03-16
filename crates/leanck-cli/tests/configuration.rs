@@ -211,6 +211,41 @@ fn validation_errors_are_json_and_init_never_overwrites() {
 }
 
 #[test]
+fn noninteractive_user_and_workspace_initialization_choose_the_requested_destination() {
+    let dir = Scratch::new();
+    let user = dir.0.join("user/leanck/config.toml");
+    fs::remove_dir(user.parent().unwrap()).unwrap();
+    let report = json(&dir.run(&["config", "init", "--user", "--json"]));
+    assert_eq!(report["created"], user.to_string_lossy().as_ref());
+    let original = fs::read(&user).unwrap();
+    let output = dir.run(&["config", "init", "--user", "--json"]);
+    assert!(!output.status.success());
+    assert!(serde_json::from_slice::<serde_json::Value>(&output.stderr).is_ok());
+    assert_eq!(fs::read(&user).unwrap(), original);
+    assert!(!dir.0.join("project/leanck.toml").exists());
+    let workspace = dir.0.join("other-project");
+    fs::create_dir(&workspace).unwrap();
+    assert!(
+        dir.run(&[
+            "config",
+            "init",
+            "--no-interactive",
+            "--workspace",
+            workspace.to_str().unwrap()
+        ])
+        .status
+        .success()
+    );
+    assert!(workspace.join("leanck.toml").exists());
+    assert!(!dir.0.join("project/leanck.toml").exists());
+    assert!(
+        !dir.run(&["config", "init", "custom.toml", "--user"])
+            .status
+            .success()
+    );
+}
+
+#[test]
 fn init_inherits_user_settings_and_offers_commented_project_conventions() {
     let dir = Scratch::new();
     fs::write(

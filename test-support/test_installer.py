@@ -338,7 +338,7 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         binary = self.home / "data/leanck/bin/leanck"
         self.assertIn("leanck 9.8.7", binary.read_text())
         bundle = self.home / "data/leanck/bundle"
-        mcp = json.loads((bundle / "plugin/.mcp.codex.json").read_text())
+        mcp = json.loads((bundle / "plugin/.mcp.codex.disabled.json").read_text())
         self.assertEqual(mcp["mcpServers"]["leanck"]["command"], str(binary))
         self.assertTrue((self.home / "codex/agents/leanck/new-grind.toml").is_symlink())
         self.assertEqual(json.loads((bundle / "plugin/.codex-plugin/plugin.json").read_text())["version"], "9.8.7")
@@ -653,6 +653,7 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
             t.edit("Plugin data directory", data)
             t.edit("Executable directory", binary_dir)
             t.enum("Register plugins", "codex")
+            t.enum("Enable MCP", "yes")
             t.edit("Codex configuration", codex_dir)
             t.action("Save changes")
             t.prompt("Keep it, back up and replace", "keep")
@@ -726,6 +727,10 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
     def test_advanced_enum_cycles_keep_selection_and_restore_clean_state(self):
         def drive(t):
             self.open_plugin_config(t)
+            t.focus("Enable MCP")
+            self.assertEqual(t.value(), "no")
+            t.enum("Enable MCP", "yes")
+            t.enum("Enable MCP", "no")
             for value in ("none", "claude", "codex", "both"):
                 t.enum("Register plugins", value)
             for value in ("bash", "zsh", "fish", "powershell", "elvish", "none"):
@@ -1373,12 +1378,18 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         self.run_install("--signing-identity", "A" * 40, success=False)
         self.assertEqual(self.calls(), [])
 
-    def test_default_plugin_pins_mcp_and_links_bundled_codex_agents(self):
+    def test_default_plugin_disables_mcp_and_links_bundled_codex_agents(self):
         self.run_install(standalone=False)
         data = self.home / "data/leanck"
         binary = data / "bin/leanck"
         self.assertTrue(os.access(binary, os.X_OK))
-        mcp = json.loads((data / "bundle/plugin/.mcp.codex.json").read_text())
+        plugin = data / "bundle/plugin"
+        for name in (".mcp.json", ".mcp.codex.json"):
+            self.assertFalse((plugin / name).exists())
+            self.assertTrue((plugin / name.replace(".json", ".disabled.json")).is_file())
+        manifest = json.loads((plugin / ".codex-plugin/plugin.json").read_text())
+        self.assertNotIn("mcpServers", manifest)
+        mcp = json.loads((plugin / ".mcp.codex.disabled.json").read_text())
         self.assertEqual(mcp["mcpServers"]["leanck"]["command"], str(binary))
         self.assertEqual(mcp["mcpServers"]["leanck"]["args"], ["serve", "mcp"])
         for agent in (data / "agents").glob("*.toml"):
@@ -1390,6 +1401,70 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         self.assertFalse((self.home / "claude/agents").exists())
         self.assertFalse((self.home / ".agents/skills").exists())
         self.run_install(standalone=False)
+
+    def test_plugin_mcp_flags_override_saved_choice_and_replace_definition_names(self):
+        plugin = self.home / "data/leanck/bundle/plugin"
+        state = self.home / "state/leanck/installer/selections.tsv"
+        for args, enabled in ((("--mcp",), True), ((), True),
+                              (("--no-mcp",), False), ((), False)):
+            with self.subTest(args=args, enabled=enabled):
+                self.run_install(*args, standalone=False)
+                for name in (".mcp.json", ".mcp.codex.json"):
+                    self.assertEqual((plugin / name).is_file(), enabled)
+                    self.assertEqual((plugin / name.replace(".json", ".disabled.json")).is_file(), not enabled)
+                manifest = json.loads((plugin / ".codex-plugin/plugin.json").read_text())
+                self.assertEqual("mcpServers" in manifest, enabled)
+                if enabled:
+                    self.assertEqual(manifest["mcpServers"], "./.mcp.codex.json")
+                self.assertIn(f"mcp_enabled\t{int(enabled)}\n", state.read_text())
+
+    def test_plain_advanced_config_can_enable_mcp(self):
+        def drive(t):
+            t.prompt("Install as plugin or standalone?", "plugin")
+            self.completion_config(t)
+            t.prompt("Add leanck to PATH?", "no")
+            t.prompt(PLUGIN_PROMPT, "edit")
+            t.prompt("Edit advanced config", "mcp")
+            t.prompt("Enable MCP?", "yes")
+            t.prompt("Edit advanced config", "save")
+            t.prompt(PLUGIN_PROMPT, "continue")
+        code, output = self.run_interactive(drive, env={"TERM": "dumb"})
+        self.assertEqual(code, 0, output.decode())
+        plugin = self.home / "data/leanck/bundle/plugin"
+        self.assertTrue((plugin / ".mcp.json").is_file())
+        self.assertTrue((plugin / ".mcp.codex.json").is_file())
+        self.assertIn(b"- MCP: disabled", output)
+        self.assertIn(b"- MCP: enabled", output)
+
+    def test_no_path_warning_in_preview_and_quiet_install(self):
+        warning = b"agents may not be able to execute leanck"
+        for standalone in (False, True):
+            with self.subTest(standalone=standalone):
+                result = self.run_install("--no-add-to-path", "--dry-run", standalone=standalone)
+                self.assertIn(warning, result.stderr)
+                self.assertEqual(result.stdout, b"")
+                result = self.run_install("--no-add-to-path", "--quiet", standalone=standalone)
+                self.assertIn(warning, result.stderr)
+        profile = self.home / ".zshrc"
+        profile.touch()
+        result = self.run_install("--add-to-path", "--path-file", str(profile), "--dry-run")
+        self.assertNotIn(warning, result.stderr)
+
+    def test_no_path_warning_refreshes_after_advanced_config_edit(self):
+        warning = b"agents may not be able to execute leanck"
+        (self.home / ".zshrc").touch()
+        def drive(t):
+            self.plugin_config(t)
+            t.wait(lambda: t.screen.selected(PLUGIN_PROMPT), "initial confirmation")
+            self.assertEqual(t.transcript.count(warning), 1)
+            t.choose(PLUGIN_PROMPT, "Edit advanced config...")
+            t.enum("Add leanck to PATH", "yes")
+            t.action("Save changes")
+            t.wait(lambda: t.screen.selected(PLUGIN_PROMPT), "updated confirmation")
+            self.assertEqual(t.transcript.count(warning), 1)
+            t.choose(PLUGIN_PROMPT, "Cancel")
+        code, output = self.run_interactive(drive)
+        self.assertEqual(code, 0, output.decode())
 
     def test_plugin_default_without_detected_hosts_uses_local_share(self):
         # Restrict PATH so the developer's real hosts cannot be found or invoked.

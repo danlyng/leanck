@@ -69,9 +69,13 @@ impl Fixture {
         .unwrap();
         for host in ["claude", "codex"] {
             fs::create_dir_all(package.join(format!("plugin/.{host}-plugin"))).unwrap();
+            let mut manifest = json!({"version":env!("CARGO_PKG_VERSION")});
+            if host == "codex" {
+                manifest["mcpServers"] = "./.mcp.codex.json".into();
+            }
             fs::write(
                 package.join(format!("plugin/.{host}-plugin/plugin.json")),
-                serde_json::to_vec(&json!({"version":env!("CARGO_PKG_VERSION")})).unwrap(),
+                serde_json::to_vec(&manifest).unwrap(),
             )
             .unwrap();
         }
@@ -80,6 +84,7 @@ impl Fixture {
             br#"{"mcpServers":{"leanck":{"command":"leanck"}}}"#,
         )
         .unwrap();
+        fs::write(package.join("plugin/.mcp.json"), b"{}").unwrap();
         fs::write(
             package.join(".leanck-release"),
             format!("v{}\n", env!("CARGO_PKG_VERSION")),
@@ -311,6 +316,65 @@ async fn partial_host_registration_is_recorded_and_can_be_retried() {
 }
 
 #[tokio::test]
+async fn native_updates_preserve_disabled_and_enabled_plugin_mcp() {
+    for enabled in [false, true] {
+        let fixture = Fixture::new().await;
+        let bundle = fixture.root.join("data/bundle");
+        fs::create_dir_all(bundle.join("plugin")).unwrap();
+        let name = if enabled {
+            ".mcp.codex.json"
+        } else {
+            ".mcp.codex.disabled.json"
+        };
+        fs::write(bundle.join("plugin").join(name), b"{}").unwrap();
+        let mut receipt = fixture.receipt.clone();
+        receipt.mode = "plugin".into();
+        receipt.bundle = Some(bundle.clone());
+        receipt.components.push(Component {
+            kind: "tree".into(),
+            destination: bundle.clone(),
+            source: ".".into(),
+            fingerprint: leanck_update::receipt::tree_digest(&bundle).unwrap(),
+        });
+        receipt.write().unwrap();
+        let result = fixture
+            .run(&[
+                "update",
+                "--version",
+                env!("CARGO_PKG_VERSION"),
+                "--yes",
+                "--json",
+            ])
+            .await;
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let plugin = bundle.join("plugin");
+        for name in [".mcp.json", ".mcp.codex.json"] {
+            assert_eq!(plugin.join(name).is_file(), enabled);
+            assert_eq!(
+                plugin
+                    .join(name.replace(".json", ".disabled.json"))
+                    .is_file(),
+                !enabled
+            );
+        }
+        let config: serde_json::Value =
+            serde_json::from_slice(&fs::read(plugin.join(name)).unwrap()).unwrap();
+        assert_eq!(
+            config["mcpServers"]["leanck"]["command"],
+            receipt.binary.to_string_lossy().as_ref()
+        );
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(plugin.join(".codex-plugin/plugin.json")).unwrap())
+                .unwrap();
+        assert_eq!(manifest.get("mcpServers").is_some(), enabled);
+    }
+}
+
+#[tokio::test]
 async fn automatic_update_reexecutes_once_and_preserves_an_unpinned_installation() {
     let fixture = Fixture::new().await;
     *fixture.latest.lock().unwrap() = env!("CARGO_PKG_VERSION").into();
@@ -485,13 +549,10 @@ async fn cli_and_mcp_doctor_always_show_cached_notices_and_disable_them() {
         receipt.source.clone(),
     )
     .with_receipt(receipt);
-    assert!(
-        checker
-            .check(&leanck_config::Updates::default(), false)
-            .await
-            .notice
-            .is_some()
-    );
+    let checked = checker
+        .check(&leanck_config::Updates::default(), false)
+        .await;
+    assert!(checked.notice.is_some(), "{checked:?}");
     let calls = fixture.calls.load(Ordering::SeqCst);
     for args in [
         vec!["--set", "updates.check=true", "doctor"],

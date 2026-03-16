@@ -5,8 +5,8 @@ mod cli;
 mod commands;
 mod completions;
 mod configuration;
+mod logging;
 mod serve;
-mod telemetry;
 
 use clap::{CommandFactory, FromArgMatches};
 
@@ -81,7 +81,7 @@ fn run(json: &mut bool) -> anyhow::Result<()> {
         ))?;
         return serve::run(args, cli.config);
     }
-    telemetry::init_tracing();
+    logging::init_tracing();
     if let Cmd::Config(command) = &cli.command {
         return command.run(&cli.config);
     }

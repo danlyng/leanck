@@ -151,11 +151,43 @@ fn extract(archive: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
+// Match the installer transformations before computing managed tree fingerprints.
+fn configure_plugin(root: &Path, receipt: &Receipt) -> Result<()> {
+    let plugin = root.join("plugin");
+    let config = plugin.join(".mcp.codex.json");
+    let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&config)?)?;
+    value["mcpServers"]["leanck"]["command"] = receipt.binary.to_string_lossy().into_owned().into();
+    fs::write(&config, serde_json::to_vec_pretty(&value)?)?;
+    // Older installations have active definitions; preserve their opt-in too.
+    if receipt
+        .bundle
+        .as_ref()
+        .is_some_and(|bundle| bundle.join("plugin/.mcp.codex.disabled.json").is_file())
+    {
+        for name in [".mcp.json", ".mcp.codex.json"] {
+            fs::rename(
+                plugin.join(name),
+                plugin.join(name.replace(".json", ".disabled.json")),
+            )?;
+        }
+        let manifest = plugin.join(".codex-plugin/plugin.json");
+        let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&manifest)?)?;
+        value
+            .as_object_mut()
+            .context("invalid Codex plugin manifest")?
+            .remove("mcpServers");
+        fs::write(manifest, serde_json::to_vec_pretty(&value)?)?;
+    }
+    Ok(())
+}
+
 pub async fn prepare(receipt: Receipt, requested: Option<&str>) -> Result<Prepared> {
     receipt.validate()?;
     ensure!(
         receipt.provenance == "release",
-        "local-source builds must be updated from their checkout"
+        "this installation was built from local source.\n\
+         `leanck update` only supports published releases.\n\n\
+         To rebuild and reinstall, run from your leanck checkout:\n  sh ./install.sh --from-repo ."
     );
     ensure!(
         receipt.target == target()?,
@@ -219,11 +251,7 @@ pub async fn prepare(receipt: Receipt, requested: Option<&str>) -> Result<Prepar
         None,
     )
     .await?;
-    // Pin MCP to this installation before computing managed tree fingerprints.
-    let config = root.join("plugin/.mcp.codex.json");
-    let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&config)?)?;
-    value["mcpServers"]["leanck"]["command"] = receipt.binary.to_string_lossy().into_owned().into();
-    fs::write(&config, serde_json::to_vec_pretty(&value)?)?;
+    configure_plugin(&root, &receipt)?;
     let mut components = receipt.components.clone();
     // Discover new members of previously selected skill/agent collections.
     let mut added = vec![];

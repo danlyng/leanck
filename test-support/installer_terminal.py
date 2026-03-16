@@ -157,7 +157,7 @@ class InstallerTerminal:
             self.read()
             if predicate():
                 # Wait for the entire redraw before sending the next key.
-                while self.read(0.01):
+                while self.read(0.05):
                     pass
                 if predicate():
                     return
@@ -170,7 +170,11 @@ class InstallerTerminal:
         os.write(self.master, data.encode() if isinstance(data, str) else data)
 
     def choose(self, title, option):
-        self.wait(lambda: self.screen.selected(title) and not self.screen.cursor_visible, title)
+        # A previous menu may remain above the form until confirmation redraws.
+        # Only the form's discard menu runs while bracketed paste is enabled.
+        in_form = title == "Discard advanced config changes?"
+        self.wait(lambda: self.screen.selected(title) and not self.screen.cursor_visible
+                  and self.screen.bracketed_paste == in_form, title)
         for _ in range(8):
             selected = self.screen.selected(title)
             if selected == option:
@@ -187,7 +191,8 @@ class InstallerTerminal:
 
     def focus(self, label):
         title = "Advanced configuration"
-        self.wait(lambda: self.screen.selected(title) and not self.screen.cursor_visible, title)
+        self.wait(lambda: self.screen.selected(title) and not self.screen.cursor_visible
+                  and self.screen.bracketed_paste, title)
         for _ in range(60):
             selected = self.screen.selected(title)
             if selected.split(":", 1)[0].strip() == label:

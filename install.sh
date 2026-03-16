@@ -3,7 +3,7 @@
 # All execution is inside main so a truncated download cannot start installation.
 
 # Prompts use a separate terminal descriptor: stdin may contain this script.
-INSTALLER_VERSION="0.3.0"
+INSTALLER_VERSION="0.4.0"
 colors() {
     bold='' cyan='' green='' yellow='' red='' reset='' out_bold='' out_reset=''
     prompt_style='' selected_style='' input_style=''
@@ -438,6 +438,7 @@ ${b}Common options:${r}
 
 ${b}Component selection:${r}
       --cli, --no-cli              Install or skip the executable (default: --cli)
+      --mcp, --no-mcp              Enable or disable plugin MCP definitions (default: disabled)
       --skills HOST                Standalone skills: none, claude, codex, or both
       --agents HOST                Custom agents: none, claude, codex, or both
       --completions SHELL          Shell completions: bash, zsh, fish, powershell, elvish, or none
@@ -775,7 +776,7 @@ load_state() {
         valid_text "$value"
         case "$key" in
             extra_skills|extra_claude_agents|extra_codex_agents) append_location "$key" "$value" ;;
-            cli|skills_claude|skills_codex|agents_claude|agents_codex|add_to_path)
+            cli|skills_claude|skills_codex|agents_claude|agents_codex|add_to_path|mcp_enabled)
                 case "$value" in 0|1) eval "$key=\$value" ;; esac ;;
             bin_dir) standalone_bin_dir=$value ;;
             version|data_dir|claude_dir|codex_dir|codex_skills|codex_agents_dir|completions_dir|fish_completions_dir|path_file|completions|shell|last_binary_path|last_binary_digest|last_completions_path|last_completions_digest|standalone_bin_dir|plugin_bin_dir)
@@ -810,7 +811,7 @@ save_state() {
         plugin_bin_dir=''; [ "$bin_dir" = "$data_dir/bin" ] || plugin_bin_dir=$bin_dir
     fi
     installed_target=$arch-$platform
-    for key in mode plugin_claude plugin_codex from_repo release_url installed_version installed_target version last_binary_path last_binary_digest last_completions_path last_completions_digest cli skills_claude skills_codex agents_claude agents_codex add_to_path standalone_bin_dir plugin_bin_dir data_dir claude_dir codex_dir codex_skills codex_agents_dir completions_dir fish_completions_dir path_file completions shell; do
+    for key in mode plugin_claude plugin_codex from_repo release_url installed_version installed_target version last_binary_path last_binary_digest last_completions_path last_completions_digest cli skills_claude skills_codex agents_claude agents_codex add_to_path mcp_enabled standalone_bin_dir plugin_bin_dir data_dir claude_dir codex_dir codex_skills codex_agents_dir completions_dir fish_completions_dir path_file completions shell; do
         eval 'value=$'"$key"
         printf '%s\t%s\n' "$key" "$value" >> "$pending"
     done
@@ -854,7 +855,9 @@ inspect_config() {
     printf '\n`leanck` installation config:\n' >&2
     if [ "$mode" = plugin ]; then
         printf '%s%s\n' '- Plugin data dir: ' "$(display_path "$data_dir")" >&2
-        printf '%s\n' '- Install skills: [bundled with plugin]' '- Claude agents: [bundled with plugin]' '- MCP: enabled' >&2
+        printf '%s\n' '- Install skills: [bundled with plugin]' '- Claude agents: [bundled with plugin]' >&2
+        if [ "$mcp_enabled" = 1 ]; then printf '%s\n' '- MCP: enabled' >&2
+        else printf '%s\n' '- MCP: disabled (definitions saved as *.disabled.json)' >&2; fi
         host_default "$plugin_claude" "$plugin_codex"; printf '%s%s\n' '- Register plugins: ' "$host_choice" >&2
         if [ "$plugin_codex" = 1 ]; then
             printf '%s%s\n' '- Codex custom agents: ' "$(display_path "${codex_agents_dir:-$codex_dir/agents/leanck}")" >&2
@@ -889,8 +892,8 @@ edit_advanced_config_plain() {
     while :; do
         inspect_config
         if [ "$mode" = plugin ]; then
-            choose 'Edit advanced config' data 'data binary skills agents completions path hosts save cancel' \
-                'Plugin data directory|Executable directory|Install skills|Install agents|Shell completions|Add leanck to PATH|Register plugins|Save changes|Cancel'
+            choose 'Edit advanced config' data 'data binary skills agents completions path mcp hosts save cancel' \
+                'Plugin data directory|Executable directory|Install skills|Install agents|Shell completions|Add leanck to PATH|Enable MCP|Register plugins|Save changes|Cancel'
         else
             choose 'Edit advanced config' binary 'binary skills agents completions path save cancel' \
                 'Executable|Install skills|Install agents|Shell completions|Add leanck to PATH|Save changes|Cancel'
@@ -931,6 +934,9 @@ edit_advanced_config_plain() {
                 prompt 'Additional Codex agents directory (keep / none / path)' keep text
                 case "$reply" in keep) ;; none) extra_codex_agents='' ;; *) append_location extra_codex_agents "$reply" ;; esac ;;
             completions) configure_completions advanced ;;
+            mcp)
+                yes_no 'Enable MCP?' "$( [ "$mcp_enabled" = 1 ] && printf yes || printf no )"
+                mcp_enabled=$answer ;;
             path)
                 yes_no 'Add leanck to PATH?' "$( [ "$add_to_path" = 1 ] && printf yes || printf no )"
                 add_to_path=$answer
@@ -961,13 +967,13 @@ edit_advanced_config_plain() {
     done
 }
 write_advanced_config_values() {
-    for key in cli bin_dir data_dir plugin_hosts skills_hosts agents_hosts claude_dir codex_dir codex_skills \
+    for key in cli mcp_enabled bin_dir data_dir plugin_hosts skills_hosts agents_hosts claude_dir codex_dir codex_skills \
         codex_agents_dir completions completions_dir fish_completions_dir add_to_path shell path_file; do
         case "$key" in
             plugin_hosts) host_default "$plugin_claude" "$plugin_codex"; value=$host_choice ;;
             skills_hosts) host_default "$skills_claude" "$skills_codex"; value=$host_choice ;;
             agents_hosts) host_default "$agents_claude" "$agents_codex"; value=$host_choice ;;
-            cli|add_to_path) eval 'value=$'"$key"; if [ "$value" = 1 ]; then value=yes; else value=no; fi ;;
+            cli|add_to_path|mcp_enabled) eval 'value=$'"$key"; if [ "$value" = 1 ]; then value=yes; else value=no; fi ;;
             *) eval 'value=$'"$key" ;;
         esac
         printf '%s\t%s\n' "$key" "$value"
@@ -983,7 +989,7 @@ load_advanced_config_values() {
             extra_skills|extra_claude_agents|extra_codex_agents) append_location "$key" "$value" ;;
             plugin_hosts|skills_hosts|agents_hosts)
                 group=${key%_hosts}; eval "${group}_claude=0; ${group}_codex=0"; select_hosts "$group" "$value" ;;
-            cli|add_to_path) if [ "$value" = yes ]; then eval "$key=1"; else eval "$key=0"; fi ;;
+            cli|add_to_path|mcp_enabled) if [ "$value" = yes ]; then eval "$key=1"; else eval "$key=0"; fi ;;
             bin_dir|data_dir|claude_dir|codex_dir|codex_skills|codex_agents_dir|completions|completions_dir|fish_completions_dir|shell|path_file)
                 eval "$key=\$value" ;;
         esac
@@ -1005,7 +1011,7 @@ edit_advanced_config() {
     cat > "$work/advanced-config.bash" <<'LEANCK_CONFIG_FORM'
 set -u
 values_file=$1 mode=$2 prompt_style=$3 selected_style=$4 error_style=$5 reset_style=$6
-all_fields=(cli bin_dir data_dir plugin_hosts skills_hosts agents_hosts claude_dir codex_dir codex_skills
+all_fields=(cli mcp_enabled bin_dir data_dir plugin_hosts skills_hosts agents_hosts claude_dir codex_dir codex_skills
     codex_agents_dir completions completions_dir fish_completions_dir add_to_path shell path_file)
 extra_skills_count=0 extra_claude_agents_count=0 extra_codex_agents_count=0 pending_field=''
 while IFS=$'\t' read -r field value; do
@@ -1014,7 +1020,7 @@ while IFS=$'\t' read -r field value; do
             counter=${field}_count; count=${!counter}
             printf -v "${field}_$count" '%s' "$value"
             printf -v "$counter" '%s' "$((count + 1))" ;;
-        cli|bin_dir|data_dir|plugin_hosts|skills_hosts|agents_hosts|claude_dir|codex_dir|codex_skills|codex_agents_dir|completions|completions_dir|fish_completions_dir|add_to_path|shell|path_file)
+        cli|mcp_enabled|bin_dir|data_dir|plugin_hosts|skills_hosts|agents_hosts|claude_dir|codex_dir|codex_skills|codex_agents_dir|completions|completions_dir|fish_completions_dir|add_to_path|shell|path_file)
             printf -v "$field" '%s' "$value" ;;
     esac
 done < "$values_file"
@@ -1044,7 +1050,7 @@ build_fields() {
     if [[ $mode == plugin ]]; then
         fields=(data_dir bin_dir skills_bundle)
         labels=('Plugin data directory' 'Executable directory' 'Install skills')
-        context='Plugin installation; MCP enabled'
+        context='Plugin installation'
     else
         fields=(cli bin_dir skills_hosts)
         labels=('Install executable' 'Executable directory' 'Install skills')
@@ -1070,6 +1076,7 @@ build_fields() {
     fields+=(add_to_path); labels+=('Add leanck to PATH')
     if [[ $add_to_path == yes ]]; then fields+=(shell path_file); labels+=('  Shell' '  Shell profile'); fi
     if [[ $mode == plugin ]]; then
+        fields+=(mcp_enabled); labels+=('Enable MCP')
         fields+=(plugin_hosts); labels+=('Register plugins')
         if [[ $plugin_hosts == claude || $plugin_hosts == both ]]; then fields+=(claude_dir); labels+=('  Claude configuration'); fi
         if [[ $plugin_hosts == codex || $plugin_hosts == both ]]; then fields+=(codex_dir); labels+=('  Codex configuration'); fi
@@ -1231,7 +1238,7 @@ save_field() {
     local field previous candidate
     field=${fields[index]}; candidate=$buffer; previous=${!field}
     case "$field" in
-        cli|add_to_path)
+        cli|add_to_path|mcp_enabled)
             case "$candidate" in yes|y|1) candidate=yes ;; no|n|0) candidate=no ;; *) message='Enter yes or no.'; return 1 ;; esac ;;
         plugin_hosts|skills_hosts|agents_hosts)
             case "$candidate" in none|claude|codex|both) ;; *) message='Enter none, claude, codex, or both.'; return 1 ;; esac ;;
@@ -1266,7 +1273,7 @@ save_field() {
 cycle_field() {
     local field=${fields[index]} direction=$1 choices current i next buffer
     case "$field" in
-        cli|add_to_path) choices=(no yes) ;;
+        cli|add_to_path|mcp_enabled) choices=(no yes) ;;
         plugin_hosts|skills_hosts|agents_hosts) choices=(none claude codex both) ;;
         completions) choices=(none bash zsh fish powershell elvish) ;;
         shell) choices=(bash zsh fish) ;;
@@ -1362,7 +1369,7 @@ while :; do
                 case "$field" in
                     save) save_form ;;
                     cancel) request_cancel ;;
-                    cli|add_to_path|plugin_hosts|skills_hosts|agents_hosts|completions|shell) cycle_field 1 ;;
+                    cli|add_to_path|mcp_enabled|plugin_hosts|skills_hosts|agents_hosts|completions|shell) cycle_field 1 ;;
                     add_extra_*)
                         group=${field#add_}; counter=${group}_count; count=${!counter}
                         pending_field=${group}_$count
@@ -1390,7 +1397,7 @@ LEANCK_CONFIG_FORM
     esac
 }
 config_snapshot() {
-    for key in cli bin_dir data_dir plugin_claude plugin_codex skills_claude skills_codex agents_claude agents_codex \
+    for key in cli mcp_enabled bin_dir data_dir plugin_claude plugin_codex skills_claude skills_codex agents_claude agents_codex \
         claude_dir codex_dir codex_skills codex_agents_dir completions completions_dir fish_completions_dir add_to_path shell path_file; do
         eval 'value=$'"$key"
         printf '%s\n' "$value"
@@ -1442,14 +1449,22 @@ apply_install() {
         # write user caches, so even this preparation belongs after confirmation.
         plugin_release=$work/configured
         cp -R "$release" "$plugin_release"
-        python3 - "$plugin_release/plugin/.mcp.codex.json" "$bin_dir/leanck" <<'PYCODE'
+        python3 - "$plugin_release/plugin" "$bin_dir/leanck" "$mcp_enabled" <<'PYCODE'
 import json
 from pathlib import Path
 import sys
-path = Path(sys.argv[1])
+plugin = Path(sys.argv[1])
+path = plugin / '.mcp.codex.json'
 data = json.loads(path.read_text())
 data['mcpServers']['leanck']['command'] = sys.argv[2]
 path.write_text(json.dumps(data, indent=2) + '\n')
+if sys.argv[3] == '0':
+    for name in ('.mcp.json', '.mcp.codex.json'):
+        (plugin / name).rename(plugin / name.replace('.json', '.disabled.json'))
+    manifest = plugin / '.codex-plugin/plugin.json'
+    data = json.loads(manifest.read_text())
+    data.pop('mcpServers', None)
+    manifest.write_text(json.dumps(data, indent=2) + '\n')
 PYCODE
     fi
     if [ "$cli" = 1 ] && ! skipped "$bin_dir/leanck"; then
@@ -1484,6 +1499,9 @@ PYCODE
         install_tree "$plugin_release" "$bundle_dir"
         if preview; then
             plan "Pin Codex MCP command to $bin_dir/leanck"
+            if [ "$mcp_enabled" = 0 ]; then
+                plan 'Would disable MCP: save .mcp.disabled.json and .mcp.codex.disabled.json; remove Codex MCP manifest reference'
+            else plan 'Would enable plugin MCP definitions'; fi
             if [ "$plugin_claude" = 1 ]; then
                 plan "Would run: claude plugin marketplace add \"$bundle_dir\""
                 plan 'Would run: claude plugin install leanck@leanck-installer --scope user'
@@ -1536,6 +1554,9 @@ prepare_plan() {
     cp "$work/source-plan" "$work/plan"
     : > "$work/skip"
     : > "$work/warnings"
+    if [ "$cli" = 1 ] && [ "$add_to_path" = 0 ]; then
+        warn_skipped_option 'leanck will not be added to PATH; agents may not be able to execute leanck. Add its executable directory to the PATH used by your agent host.'
+    fi
     has_components ||
         die 'nothing selected; omit --no-cli or select --skills or --agents'
     if [ -z "$from_repo" ] || [ "$dry_run" = 0 ]; then
@@ -1632,7 +1653,7 @@ main() {
     skills_claude=0 skills_codex=0 agents_claude=0 agents_codex=0 plugin_claude=0 plugin_codex=0
     yes=0 json=0 quiet=0 verbose=0 no_color=0 no_pager=0 interactive=0 planning=0
     committed=0 host_started=0 sequence=0 outcome=failed error='' progress_pid='' form_active=0
-    work='' pending='' installed_version='' timeout=300 add_to_path=0
+    work='' pending='' installed_version='' timeout=300 add_to_path=0 mcp_enabled=0
     from_repo='' extra_skills='' extra_claude_agents='' extra_codex_agents=''
     codex_agents_dir='' completions_dir=''
     active_child='' command_watchdog=''
@@ -1710,6 +1731,8 @@ main() {
                 verbose=$((verbose + ${#short})); shift ;;
             --add-to-path) add_to_path=1; path_set=1; shift ;;
             --no-add-to-path) add_to_path=0; path_set=1; shift ;;
+            --mcp) mcp_enabled=1; shift ;;
+            --no-mcp) mcp_enabled=0; shift ;;
             --extra-skills-dir|--extra-claude-agents-dir|--extra-codex-agents-dir)
                 need_value "$@"; key=$(printf '%s' "${1#--}" | tr - _); key=${key%_dir}
                 append_location "$key" "$2"; shift 2 ;;
