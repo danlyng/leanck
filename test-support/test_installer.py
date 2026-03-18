@@ -249,11 +249,16 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         self.completion_config(terminal, completions)
         terminal.prompt("Add leanck to PATH?", path)
 
-    def standalone_config(self, terminal, *, binary_dir="", skills="", agents="", completions="none", path=""):
+    def standalone_config(self, terminal, *, binary_dir="", skills="", skill_choices=None, skill_names=None, agents="", completions="none", path=""):
         terminal.choose("Install as plugin or standalone?", "Standalone")
         terminal.prompt("Install the CLI?")
         terminal.prompt("Install location", str(binary_dir))
         terminal.prompt("Standalone skills", skills)
+        if skills in ("claude", "codex", "both"):
+            if skill_names is None:
+                skill_names = sorted(p.name for p in (REPO / "leanck-skills").iterdir() if p.is_dir())
+            for name in skill_names:
+                terminal.prompt(f"Install {name} (", (skill_choices or {}).get(name, ""))
         terminal.prompt("Custom agents", agents)
         if skills in ("claude", "both") or agents in ("claude", "both"):
             terminal.prompt("Claude configuration directory")
@@ -508,7 +513,7 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         (skill / "custom.txt").write_text("keep this")
         before = self.snapshot_home()
         def drive(t):
-            self.standalone_config(t, skills="claude")
+            self.standalone_config(t, skills="claude", skill_names=["new-proof"])
             t.prompt("Keep it, back up and replace", "replace")
             t.choose(STANDALONE_PROMPT, "Edit advanced config...")
             t.action("Save changes")
@@ -1625,6 +1630,86 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
             self.assertTrue((directory / "lean-proving/reference/search-queries.md").is_file())
         self.assertFalse((self.home / ".local/bin/leanck").exists())
         self.assertIn("/download/v1.2.3/", self.calls()[0][-1])
+
+    def test_individual_skills_apply_to_hosts_extra_locations_and_saved_choices(self):
+        extra = self.root / "extra skills"
+        omitted = self.home / "claude/skills/lean-proving/SKILL.md"
+        omitted.parent.mkdir(parents=True)
+        omitted.write_text("keep this unselected skill")
+        self.run_install("--no-cli", "--skills", "both", "--skill", "leanck",
+                         "--skill", "lean-style", "--extra-skills-dir", str(extra))
+        for directory in (self.home / "claude/skills", self.home / ".agents/skills", extra):
+            for name in ("leanck", "lean-style"):
+                self.assertTrue((directory / name / "SKILL.md").is_file())
+        self.assertEqual(omitted.read_text(), "keep this unselected skill")
+        self.assertFalse((extra / "lean-proving").exists())
+        state = (self.home / "state/leanck/installer/selections.tsv").read_text()
+        self.assertIn("selected_skills\tleanck lean-style\n", state)
+        result = self.run_install("--no-cli", "--skills", "both", "--dry-run")
+        self.assertIn(b"Selected skills: leanck lean-style", result.stderr)
+        self.assertNotIn(str(omitted.parent).encode(), result.stderr)
+
+    def test_skill_flags_override_saved_choices_and_can_restore_all(self):
+        self.run_install("--no-cli", "--skills", "codex", "--skill", "leanck")
+        skills = self.home / ".agents/skills"
+        self.assertEqual({p.name for p in skills.iterdir()}, {"leanck"})
+        result = self.run_install("--no-cli", "--skills", "codex", "--skill", "lean-style",
+                                  "--skill", "lean-style", "--dry-run")
+        self.assertIn(b"Selected skills: lean-style\n", result.stderr)
+        self.assertNotIn(f"Would install {skills / 'leanck'}".encode(), result.stderr)
+        self.run_install("--no-cli", "--skills", "codex", "--skill", "all")
+        self.assertEqual({p.name for p in skills.iterdir()},
+                         {p.name for p in (REPO / "leanck-skills").iterdir() if p.is_dir()})
+
+    def test_invalid_skill_selections_fail_without_installing(self):
+        before = self.snapshot_home()
+        for args, message in (
+            (("--skills", "codex", "--skill", "missing"), b"unknown skill: missing"),
+            (("--skill", "../leanck"), b"invalid skill name"),
+            (("--no-cli", "--skills", "both", "--skill", "none"), b"nothing selected"),
+            (("--plugin", "codex", "--skill", "leanck"), b"plugin mode includes all skills"),
+        ):
+            with self.subTest(args=args):
+                result = self.run_install(*args, success=False)
+                self.assertIn(message, result.stderr)
+                self.assertEqual(self.snapshot_home(), before)
+
+    def test_terminal_selects_skills_with_descriptions_and_edits_individual_choices(self):
+        def drive(t):
+            self.standalone_config(t, skills="both", path="no",
+                                   skill_choices={"lean-proving": "no", "lean-style": "no"})
+            t.choose(STANDALONE_PROMPT, "Edit advanced config...")
+            t.focus("leanck")
+            t.wait(lambda: "Minimal leanck command reference" in "\n".join(t.screen.lines), "skill description")
+            t.enum("lean-style", "yes")
+            t.wait(lambda: "Style cleanup using specialized agents" in "\n".join(t.screen.lines), "style description")
+            t.action("Save changes")
+            t.choose(STANDALONE_PROMPT, "Continue")
+        code, output = self.run_interactive(drive)
+        self.assertEqual(code, 0, output.decode())
+        for directory in (self.home / "claude/skills", self.home / ".agents/skills"):
+            self.assertEqual({p.name for p in directory.iterdir()}, {"leanck", "lean-style"})
+        for description in (b"Minimal leanck command reference", b"Opinionated Lean theorem-proving workflow",
+                            b"Style cleanup using specialized agents"):
+            self.assertIn(description, output)
+        self.assertIn(b"Plugin: bundles the CLI, all skills, agents, and hooks, with optional MCP.", output)
+        self.assertIn(b"Standalone (a la carte): choose the CLI, individual skills, and agents", output)
+
+    def test_plain_terminal_can_select_only_the_minimal_skill(self):
+        def drive(t):
+            t.prompt("Install as plugin or standalone?", "standalone")
+            t.prompt("Install the CLI?", "no")
+            t.prompt("Standalone skills", "codex")
+            for skill in sorted((REPO / "leanck-skills").iterdir()):
+                if skill.is_dir():
+                    t.prompt(f"Install {skill.name} (", "yes" if skill.name == "leanck" else "no")
+            t.prompt("Custom agents", "none")
+            t.prompt("Codex skills directory")
+            t.prompt(STANDALONE_PROMPT, "continue")
+        code, output = self.run_interactive(drive, env={"TERM": "dumb"})
+        self.assertEqual(code, 0, output.decode())
+        self.assertEqual({p.name for p in (self.home / ".agents/skills").iterdir()}, {"leanck"})
+        self.assertNotRegex(output, rb"\x1b\[[0-9;]*m")
 
     def test_dry_run_all_preserves_existing_files_and_never_executes_hosts_or_binary(self):
         self.env["LEANCK_TEST_SYSTEM"] = "Darwin"

@@ -56,6 +56,12 @@ impl Fixture {
             "updated proof skill",
         )
         .unwrap();
+        fs::create_dir_all(package.join("plugin/skills/reference")).unwrap();
+        fs::write(
+            package.join("plugin/skills/reference/SKILL.md"),
+            "new reference skill",
+        )
+        .unwrap();
         fs::create_dir_all(package.join("plugin/codex/agents")).unwrap();
         fs::write(
             package.join("plugin/codex/agents/first.toml"),
@@ -168,6 +174,7 @@ impl Fixture {
             },
             pin: None,
             hosts: vec![],
+            selected_skills: None,
             registration_pending: false,
             components: vec![
                 Component {
@@ -472,6 +479,10 @@ async fn native_command_downloads_verifies_previews_and_updates_all_components()
         fs::read_to_string(fixture.root.join("skills/prove/SKILL.md")).unwrap(),
         "updated proof skill"
     );
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("skills/reference/SKILL.md")).unwrap(),
+        "new reference skill"
+    );
     let selections = fs::read_to_string(receipt.state_dir.join("selections.tsv")).unwrap();
     assert!(selections.contains(&format!(
         "last_binary_digest\t{}",
@@ -481,6 +492,46 @@ async fn native_command_downloads_verifies_previews_and_updates_all_components()
         "installed_version\tv{}",
         env!("CARGO_PKG_VERSION")
     )));
+}
+
+#[tokio::test]
+async fn native_updates_preserve_individual_skill_selections() {
+    let fixture = Fixture::new().await;
+    let mut receipt = fixture.receipt.clone();
+    receipt.selected_skills = Some(vec!["prove".into()]);
+    receipt.write().unwrap();
+    let omitted = fixture.root.join("skills/reference");
+    fs::create_dir(&omitted).unwrap();
+    fs::write(omitted.join("SKILL.md"), "custom reference skill").unwrap();
+    let result = fixture
+        .run(&[
+            "update",
+            "--version",
+            env!("CARGO_PKG_VERSION"),
+            "--yes",
+            "--json",
+        ])
+        .await;
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(omitted.join("SKILL.md")).unwrap(),
+        "custom reference skill"
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("skills/prove/SKILL.md")).unwrap(),
+        "updated proof skill"
+    );
+    assert_eq!(
+        Receipt::discover(&receipt.binary, None)
+            .unwrap()
+            .unwrap()
+            .selected_skills,
+        Some(vec!["prove".into()])
+    );
 }
 
 #[tokio::test]
@@ -680,6 +731,10 @@ printf 200
         .args([
             "--yes",
             "--standalone",
+            "--skills",
+            "codex",
+            "--skill",
+            "prove",
             "--completions",
             "none",
             "--no-add-to-path",
@@ -707,8 +762,11 @@ printf 200
     let receipt = Receipt::discover(&binary, None).unwrap().unwrap();
     assert_eq!(receipt.mode, "standalone");
     assert_eq!(receipt.version, env!("CARGO_PKG_VERSION"));
-    assert_eq!(receipt.components.len(), 1);
+    assert_eq!(receipt.selected_skills, Some(vec!["prove".into()]));
+    assert_eq!(receipt.components.len(), 2);
     assert_eq!(receipt.components[0].source, "plugin/bin/leanck");
+    assert!(fixture.root.join(".agents/skills/prove/SKILL.md").is_file());
+    assert!(!fixture.root.join(".agents/skills/reference").exists());
     assert!(
         Maintenance::acquire(&state).is_ok(),
         "bootstrap shell must release its lock"
@@ -731,6 +789,7 @@ printf 200
         String::from_utf8_lossy(&result.stderr)
     );
     assert!(!binary.exists());
+    assert!(!fixture.root.join(".agents/skills/prove").exists());
     assert!(!Receipt::marker(&binary).exists());
     assert!(!state.join("receipt.json").exists());
     assert!(

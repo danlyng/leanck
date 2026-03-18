@@ -3,7 +3,7 @@
 # All execution is inside main so a truncated download cannot start installation.
 
 # Prompts use a separate terminal descriptor: stdin may contain this script.
-INSTALLER_VERSION="0.5.0"
+INSTALLER_VERSION="0.6.0"
 colors() {
     bold='' cyan='' green='' yellow='' red='' reset='' out_bold='' out_reset=''
     prompt_style='' selected_style='' input_style=''
@@ -158,6 +158,7 @@ configure_standalone() {
     yes_no 'Install the CLI?' "$( [ "$cli" = 1 ] && printf yes || printf no )"; cli=$answer
     if [ "$cli" = 1 ]; then prompt 'Install location' "$bin_dir" text; bin_dir=$reply; fi
     host_default "$skills_claude" "$skills_codex"; choose_hosts skills 'Standalone skills' "$host_choice"
+    if [ "$skills_claude$skills_codex" != 00 ] || [ -n "$extra_skills" ]; then choose_skills; fi
     host_default "$agents_claude" "$agents_codex"; choose_hosts agents 'Custom agents' "$host_choice"
     if [ "$skills_claude$agents_claude" != 00 ]; then prompt 'Claude configuration directory' "$claude_dir" text; claude_dir=$reply; fi
     if [ "$skills_codex" = 1 ]; then prompt 'Codex skills directory' "$codex_skills" text; codex_skills=$reply; fi
@@ -169,6 +170,47 @@ configure_standalone() {
             add_to_path=$answer ;;
         esac
     fi
+}
+skill_description() {
+    case "$1" in
+        leanck) printf '%s' 'Minimal leanck command reference' ;;
+        lean-proving) printf '%s' 'Opinionated Lean theorem-proving workflow' ;;
+        lean-style) printf '%s' 'Style cleanup using specialized agents' ;;
+        *) printf '%s' 'Lean development skill' ;;
+    esac
+}
+valid_skill_name() {
+    case "$1" in ''|*[!a-z0-9-]*|-*|*-|*--*) die "invalid skill name: $1; use --skill NAME (repeatable), all, or none" ;; esac
+}
+skill_selected() {
+    [ "$mode" != plugin ] || return 0
+    case "$selected_skills" in
+        all) return 0 ;;
+        none) return 1 ;;
+        *) case " $selected_skills " in *" $1 "*) return 0 ;; *) return 1 ;; esac ;;
+    esac
+}
+validate_skill_selection() {
+    [ "$mode" = standalone ] || return 0
+    case "$selected_skills" in all|none) return 0 ;; esac
+    for skill_name in $selected_skills; do
+        valid_skill_name "$skill_name"
+        [ -d "$plugin/skills/$skill_name" ] ||
+            die "unknown skill: $skill_name; choose a skill included in this release, or use --skill all"
+    done
+}
+choose_skills() {
+    chosen_skills='' all_skills=1
+    for skill_path in "$plugin"/skills/*; do
+        [ -d "$skill_path" ] || continue
+        skill_name=${skill_path##*/}
+        if skill_selected "$skill_name"; then skill_default=yes; else skill_default=no; fi
+        yes_no "Install $skill_name ($(skill_description "$skill_name"))?" "$skill_default"
+        if [ "$answer" = 1 ]; then chosen_skills=${chosen_skills:+$chosen_skills }$skill_name
+        else all_skills=0; fi
+    done
+    selected_skills=${chosen_skills:-none}
+    [ "$all_skills" = 0 ] || selected_skills=all
 }
 absolute_path() {
     case "$1" in
@@ -238,8 +280,11 @@ configure_path() {
 }
 codex_agents_destination() { codex_agent_path=${codex_agents_dir:-$codex_dir/agents/leanck}; }
 has_components() {
-    [ "$cli$skills_claude$skills_codex$agents_claude$agents_codex" != 00000 ] ||
-        [ -n "$extra_skills$extra_claude_agents$extra_codex_agents" ]
+    [ "$cli$agents_claude$agents_codex" != 000 ] || [ -n "$extra_claude_agents$extra_codex_agents" ] || {
+        [ "$selected_skills" != none ] && {
+            [ "$skills_claude$skills_codex" != 00 ] || [ -n "$extra_skills" ]
+        }
+    }
 }
 append_location() {
     location_key=$1
@@ -273,6 +318,7 @@ extra_locations() {
             case "$extra_key" in
                 extra_skills)
                     for extra_skill in "$plugin"/skills/*; do
+                        skill_selected "${extra_skill##*/}" || continue
                         if [ "$extra_action" = check ]; then check_destination "$extra_location/${extra_skill##*/}"
                         else install_tree "$extra_skill" "$extra_location/${extra_skill##*/}"; fi
                     done ;;
@@ -495,6 +541,7 @@ ${b}Component selection:${r}
       --cli, --no-cli              Install or skip the executable (default: --cli)
       --mcp, --no-mcp              Enable or disable plugin MCP definitions (default: disabled)
       --skills HOST                Standalone skills: none, claude, codex, or both
+      --skill NAME                 Select an a la carte skill (repeatable; default: all; or none)
       --agents HOST                Custom agents: none, claude, codex, or both
       --completions SHELL          Shell completions: bash, zsh, fish, powershell, elvish, or none
 
@@ -525,10 +572,20 @@ ${b}Source & output:${r}
   -q, --quiet                      Suppress non-essential progress messages
   -v, --verbose                    Increase detail (repeatable for command output)
 
+${b}Installation modes:${r}
+  Plugin (default): bundles the CLI, all skills, agents, and hooks for Claude Code
+  or Codex, with optional MCP. A la carte (--standalone): installs only the CLI,
+  individual skills, and agents you select, without plugin registration or hooks.
+
+${b}Skills:${r}
+  leanck        Minimal leanck command reference
+  lean-proving  Opinionated Lean theorem-proving workflow
+  lean-style    Style cleanup using specialized agents
+
 ${b}Examples:${r}
   curl -fsSL https://lean4.party/leanck-install.sh | sh
   sh install.sh --plugin codex
-  sh install.sh --standalone --skills both
+  sh install.sh --standalone --skills both --skill leanck
   sh install.sh --yes --all --version v0.30.0
   sh install.sh --from-repo .
   sh install.sh --dry-run --json
@@ -659,7 +716,7 @@ prepare_preview() {
     # Keep these expected component names in sync with leanck-skills/ and leanck-subagents/.
     release=$work/preview
     plugin=$release/plugin
-    for skill in lean-proving lean-simplify lean-style; do
+    for skill in leanck lean-proving lean-style; do
         mkdir -p "$plugin/skills/$skill"
     done
     mkdir -p "$plugin/agents" "$plugin/codex/agents"
@@ -834,7 +891,7 @@ load_state() {
             cli|skills_claude|skills_codex|agents_claude|agents_codex|add_to_path|mcp_enabled)
                 case "$value" in 0|1) eval "$key=\$value" ;; esac ;;
             bin_dir) standalone_bin_dir=$value ;;
-            version|data_dir|claude_dir|codex_dir|codex_skills|codex_agents_dir|completions_dir|fish_completions_dir|path_file|completions|shell|last_binary_path|last_binary_digest|last_completions_path|last_completions_digest|standalone_bin_dir|plugin_bin_dir)
+            selected_skills|version|data_dir|claude_dir|codex_dir|codex_skills|codex_agents_dir|completions_dir|fish_completions_dir|path_file|completions|shell|last_binary_path|last_binary_digest|last_completions_path|last_completions_digest|standalone_bin_dir|plugin_bin_dir)
                 eval "$key=\$value" ;;
         esac
     done < "$state_dir/selections.tsv"
@@ -866,7 +923,7 @@ save_state() {
         plugin_bin_dir=''; [ "$bin_dir" = "$data_dir/bin" ] || plugin_bin_dir=$bin_dir
     fi
     installed_target=$arch-$platform
-    for key in mode plugin_claude plugin_codex from_repo release_url installed_version installed_target version last_binary_path last_binary_digest last_completions_path last_completions_digest cli skills_claude skills_codex agents_claude agents_codex add_to_path mcp_enabled standalone_bin_dir plugin_bin_dir data_dir claude_dir codex_dir codex_skills codex_agents_dir completions_dir fish_completions_dir path_file completions shell; do
+    for key in mode plugin_claude plugin_codex from_repo release_url installed_version installed_target version last_binary_path last_binary_digest last_completions_path last_completions_digest cli skills_claude skills_codex selected_skills agents_claude agents_codex add_to_path mcp_enabled standalone_bin_dir plugin_bin_dir data_dir claude_dir codex_dir codex_skills codex_agents_dir completions_dir fish_completions_dir path_file completions shell; do
         eval 'value=$'"$key"
         printf '%s\t%s\n' "$key" "$value" >> "$pending"
     done
@@ -919,6 +976,7 @@ inspect_config() {
         fi
     else
         host_default "$skills_claude" "$skills_codex"; printf '%s%s\n' '- Skills: ' "$host_choice" >&2
+        printf '%s%s\n' '- Selected skills: ' "$selected_skills" >&2
         host_default "$agents_claude" "$agents_codex"; printf '%s%s\n' '- Agents: ' "$host_choice" >&2
         printf '%s\n' '- MCP: disabled (available through leanck serve mcp)' >&2
         if [ "$agents_codex" = 1 ]; then
@@ -970,6 +1028,7 @@ edit_advanced_config_plain() {
             skills)
                 if [ "$mode" = standalone ]; then
                     host_default "$skills_claude" "$skills_codex"; choose_hosts skills 'Install skills' "$host_choice"
+                    choose_skills
                     if [ "$skills_claude" = 1 ]; then prompt 'Claude configuration directory' "$claude_dir" text; claude_dir=$reply; fi
                     if [ "$skills_codex" = 1 ]; then prompt 'Codex skills directory' "$codex_skills" text; codex_skills=$reply; fi
                 fi
@@ -1022,7 +1081,7 @@ edit_advanced_config_plain() {
     done
 }
 write_advanced_config_values() {
-    for key in cli mcp_enabled bin_dir data_dir plugin_hosts skills_hosts agents_hosts claude_dir codex_dir codex_skills \
+    for key in cli mcp_enabled bin_dir data_dir plugin_hosts skills_hosts selected_skills agents_hosts claude_dir codex_dir codex_skills \
         codex_agents_dir completions completions_dir fish_completions_dir add_to_path shell path_file; do
         case "$key" in
             plugin_hosts) host_default "$plugin_claude" "$plugin_codex"; value=$host_choice ;;
@@ -1034,6 +1093,11 @@ write_advanced_config_values() {
         printf '%s\t%s\n' "$key" "$value"
     done
     write_location_values
+    for skill_path in "$plugin"/skills/*; do
+        [ -d "$skill_path" ] || continue
+        skill_name=${skill_path##*/}; valid_skill_name "$skill_name"
+        printf 'available_skill\t%s|%s\n' "$skill_name" "$(skill_description "$skill_name")"
+    done
 }
 load_advanced_config_values() {
     extra_skills='' extra_claude_agents='' extra_codex_agents=''
@@ -1045,7 +1109,7 @@ load_advanced_config_values() {
             plugin_hosts|skills_hosts|agents_hosts)
                 group=${key%_hosts}; eval "${group}_claude=0; ${group}_codex=0"; select_hosts "$group" "$value" ;;
             cli|add_to_path|mcp_enabled) if [ "$value" = yes ]; then eval "$key=1"; else eval "$key=0"; fi ;;
-            bin_dir|data_dir|claude_dir|codex_dir|codex_skills|codex_agents_dir|completions|completions_dir|fish_completions_dir|shell|path_file)
+            selected_skills|bin_dir|data_dir|claude_dir|codex_dir|codex_skills|codex_agents_dir|completions|completions_dir|fish_completions_dir|shell|path_file)
                 eval "$key=\$value" ;;
         esac
     done < "$1"
@@ -1069,19 +1133,39 @@ values_file=$1 mode=$2 prompt_style=$3 selected_style=$4 error_style=$5 reset_st
 all_fields=(cli mcp_enabled bin_dir data_dir plugin_hosts skills_hosts agents_hosts claude_dir codex_dir codex_skills
     codex_agents_dir completions completions_dir fish_completions_dir add_to_path shell path_file)
 extra_skills_count=0 extra_claude_agents_count=0 extra_codex_agents_count=0 pending_field=''
+skill_names=() skill_descriptions=()
 while IFS=$'\t' read -r field value; do
     case "$field" in
+        available_skill)
+            skill_names+=("${value%%|*}"); skill_descriptions+=("${value#*|}") ;;
         extra_skills|extra_claude_agents|extra_codex_agents)
             counter=${field}_count; count=${!counter}
             printf -v "${field}_$count" '%s' "$value"
             printf -v "$counter" '%s' "$((count + 1))" ;;
-        cli|mcp_enabled|bin_dir|data_dir|plugin_hosts|skills_hosts|agents_hosts|claude_dir|codex_dir|codex_skills|codex_agents_dir|completions|completions_dir|fish_completions_dir|add_to_path|shell|path_file)
+        selected_skills|cli|mcp_enabled|bin_dir|data_dir|plugin_hosts|skills_hosts|agents_hosts|claude_dir|codex_dir|codex_skills|codex_agents_dir|completions|completions_dir|fish_completions_dir|add_to_path|shell|path_file)
             printf -v "$field" '%s' "$value" ;;
     esac
 done < "$values_file"
+for ((i=0; i<${#skill_names[@]}; i++)); do
+    value=no
+    if [[ $selected_skills == all || " $selected_skills " == *" ${skill_names[i]} "* ]]; then value=yes; fi
+    printf -v "skill_$i" '%s' "$value"
+done
+form_selected_skills() {
+    local i field chosen='' all_selected=1
+    if [[ $mode == plugin ]]; then printf '%s' "$selected_skills"; return; fi
+    for ((i=0; i<${#skill_names[@]}; i++)); do
+        field=skill_$i
+        if [[ ${!field} == yes ]]; then chosen=${chosen:+$chosen }${skill_names[i]}
+        else all_selected=0; fi
+    done
+    if [[ $selected_skills == all && $all_selected == 1 ]]; then printf all
+    else printf '%s' "${chosen:-none}"; fi
+}
 write_form_values() {
     local field group counter count i
     for field in "${all_fields[@]}"; do printf '%s\t%s\n' "$field" "${!field}"; done
+    printf 'selected_skills\t%s\n' "$(form_selected_skills)"
     for group in extra_skills extra_claude_agents extra_codex_agents; do
         counter=${group}_count; count=${!counter}
         for ((i=0; i<count; i++)); do
@@ -1102,6 +1186,7 @@ add_location_fields() {
     done
 }
 build_fields() {
+    local i
     if [[ $mode == plugin ]]; then
         fields=(data_dir bin_dir skills_bundle)
         labels=('Plugin data directory' 'Executable directory' 'Install skills')
@@ -1110,6 +1195,9 @@ build_fields() {
         fields=(cli bin_dir skills_hosts)
         labels=('Install executable' 'Executable directory' 'Install skills')
         context='Standalone installation'
+        for ((i=0; i<${#skill_names[@]}; i++)); do
+            fields+=("skill_$i"); labels+=("  ${skill_names[i]}")
+        done
         if [[ $skills_hosts == claude || $skills_hosts == both ]]; then fields+=(claude_dir); labels+=('  Claude configuration'); fi
         if [[ $skills_hosts == codex || $skills_hosts == both ]]; then fields+=(codex_skills); labels+=('  Codex skills directory'); fi
     fi
@@ -1185,7 +1273,7 @@ field_value() {
     esac
 }
 render_form() {
-    local rows columns count visible old_height label_width available i marker style label shown prefix row_value
+    local rows columns count visible old_height label_width available i marker style label shown prefix row_value hint hint_style
     printf '\033[?25l' >&2
     read -r rows columns < <(stty size <&3)
     ((rows > 4)) || rows=24
@@ -1238,7 +1326,11 @@ render_form() {
         fi
     done
     block_height=$((visible + 2)); current_row=$block_height; rendered=1
-    printf '\r\033[2K%s%s%s' "$error_style" "${message:0:$((columns - 1))}" "$reset_style" >&2
+    hint=$message hint_style=$error_style
+    if [[ -z $hint && ${fields[index]} == skill_* ]]; then
+        hint=${skill_descriptions[${fields[index]#skill_}]} hint_style=$reset_style
+    fi
+    printf '\r\033[2K%s%s%s' "$hint_style" "${hint:0:$((columns - 1))}" "$reset_style" >&2
     ((old_height <= block_height)) || printf '\033[J' >&2
     if ((editing)); then
         current_row=$((index - top + 2))
@@ -1293,7 +1385,7 @@ save_field() {
     local field previous candidate
     field=${fields[index]}; candidate=$buffer; previous=${!field}
     case "$field" in
-        cli|add_to_path|mcp_enabled)
+        skill_*|cli|add_to_path|mcp_enabled)
             case "$candidate" in yes|y|1) candidate=yes ;; no|n|0) candidate=no ;; *) message='Enter yes or no.'; return 1 ;; esac ;;
         plugin_hosts|skills_hosts|agents_hosts)
             case "$candidate" in none|claude|codex|both) ;; *) message='Enter none, claude, codex, or both.'; return 1 ;; esac ;;
@@ -1328,7 +1420,7 @@ save_field() {
 cycle_field() {
     local field=${fields[index]} direction=$1 choices current i next buffer
     case "$field" in
-        cli|add_to_path|mcp_enabled) choices=(no yes) ;;
+        skill_*|cli|add_to_path|mcp_enabled) choices=(no yes) ;;
         plugin_hosts|skills_hosts|agents_hosts) choices=(none claude codex both) ;;
         completions) choices=(none bash zsh fish powershell elvish) ;;
         shell) choices=(bash zsh fish) ;;
@@ -1360,8 +1452,17 @@ request_cancel() {
     else cancel_form; fi
 }
 save_form() {
-    local field
-    if [[ $mode == standalone && $cli == no && $skills_hosts == none && $agents_hosts == none && $(write_form_values) != *$'\nextra_'* ]]; then
+    local field has_skills=no has_extra_agents=no i
+    if [[ $(form_selected_skills) != none ]]; then
+        [[ $skills_hosts == none ]] || has_skills=yes
+        for ((i=0; i<extra_skills_count; i++)); do
+            field=extra_skills_$i; [[ -z ${!field} ]] || has_skills=yes
+        done
+    fi
+    for field in $(write_form_values | cut -f1); do
+        case "$field" in extra_claude_agents|extra_codex_agents) has_extra_agents=yes ;; esac
+    done
+    if [[ $mode == standalone && $cli == no && $has_skills == no && $agents_hosts == none && $has_extra_agents == no ]]; then
         message='Select an executable, skills, or custom agents before continuing.'; return 1
     fi
     if [[ $add_to_path == yes ]]; then
@@ -1424,7 +1525,7 @@ while :; do
                 case "$field" in
                     save) save_form ;;
                     cancel) request_cancel ;;
-                    cli|add_to_path|mcp_enabled|plugin_hosts|skills_hosts|agents_hosts|completions|shell) cycle_field 1 ;;
+                    skill_*|cli|add_to_path|mcp_enabled|plugin_hosts|skills_hosts|agents_hosts|completions|shell) cycle_field 1 ;;
                     add_extra_*)
                         group=${field#add_}; counter=${group}_count; count=${!counter}
                         pending_field=${group}_$count
@@ -1452,7 +1553,7 @@ LEANCK_CONFIG_FORM
     esac
 }
 config_snapshot() {
-    for key in cli mcp_enabled bin_dir data_dir plugin_claude plugin_codex skills_claude skills_codex agents_claude agents_codex \
+    for key in cli mcp_enabled bin_dir data_dir plugin_claude plugin_codex skills_claude skills_codex selected_skills agents_claude agents_codex \
         claude_dir codex_dir codex_skills codex_agents_dir completions completions_dir fish_completions_dir add_to_path shell path_file; do
         eval 'value=$'"$key"
         printf '%s\n' "$value"
@@ -1546,7 +1647,10 @@ PYCODE
             selected=$skills_codex; skills_dir=$codex_skills
         fi
         if [ "$selected" = 1 ]; then
-            for skill in "$plugin"/skills/*; do install_tree "$skill" "$skills_dir/${skill##*/}"; done
+            for skill in "$plugin"/skills/*; do
+                skill_selected "${skill##*/}" || continue
+                install_tree "$skill" "$skills_dir/${skill##*/}"
+            done
         fi
     done
     if [ "$agents_claude" = 1 ]; then install_agents "$plugin/agents" "$claude_dir/agents" '*.md'; fi
@@ -1619,6 +1723,7 @@ register_plugins() {
 }
 
 prepare_plan() {
+    validate_skill_selection
     for key in state_dir bin_dir data_dir claude_dir codex_dir codex_skills fish_completions_dir path_file codex_agents_dir completions_dir; do
         eval 'value=$'"$key"
         [ -n "$value" ] || continue
@@ -1666,7 +1771,10 @@ prepare_plan() {
             selected=$skills_codex; skills_dir=$codex_skills
         fi
         if [ "$selected" = 1 ]; then
-            for skill in "$plugin"/skills/*; do check_destination "$skills_dir/${skill##*/}"; done
+            for skill in "$plugin"/skills/*; do
+                skill_selected "${skill##*/}" || continue
+                check_destination "$skills_dir/${skill##*/}"
+            done
         fi
     done
     if [ "$agents_claude" = 1 ]; then check_agents "$plugin/agents" "$claude_dir/agents" '*.md'; fi
@@ -1730,6 +1838,7 @@ main() {
     umask 077
     cli=1 force=0 dry_run=0 release_unavailable=0 version=latest mode=plugin mode_requested=''
     skills_claude=0 skills_codex=0 agents_claude=0 agents_codex=0 plugin_claude=0 plugin_codex=0
+    selected_skills=all skill_explicit=0
     yes=0 json=0 quiet=0 verbose=0 no_color=0 no_pager=0 interactive=0 planning=0
     committed=0 host_started=0 sequence=0 outcome=failed error='' progress_pid='' form_active=0
     work='' pending='' installed_version='' timeout=300 add_to_path=0 mcp_enabled=0
@@ -1794,6 +1903,18 @@ main() {
                 fi
                 shift 2 ;;
             --all) mode_requested=plugin; cli=1; cli_explicit=1; plugin_claude=1; plugin_codex=1; plugin_explicit=1; shift ;;
+            --skill)
+                need_value "$@"; valid_skill_name "$2"
+                if [ "$skill_explicit" = 0 ]; then selected_skills=none; fi
+                skill_explicit=1
+                case "$2" in
+                    all|none) selected_skills=$2 ;;
+                    *)
+                        case "$selected_skills" in all|none) selected_skills=$2 ;;
+                            *) case " $selected_skills " in *" $2 "*) ;; *) selected_skills="$selected_skills $2" ;; esac ;;
+                        esac ;;
+                esac
+                shift 2 ;;
             --standalone) mode_requested=standalone; shift ;;
             --cli) cli=1; cli_explicit=1; shift ;;
             --no-cli) cli=0; cli_explicit=1; shift ;;
@@ -1825,7 +1946,7 @@ main() {
         esac
     done
     if [ -n "$mode_requested" ]; then mode=$mode_requested
-    elif [ "$skills_explicit$agents_explicit" != 00 ] || [ "$cli_explicit:$cli" = 1:0 ]; then mode=standalone; fi
+    elif [ "$skills_explicit$agents_explicit$skill_explicit" != 000 ] || [ "$cli_explicit:$cli" = 1:0 ]; then mode=standalone; fi
     if [ "$mode" = plugin ] && [ "$cli_explicit" = 0 ]; then cli=1; fi
     if [ "$bin_dir_set" = 0 ]; then bin_dir=$standalone_bin_dir; fi
     if [ "$shell_changed" = 1 ]; then
@@ -1857,6 +1978,8 @@ main() {
     if [ "$interactive" = 0 ]; then
         if [ "$mode" = plugin ]; then
             [ "$cli" = 1 ] || die 'plugin mode includes the executable; omit --no-cli or use --standalone'
+            [ "$skill_explicit" = 0 ] || [ "$selected_skills" = all ] ||
+                die 'plugin mode includes all skills; use --standalone with --skills HOST to select individual skills'
         else
             has_components ||
                 die 'nothing selected; omit --no-cli or select --skills or --agents'
@@ -1967,6 +2090,9 @@ main() {
     if [ "$quiet" = 0 ] || [ "$interactive" = 1 ]; then
         printf '\n%sWelcome to the leanck %s installer%s\n' "$bold" "$installed_version" "$reset" >&2
         printf 'Detected coding agents: %s\n' "$detected_agents" >&2
+        printf '\n%s\n%s\n\n' \
+            'Plugin: bundles the CLI, all skills, agents, and hooks, with optional MCP.' \
+            'Standalone (a la carte): choose the CLI, individual skills, and agents; no plugin registration or hooks.' >&2
     fi
     if [ "$interactive" = 1 ]; then
         command -v bash >/dev/null 2>&1 || die 'interactive prompts require bash; install bash or use --yes with explicit flags'

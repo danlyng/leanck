@@ -314,6 +314,13 @@ pub async fn prepare(receipt: Receipt, requested: Option<&str>) -> Result<Prepar
             if component.kind == "tree" && !entry.file_type()?.is_dir() {
                 continue;
             }
+            if parent == Path::new("plugin/skills")
+                && receipt.selected_skills.as_ref().is_some_and(|names| {
+                    !names.iter().any(|name| entry.file_name() == name.as_str())
+                })
+            {
+                continue;
+            }
             if component.kind == "agent" && entry.path().extension() != source.extension() {
                 continue;
             }
@@ -868,6 +875,7 @@ mod tests {
             source: ReleaseSource::default(),
             pin: None,
             hosts: vec![],
+            selected_skills: None,
             components: components.clone(),
             registration_pending: false,
         };
@@ -925,6 +933,48 @@ mod tests {
                 .to_string_lossy()
                 .starts_with("update-backups-")
         }));
+    }
+
+    #[test]
+    fn installer_receipts_record_skill_choices_and_keep_plugins_bundled() {
+        let (_dir, prepared) = fixture();
+        let receipt = prepared.receipt;
+        fs::write(
+            receipt.state_dir.join("sources.tsv"),
+            receipt
+                .components
+                .iter()
+                .map(|c| {
+                    format!(
+                        "{}\t{}\t{}\t{}\n",
+                        c.kind,
+                        c.fingerprint,
+                        c.destination.display(),
+                        c.source
+                    )
+                })
+                .collect::<String>(),
+        )
+        .unwrap();
+        for (mode, selection, expected) in [
+            (
+                "standalone",
+                "prove reference",
+                Some(vec!["prove".into(), "reference".into()]),
+            ),
+            ("standalone", "none", Some(vec![])),
+            ("standalone", "all", None),
+            ("standalone", "", None),
+            ("plugin", "prove", None),
+        ] {
+            fs::write(
+                receipt.state_dir.join("selections.tsv"),
+                format!("mode\t{mode}\ninstalled_version\t1.0.0\ninstalled_target\t{}\ndata_dir\t{}\nselected_skills\t{selection}\n", receipt.target, receipt.state_dir.display()),
+            )
+            .unwrap();
+            let adopted = Receipt::from_installer(&receipt.state_dir, &receipt.binary).unwrap();
+            assert_eq!(adopted.selected_skills, expected);
+        }
     }
 
     #[tokio::test]

@@ -36,6 +36,9 @@ pub struct Receipt {
     pub pin: Option<String>,
     pub hosts: Vec<Host>,
     pub components: Vec<Component>,
+    /// None selects the full skill collection, including skills added by later releases.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_skills: Option<Vec<String>>,
     #[serde(default)]
     pub registration_pending: bool,
 }
@@ -246,6 +249,17 @@ impl Receipt {
                 .then(|| value("version").trim_start_matches('v').to_owned()),
             hosts,
             components,
+            selected_skills: if mode == "plugin" || matches!(value("selected_skills"), "" | "all") {
+                None
+            } else {
+                Some(
+                    value("selected_skills")
+                        .split_whitespace()
+                        .filter(|name| *name != "none")
+                        .map(str::to_owned)
+                        .collect(),
+                )
+            },
             registration_pending,
         };
         receipt.validate()?;
