@@ -23,7 +23,7 @@ Pass file arguments are parsed relative to the workspace. Command-specific optio
 | `leanck diagnostics Main.lean` | Wait for elaboration and report file errors. |
 | `leanck diagnostics Main.lean --ident my_theorem` | Restrict diagnostics to one declaration. |
 | `leanck goal Main.lean 10 4` | Inspect the proof goal at a position. Lines and columns are zero-indexed; columns count UTF-16 code units. |
-| `leanck sorry .` | Find unfinished proofs in a file or directory. Directory scans are text-only. |
+| `leanck sorry .` | Find unfinished proofs in a file or directory (`--fast` runs a daemon-free text scan). |
 | `leanck list Main.lean --kind theorem,def` | List declarations, optionally filtered by kind. |
 | `leanck restart-file Main.lean` | Restart elaboration for one file. |
 | `leanck build` | Run `lake build` with compact output; optional positional arguments select build targets. |
@@ -32,13 +32,6 @@ Pass file arguments are parsed relative to the workspace. Command-specific optio
 
 ## Command information
 
-Additional reference information is available in `reference/`:
-
+- [Live queries (`diagnostics`, `goal`, `sorry`, `list`, `restart-file`)](reference/live-queries.md): 0-indexed UTF-16 goal positions, `--ident` scoping and severity filters, elaborated vs. `--fast` sorry scans and red-flag notes, and cross-file `restart-file` behavior.
 - [Loogle search (`leanck loogle`)](reference/loogle.md): query filters, pattern syntax, `AND` semantics, representation pitfalls, and endpoint coverage.
 - [Source normalization (`leanck normalize`)](reference/normalize.md): frontmatter ordering, Git-derived headers, comment reflow/spelling guards, local `-- leanck:` directives, and `--set` overrides.
-
-Diagnostics default to errors only and at most five results. `--severity error,warning` includes warnings; `--all-severities` includes every severity. `--limit` and `--offset` paginate diagnostics. Builds accept `--warnings` to show warnings and `--strict` to treat warnings as failures.
-
-Loogle also accepts `--substr` for name fragments and `--subexpr` for expression patterns. Quote patterns to protect them from shell expansion. `--limit N` changes the default ten results.
-
-Live queries, builds, and Loogle support `--json` for structured output. Live queries and builds accept `--timeout SECS`. `leanck daemons` lists background daemons; `leanck daemons stop --idle` stops idle instances.

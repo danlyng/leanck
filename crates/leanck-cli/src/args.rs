@@ -90,9 +90,21 @@ mod tests {
     }
 
     #[test]
-    fn restart_file_hidden_alias_is_rejected() {
-        let error = Cli::try_parse_from(["leanck", "restart_file", "Basic.lean"]).unwrap_err();
-        assert_eq!(error.kind(), clap::error::ErrorKind::InvalidSubcommand);
+    fn restart_file_hidden_alias_is_accepted() {
+        let cli = Cli::try_parse_from(["leanck", "restart_file", "Basic.lean"]).unwrap();
+        let Cmd::RestartFile(args) = cli.command else {
+            panic!("expected restart-file command");
+        };
+        assert_eq!(args.file, "Basic.lean");
+
+        for argv in [
+            vec!["leanck", "--help"],
+            vec!["leanck", "restart-file", "--help"],
+        ] {
+            let help = Cli::try_parse_from(argv).unwrap_err();
+            assert_eq!(help.kind(), clap::error::ErrorKind::DisplayHelp);
+            assert!(!help.to_string().contains("restart_file"));
+        }
     }
 
     #[test]

@@ -61,7 +61,7 @@ pub(crate) enum Cmd {
     List(crate::commands::list::Args),
 
     /// Restart the Lean file elaborator.
-    #[command(name = "restart-file")]
+    #[command(name = "restart-file", alias = "restart_file")]
     RestartFile(crate::commands::restart_file::Args),
 
     /// Wraps `lake build` for compact output.
