@@ -1,10 +1,11 @@
 use markdown_reflow::{EdgeWidths, Options as ReflowOptions, ReflowWidth};
 
 use crate::Context;
+use crate::prose::DocCommentKind;
 pub use crate::spelling::SpellingDirection;
 use crate::spelling::correct_spelling;
 use crate::{CommentKind, NormalizeError};
-use leanck_config::{DelimiterStyle, HeadingCase, NormalizeRules};
+use leanck_config::{DelimiterStyle, HeadingCase, NormalizeRules, NormalizeWidth};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Options {
@@ -87,7 +88,7 @@ impl Default for Options {
 impl Options {
     pub(crate) fn configuration(
         self,
-        width: usize,
+        width: NormalizeWidth,
         rules: &NormalizeRules,
     ) -> leanck_config::Normalize {
         leanck_config::Normalize {
@@ -135,12 +136,12 @@ pub fn normalize(
     target_width: usize,
     options: Options,
 ) -> Result<String, NormalizeError> {
-    normalize_with_stats(source, target_width, options, 2026).map(|result| result.output)
+    normalize_with_stats(source, target_width.into(), options, 2026).map(|result| result.output)
 }
 
 pub fn normalize_with_stats(
     source: &str,
-    target_width: usize,
+    target_width: NormalizeWidth,
     options: Options,
     _copyright_year: i32,
 ) -> Result<NormalizeResult, NormalizeError> {
@@ -157,7 +158,7 @@ pub fn normalize_with_stats(
 /// after only whitespace and line comments, such as directives that end it.
 pub(crate) fn normalize_configured(
     source: &str,
-    target_width: usize,
+    target_width: NormalizeWidth,
     options: Options,
     rules: &NormalizeRules,
     context: &Context<'_>,
@@ -686,6 +687,8 @@ struct Block {
     /// Whether this is the module docstring: the first `/-!` block, unless
     /// it is a section heading.
     module_doc: bool,
+    /// Whether this `/-!` block contains exactly one Markdown heading.
+    heading_only: bool,
     /// Byte offset of the start delimiter on `start_line`.
     start_delim_col: usize,
     /// Byte offset of the end delimiter on `end_line`.
@@ -710,16 +713,19 @@ impl Block {
     fn rewritten(&self, lines: &[String], after: &str) -> Self {
         let end_line = lines.len() - 1;
         let end_delim_col = lines[end_line].len() - after.len() - SUFFIX.len();
-        let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
-        Self {
+        let mut block = Self {
             start_line: 0,
             end_line,
             end_before: end_delim_col,
             end_delim_col,
-            module_doc: self.first_doc
-                && !is_section_heading_block(&lines, 0, self.start_after, end_line, end_delim_col),
             ..self.clone()
+        };
+        if block.is_doc {
+            let kind = doc_comment_kind(&extract_raw_content(lines, &block));
+            block.heading_only = kind == DocCommentKind::Heading;
+            block.module_doc = block.first_doc && kind == DocCommentKind::Documentation;
         }
+        block
     }
 }
 
@@ -789,7 +795,6 @@ fn find_blocks_with_context(
     let bytes = source.as_bytes();
     let mut blocks = Vec::new();
     let mut i = 0;
-    let lines: Vec<_> = source.lines().collect();
     let mut cursor = LineCursor::new(source);
     while i < bytes.len() {
         if bytes[i..].starts_with(b"--") {
@@ -829,7 +834,12 @@ fn find_blocks_with_context(
             let (sl, sc) = cursor.position(start);
             let (el, ec) = cursor.position(i);
             let first_doc = doc && !seen;
-            let module_doc = first_doc && !is_section_heading_block(&lines, sl, sc + 3, el, ec);
+            let kind = if doc {
+                doc_comment_kind(&source[start + 3..i])
+            } else {
+                DocCommentKind::Documentation
+            };
+            let module_doc = first_doc && kind == DocCommentKind::Documentation;
             if doc {
                 seen = true;
             }
@@ -841,6 +851,7 @@ fn find_blocks_with_context(
                 is_doc: doc,
                 first_doc,
                 module_doc,
+                heading_only: doc && kind == DocCommentKind::Heading,
                 start_delim_col: sc,
                 end_delim_col: ec,
                 verbatim: !doc && precedes_guard_msgs(source, end, guard_msgs_after),
@@ -851,54 +862,10 @@ fn find_blocks_with_context(
     Ok(blocks)
 }
 
-/// Whether a block's content begins with a markdown `##` heading. Such blocks
-/// are section headings, not module docstrings.
-fn is_section_heading_block(
-    lines: &[&str],
-    start_line: usize,
-    start_after: usize,
-    end_line: usize,
-    end_before: usize,
-) -> bool {
-    let mut content = Vec::new();
-    for (offset, line) in lines[start_line..=end_line].iter().enumerate() {
-        let li = start_line + offset;
-        let start = if li == start_line { start_after } else { 0 };
-        let end = if li == end_line {
-            end_before
-        } else {
-            line.len()
-        };
-        let text = line[start..end].trim();
-        if !text.is_empty() {
-            content.push(text);
-        }
-    }
-    is_section_heading_content(&content)
-}
-
-/// Whether a `/-!` comment with content `body` is a section heading, as
-/// `is_section_heading_block` decides for a block.
-pub(crate) fn is_section_heading_text(body: &str) -> bool {
-    let content: Vec<&str> = body
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect();
-    is_section_heading_content(&content)
-}
-
-fn is_section_heading_content(content: &[&str]) -> bool {
-    let Some(first) = content.first() else {
-        return false;
-    };
-    // An ATX heading, possibly empty, as `# #` becomes once its closing
-    // sequence is dropped.
-    let hashes = first.chars().take_while(|c| *c == '#').count();
-    let rest = &first[hashes..];
-    (1..=6).contains(&hashes)
-        && (rest.is_empty() || rest.starts_with(char::is_whitespace))
-        && (hashes >= 2 || content.len() == 1)
+/// Classify a raw `/-!` body using the indentation Lean removes. Frontmatter
+/// ordering and comment layout share this decision, including after a rewrite.
+pub(crate) fn doc_comment_kind(body: &str) -> DocCommentKind {
+    crate::prose::doc_comment_kind(&lean_text(body))
 }
 
 // ---------------------------------------------------------------------------
@@ -1091,7 +1058,7 @@ fn delimiter_tokens(text: &str) -> Vec<bool> {
 fn reflow_block(
     lines: &[String],
     block: &Block,
-    target_width: usize,
+    target_width: NormalizeWidth,
     options: Options,
     rules: &NormalizeRules,
     context: &Context<'_>,
@@ -1103,6 +1070,8 @@ fn reflow_block(
     let prefix = if block.is_doc { "/-!" } else { "/--" };
     let style = if !comment_layout {
         DelimiterStyle::Off
+    } else if block.heading_only {
+        rules.comments.heading.unwrap_or(rules.comments.section)
     } else if block.module_doc {
         rules.comments.module
     } else if block.is_doc {
@@ -1203,13 +1172,16 @@ fn reflow_block(
     let layout_width = if options.comment_reflow {
         target_width
     } else {
-        usize::MAX
+        NormalizeWidth::Unlimited
     };
     let separate = style == DelimiterStyle::Separate
         || (style == DelimiterStyle::Off
             && is_blank(&lines[block.start_line][block.start_after..])
             && is_blank(&lines[block.end_line][..block.end_before]));
-    let budget = |used: usize| ReflowWidth::Finite(target_width.saturating_sub(used).max(1));
+    let budget = |used: usize| match target_width {
+        NormalizeWidth::Finite(width) => ReflowWidth::Finite(width.saturating_sub(used).max(1)),
+        NormalizeWidth::Unlimited => ReflowWidth::Infinite,
+    };
     let widths = if separate {
         // Delimiters on their own lines leave every content line the same width.
         let width = budget(indent_w);
@@ -1355,10 +1327,12 @@ fn single_line(
     after: &str,
     content: &str,
     prefix: &str,
-    target_width: usize,
+    target_width: NormalizeWidth,
 ) -> Option<String> {
     let candidate = format!("{before}{prefix} {content} {SUFFIX}{after}");
-    (char_width(&candidate) <= target_width).then_some(candidate)
+    target_width
+        .fits(char_width(&candidate))
+        .then_some(candidate)
 }
 
 /// Delimiters on their own lines, as for module docstrings.
@@ -1383,7 +1357,7 @@ fn expand_compact(
     content_lines: &[&str],
     prefix: &str,
     indent: &str,
-    target_width: usize,
+    target_width: NormalizeWidth,
 ) -> Vec<String> {
     if let [content] = content_lines {
         // Only one content line ─ put both delimiters on it.
@@ -1395,7 +1369,7 @@ fn expand_compact(
 
     // --- opening delimiter --------------------------------------------------
     let first_with_prefix = format!("{before}{prefix} {first}");
-    if shares_opening_line(content_lines) && char_width(&first_with_prefix) <= target_width {
+    if shares_opening_line(content_lines) && target_width.fits(char_width(&first_with_prefix)) {
         out.push(first_with_prefix);
     } else {
         // Doesn't fit or would change the content — opening delimiter on its

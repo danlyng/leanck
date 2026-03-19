@@ -244,7 +244,7 @@ pub(crate) async fn foreground(
         if let Some(notice) = &status.notice {
             eprintln!("update: {notice}");
         }
-        if settings.updates.automatic
+        if settings.updates.auto_install
             && let (Some(version), Some(receipt)) = (status.eligible_version, receipt.as_ref())
             && receipt.provenance == "release"
             && Maintenance::acquire(&receipt.state_dir).is_ok()

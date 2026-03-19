@@ -8,7 +8,7 @@ mod reflow;
 mod spelling;
 mod syntax;
 pub use configured::{Context, normalize_with_context};
-pub use leanck_config::NormalizeRules;
+pub use leanck_config::{NormalizeRules, NormalizeWidth};
 pub use spelling::{Dictionary, builtin_json, configured_map};
 
 #[cfg(feature = "command")]
@@ -76,11 +76,12 @@ impl std::error::Error for NormalizeError {}
 /// comment, or [`NormalizeError::Reflow`] with the dependency's error message.
 pub fn normalize(
     source: &str,
-    target_width: usize,
+    target_width: impl Into<NormalizeWidth>,
     options: Options,
     copyright_year: i32,
 ) -> Result<NormalizeResult, NormalizeError> {
-    if target_width == 0 {
+    let target_width = target_width.into();
+    if !target_width.is_valid() {
         return Err(NormalizeError::InvalidWidth);
     }
     reflow::normalize_with_stats(source, target_width, options, copyright_year)

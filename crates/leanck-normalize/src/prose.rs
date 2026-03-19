@@ -22,6 +22,33 @@ fn math_constructs() -> markdown::Constructs {
     }
 }
 
+/// The Markdown shape of a non-declaration doc comment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DocCommentKind {
+    Heading,
+    Section,
+    Documentation,
+}
+
+/// Classify the body Lean reads, independently of its delimiter layout.
+pub(crate) fn doc_comment_kind(text: &str) -> DocCommentKind {
+    let Some(root) = parse(text, math_constructs()) else {
+        return DocCommentKind::Documentation;
+    };
+    let Some(children) = root.children() else {
+        return DocCommentKind::Documentation;
+    };
+    if matches!(children.as_slice(), [Node::Heading(_)]) {
+        DocCommentKind::Heading
+    } else if matches!(children.first(), Some(Node::Heading(heading)) if heading.depth >= 2) {
+        // Retain the existing treatment of comments beginning with a subheading
+        // as section documentation, even when they also contain a body.
+        DocCommentKind::Section
+    } else {
+        DocCommentKind::Documentation
+    }
+}
+
 /// Apply `f` to every text node. `None` means the text could not be parsed.
 pub(crate) fn transform(text: &str, mut f: impl FnMut(&str) -> String) -> Option<String> {
     transform_with_offsets(text, |part, _| f(part))

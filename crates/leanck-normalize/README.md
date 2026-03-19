@@ -14,12 +14,9 @@ path is rewritten in place; a directory is traversed recursively, selecting
 `*.lean` files unless `--all-files` is supplied. Hidden entries and symlinks in
 directories are skipped. Use `--verbose` for per-file updates.
 
-The target comment width defaults to 100 and must be greater than zero. Set it
-only with `--width` or `-w`; positional widths are no longer accepted. Numeric
-names such as `80` are always paths, not widths. For example, replace the old
-`leanck-normalize 80 Main.lean` with `leanck-normalize --width 80 Main.lean`.
-The same arguments work with `leanck normalize`. Run `--help` for transformation
-flags.
+The target width defaults to 100. Set a positive integer or `unlimited` with `--width` or `-w`, or set `normalize.width` to a positive integer or `"unlimited"` in TOML. Unlimited width joins soft paragraph breaks without inserting width-based breaks; Markdown hard breaks, paragraph boundaries, lists, code, and math remain respected. Comment delimiter policies still apply, and attribute placement never moves above a declaration solely because of line length. Set `normalize.comment_reflow = false` or pass `--no-comment-reflow` to preserve existing prose wrapping instead.
+
+Both `leanck-normalize --width unlimited Main.lean` and `leanck normalize --width unlimited Main.lean` use unlimited width. Positional widths are not accepted: numeric names such as `80` are paths. Run `--help` for transformation flags.
 
 ## Acknowledgments
 
@@ -67,3 +64,5 @@ Project configuration may be named `leanck.toml` or `.leanck.toml`; `leanck.toml
 Normalization returns nonfatal diagnostics in `NormalizeResult.warnings`; command entry points print warnings on stderr. Config inspection exposes warnings that do not depend on source content. URL linkification works independently of comment wrapping: without reflow it only inserts `[url](url)` around bare URLs and leaves the rest of the comment text unchanged.
 
 A comment rewrite is kept only when it reads as the same Markdown and keeps the Lean comment delimiters, and only once rewriting it again changes nothing; otherwise the comment is left byte-identical. A panic while normalizing a file in directory mode is reported as an error for that file, which is left unchanged, and the remaining files are still processed. Files are rewritten through a temporary sibling and a rename, keeping permissions and following symbolic links. A file with other hard links, a file whose owner or group a new file would not get, or a file in a directory that cannot be written is overwritten in place instead; extended attributes and access control lists are not carried over by a rename.
+
+Heading-only `/-!` comments can use their own delimiter layout through `normalize.rules.comments.heading` (`"compact"`, `"separate"`, or `"off"`). Omit it to inherit `section`. The body must contain exactly one Markdown heading; additional documentation uses the existing module/section layout rules. This controls delimiter placement independently of the heading text transformations enabled by `normalize.headings`.

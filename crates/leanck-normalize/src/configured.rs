@@ -1,5 +1,5 @@
 use crate::{Dictionary, NormalizeError, NormalizeResult, Options, Stats, history::FileHistory};
-use leanck_config::{FinalNewline, LineEndings, NormalizeRules};
+use leanck_config::{FinalNewline, LineEndings, NormalizeRules, NormalizeWidth};
 use std::collections::BTreeSet;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -62,7 +62,7 @@ pub struct Context<'a> {
 /// Pure normalization with explicitly supplied style, attribution, and dictionary.
 pub fn normalize_with_context(
     source: &str,
-    width: usize,
+    width: impl Into<NormalizeWidth>,
     options: Options,
     rules: &NormalizeRules,
     context: &Context<'_>,
@@ -70,7 +70,8 @@ pub fn normalize_with_context(
     let bom = source.starts_with('\u{feff}');
     let mut preserve_bom = !rules.whitespace.remove_bom;
     let source = source.strip_prefix('\u{feff}').unwrap_or(source);
-    if width == 0 {
+    let width = width.into();
+    if !width.is_valid() {
         return Err(NormalizeError::InvalidWidth);
     }
     rules
@@ -269,7 +270,7 @@ pub fn normalize_with_context(
 #[allow(clippy::too_many_arguments)]
 fn append_segment(
     source: &str,
-    width: usize,
+    width: NormalizeWidth,
     mut options: Options,
     rules: &NormalizeRules,
     context: &Context<'_>,

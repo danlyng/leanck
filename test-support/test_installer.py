@@ -71,6 +71,7 @@ fi
             "--bin-dir", str(binaries), "--output", str(cls.fixture / "assets"),
             "--target", TARGET, "--version", "v1.2.3",
         ], env=env, check=True, capture_output=True)
+        shutil.copy2(REPO / "docs/leanck.example.toml", cls.fixture / "assets/leanck.example.toml")
 
     @classmethod
     def tearDownClass(cls):
@@ -290,10 +291,11 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         self.assertFalse(self.binary_executions.exists())
         self.assertEqual(list(self.downloads.iterdir()), [])
 
-    def rewrite_archive(self, mutate):
+    def rewrite_archive(self, mutate, *, exclude=()):
         path = self.assets / ARCHIVE
         with tarfile.open(path) as archive:
-            members = [(m, archive.extractfile(m).read() if m.isfile() else None) for m in archive]
+            members = [(m, archive.extractfile(m).read() if m.isfile() else None)
+                       for m in archive if m.name not in exclude]
         with tarfile.open(path, "w:gz") as archive:
             for member, data in members:
                 archive.addfile(member, io.BytesIO(data) if data is not None else None)
@@ -323,6 +325,8 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         shutil.copytree(REPO / "leanck-hooks", source / "leanck-hooks")
         shutil.copy2(REPO / "install.sh", source / "install.sh")
         shutil.copy2(REPO / "uninstall.sh", source / "uninstall.sh")
+        (source / "docs").mkdir()
+        shutil.copy2(REPO / "docs/leanck.example.toml", source / "docs/leanck.example.toml")
         return source
 
     def test_local_repo_preview_uses_source_inventory_without_network_or_build(self):
@@ -382,6 +386,8 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
 
     def test_local_repo_standalone_installs_built_cli_and_selected_components(self):
         source = self.source_checkout()
+        example = source / "docs/leanck.example.toml"
+        example.write_text(example.read_text() + "\n# Local source example.\n")
         self.mock_source_tools()
         self.env["LEANCK_TEST_COMMAND_OUTPUT"] = "1"
         self.make_completion_dir("bash")
@@ -399,6 +405,7 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         self.assertFalse((self.home / "data/leanck/bundle").exists())
         self.assertEqual(self.calls(), [])
         self.assertFalse(self.host_executions.exists())
+        self.assertEqual((self.home / "config/leanck/config.example.toml").read_bytes(), example.read_bytes())
 
     def test_local_repo_components_without_cli_skip_compilation(self):
         source = self.source_checkout()
@@ -1604,6 +1611,47 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
             self.assertFalse((self.home / path).exists(), path)
             self.assertFalse((self.home / path).is_symlink(), path)
 
+    def test_configuration_example_honors_xdg_and_preserves_existing_configuration(self):
+        config = self.home / "config/leanck/config.toml"
+        config.parent.mkdir(parents=True)
+        config.write_text("# User configuration.\n")
+        example = config.with_name("config.example.toml")
+        self.run_install()
+        self.assertEqual(example.read_bytes(), (REPO / "docs/leanck.example.toml").read_bytes())
+        self.assertEqual(config.read_text(), "# User configuration.\n")
+        example.write_text("# Edited example.\n")
+        self.run_install("--force")
+        self.assertEqual(example.read_text(), "# Edited example.\n")
+        self.assertEqual(config.read_text(), "# User configuration.\n")
+
+    def test_configuration_example_defaults_to_home_config(self):
+        self.env.pop("XDG_CONFIG_HOME")
+        self.run_install("--plugin", "codex")
+        example = self.home / ".config/leanck/config.example.toml"
+        self.assertEqual(example.read_bytes(), (REPO / "docs/leanck.example.toml").read_bytes())
+        self.assertFalse(example.with_name("config.toml").exists())
+
+    def test_configuration_example_uses_release_source_for_older_archives(self):
+        self.rewrite_archive(lambda archive: None, exclude={"leanck/docs/leanck.example.toml"})
+        before = self.snapshot_home()
+        self.run_install("--dry-run")
+        self.assert_dry_run_unchanged(before)
+        self.run_install()
+        example = self.home / "config/leanck/config.example.toml"
+        self.assertEqual(example.read_bytes(), (REPO / "docs/leanck.example.toml").read_bytes())
+        self.assertEqual(self.calls()[-1][-1],
+                         "https://raw.githubusercontent.com/danlyng/leanck/v1.2.3/docs/leanck.example.toml")
+
+    def test_configuration_example_preserves_existing_symlink(self):
+        example = self.home / "config/leanck/config.example.toml"
+        example.parent.mkdir(parents=True)
+        target = self.root / "existing example.toml"
+        target.write_text("# Existing example.\n")
+        example.symlink_to(target)
+        self.run_install("--force")
+        self.assertTrue(example.is_symlink())
+        self.assertEqual(target.read_text(), "# Existing example.\n")
+
     def test_standalone_installs_only_cli_and_can_upgrade(self):
         self.env["PATH"] = f"{self.commands}:/usr/bin:/bin:/usr/sbin:/sbin"
         result = self.run_install("--completions", "none")
@@ -1734,6 +1782,7 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         self.assertNotIn(b".agents/skills/", result.stderr)
         self.assertNotIn(b"Would install " + str(self.home / "claude/agents").encode(), result.stderr)
         self.assertIn(b"Dry run complete", result.stderr)
+        self.assertIn(f"Would install configuration example: {self.home / 'config/leanck/config.example.toml'}".encode(), result.stderr)
         self.assertEqual(len(self.calls()), 2)
         self.assertTrue(all(call[0] == "curl" for call in self.calls()))
         self.assert_dry_run_unchanged(before)
@@ -1988,6 +2037,8 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
 
     def test_packaged_catalogs_and_plugin_versions_match(self):
         with tarfile.open(self.assets / ARCHIVE) as archive:
+            self.assertEqual(archive.extractfile("leanck/docs/leanck.example.toml").read(),
+                             (REPO / "docs/leanck.example.toml").read_bytes())
             self.assertEqual(archive.extractfile("leanck/uninstall.sh").read(), (REPO / "uninstall.sh").read_bytes())
             self.assertEqual(archive.extractfile("leanck/.leanck-release").read(), b"v1.2.3\n")
             for host in ("claude", "codex"):
@@ -2023,6 +2074,7 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
                      self.home / ".agents/skills/lean-proving", self.home / "claude/agents/lean-expert.md",
                      self.home / "codex/agents/leanck/lean-expert.toml",
                      self.home / "config/fish/completions/leanck.fish",
+                     self.home / "config/leanck/config.example.toml",
                      self.home / "state/leanck/installer/selections.tsv"):
             self.assertFalse(path.exists(), str(path))
         self.assertEqual(unrelated.read_text(), "keep")

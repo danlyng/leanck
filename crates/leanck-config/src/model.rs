@@ -44,7 +44,7 @@ impl Default for Settings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Normalize {
-    pub width: usize,
+    pub width: crate::NormalizeWidth,
     pub rules: crate::NormalizeRules,
     pub frontmatter: bool,
     pub header: bool,
@@ -63,7 +63,7 @@ pub struct Normalize {
 impl Default for Normalize {
     fn default() -> Self {
         Self {
-            width: 100,
+            width: crate::NormalizeWidth::Finite(100),
             rules: crate::NormalizeRules::default(),
             frontmatter: true,
             header: true,
@@ -269,14 +269,14 @@ pub struct Output {
 pub struct Updates {
     pub check: bool,
     pub check_interval_secs: u64,
-    pub automatic: bool,
+    pub auto_install: bool,
 }
 impl Default for Updates {
     fn default() -> Self {
         Self {
             check: true,
             check_interval_secs: 86400,
-            automatic: false,
+            auto_install: false,
         }
     }
 }
@@ -293,8 +293,8 @@ impl Settings {
             self.version
         );
         ensure!(
-            self.normalize.width > 0,
-            "normalize.width must be greater than zero"
+            self.normalize.width.is_valid(),
+            "normalize.width must be a positive integer or \"unlimited\""
         );
         self.normalize.rules.validate()?;
         for (key, n) in [

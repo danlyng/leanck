@@ -1,5 +1,5 @@
 //! Terminal setup for common settings. Drafts are written only after review.
-use crate::{ConfigArgs, Settings, load_files, user_config_path};
+use crate::{ConfigArgs, NormalizeWidth, Settings, load_files, user_config_path};
 use anyhow::{Context, Result, ensure};
 mod ui;
 use std::{
@@ -408,6 +408,27 @@ fn number(
     draft.set(key, toml::Value::Integer(answer.parse::<i64>()?))
 }
 
+fn normalization_width(draft: &mut Draft, ui: &mut Ui) -> Result<()> {
+    let key = "normalize.width";
+    let width: NormalizeWidth = draft.get(key).try_into()?;
+    let answer = ui.text(
+        "Comment line width",
+        "",
+        Some(&width.to_string()),
+        "Enter a positive column count or unlimited to join prose without wrapping.",
+        examples(key),
+        |text| {
+            let width = text.parse::<NormalizeWidth>().map_err(anyhow::Error::msg)?;
+            toml::Value::try_from(width)?;
+            Ok(())
+        },
+    )?;
+    let width = answer
+        .parse::<NormalizeWidth>()
+        .map_err(anyhow::Error::msg)?;
+    draft.set(key, toml::Value::try_from(width)?)
+}
+
 fn duration(
     draft: &mut Draft,
     ui: &mut Ui,
@@ -505,17 +526,7 @@ fn unescape_lines(text: &str) -> Result<String> {
 fn topic_steps(topic: usize) -> Vec<Step> {
     match topic {
         0 => vec![
-            |d, u| {
-                number(
-                    d,
-                    u,
-                    "normalize.width",
-                    "Comment line width",
-                    "Target columns when reflowing prose.",
-                    1,
-                    i64::MAX as u64,
-                )
-            },
+            normalization_width,
             |d, u| {
                 choice(
                     d,
@@ -711,7 +722,7 @@ fn topic_steps(topic: usize) -> Vec<Step> {
                 boolean(
                     d,
                     u,
-                    "updates.automatic",
+                    "updates.auto_install",
                     "Install available releases automatically?",
                     "Requires an installer-managed release; waits until no CLI, MCP, or daemon session is using it.",
                 )
@@ -893,5 +904,26 @@ mod tests {
         assert_eq!(value["normalize"]["width"].as_integer(), Some(72));
         assert!(!text.contains("[instances]"));
         assert!(!text.contains("[updates]"));
+    }
+
+    #[test]
+    fn unlimited_width_can_be_saved_and_reopened() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("leanck.toml");
+        let mut draft = draft(&path);
+        draft.set("normalize.width", "unlimited".into()).unwrap();
+        draft.save().unwrap();
+        let settings: Settings = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(settings.normalize.width, NormalizeWidth::Unlimited);
+        let reopened = Draft::load(
+            path,
+            false,
+            &ConfigArgs {
+                no_config: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(reopened.get("normalize.width").as_str(), Some("unlimited"));
     }
 }

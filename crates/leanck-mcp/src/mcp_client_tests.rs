@@ -388,14 +388,23 @@ async fn workspace_switch_captures_settings_and_rejects_invalid_configuration_at
     };
     server.set_workspace(switch()).await.unwrap();
     let after = server.workspace.capture();
-    assert_eq!(after.settings().normalize.width, 83);
+    assert_eq!(
+        after.settings().normalize.width,
+        leanck_config::NormalizeWidth::Finite(83)
+    );
     assert_eq!(after.settings().client.timeout_ms, Some(170));
     assert!(after.settings().loogle.endpoints.is_empty());
-    assert_eq!(before.settings().normalize.width, 100);
+    assert_eq!(
+        before.settings().normalize.width,
+        leanck_config::NormalizeWidth::Finite(100)
+    );
     assert_eq!(before.workspace(), first.0.canonicalize().unwrap());
     std::fs::write(second.0.join("leanck.toml"), "[normalize]\nwidht=3").unwrap();
     assert!(server.set_workspace(switch()).await.is_err());
-    assert_eq!(server.workspace.capture().settings().normalize.width, 83);
+    assert_eq!(
+        server.workspace.capture().settings().normalize.width,
+        leanck_config::NormalizeWidth::Finite(83)
+    );
 }
 
 #[test]
@@ -455,7 +464,10 @@ async fn ignored_project_machine_wide_settings_appear_in_diagnostics_and_refresh
         },
     )
     .unwrap();
-    assert_eq!(config.settings.normalize.width, 83);
+    assert_eq!(
+        config.settings.normalize.width,
+        leanck_config::NormalizeWidth::Finite(83)
+    );
     assert_eq!(config.warnings.len(), 2);
     let server = LeanckServer::new(&config);
     for json in [true, false] {
@@ -538,5 +550,8 @@ async fn ignored_project_machine_wide_settings_appear_in_diagnostics_and_refresh
     server.set_workspace(switch()).await.unwrap();
     let (client, warnings) = server.workspace.capture_health();
     assert!(warnings.is_empty());
-    assert_eq!(client.settings().normalize.width, 84);
+    assert_eq!(
+        client.settings().normalize.width,
+        leanck_config::NormalizeWidth::Finite(84)
+    );
 }

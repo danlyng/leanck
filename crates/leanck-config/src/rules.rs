@@ -204,6 +204,10 @@ pub enum ImportOrder {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct CommentRules {
+    /// Delimiter layout for a `/-!` comment containing only one Markdown heading.
+    /// Omitted values inherit `section`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub heading: Option<DelimiterStyle>,
     pub module: DelimiterStyle,
     pub declaration: DelimiterStyle,
     pub section: DelimiterStyle,
@@ -211,6 +215,7 @@ pub struct CommentRules {
 impl Default for CommentRules {
     fn default() -> Self {
         Self {
+            heading: None,
             module: DelimiterStyle::Separate,
             declaration: DelimiterStyle::Compact,
             section: DelimiterStyle::Compact,

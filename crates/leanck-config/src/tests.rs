@@ -2,6 +2,124 @@ use super::*;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 static NEXT: AtomicU64 = AtomicU64::new(0);
+
+#[test]
+fn normalization_width_round_trips_and_rejects_invalid_values() {
+    for (value, width) in [
+        ("1", NormalizeWidth::Finite(1)),
+        ("100", NormalizeWidth::Finite(100)),
+        ("\"unlimited\"", NormalizeWidth::Unlimited),
+    ] {
+        let settings: Settings = toml::from_str(&format!("[normalize]\nwidth={value}\n")).unwrap();
+        settings.validate().unwrap();
+        assert_eq!(settings.normalize.width, width);
+        let restored: Settings = toml::from_str(&toml::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(restored.normalize.width, width);
+        assert_eq!(serde_json::to_string(&width).unwrap(), value);
+        assert_eq!(
+            serde_json::from_str::<NormalizeWidth>(value).unwrap(),
+            width
+        );
+    }
+    for value in [
+        "0",
+        "-1",
+        "1.5",
+        "true",
+        "[]",
+        "{}",
+        "\"80\"",
+        "\"Unlimited\"",
+        "\"off\"",
+    ] {
+        let error =
+            toml::from_str::<Settings>(&format!("[normalize]\nwidth={value}\n")).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("positive integer or \"unlimited\""),
+            "{error}"
+        );
+        assert!(serde_json::from_str::<NormalizeWidth>(value).is_err());
+    }
+    let mut settings = Settings::default();
+    settings.normalize.width = NormalizeWidth::Finite(0);
+    assert!(settings.validate().is_err());
+}
+
+#[test]
+fn normalization_width_layers_and_overrides_can_switch_types() {
+    let dir = Scratch::new();
+    let finite = dir.file("finite.toml", "[normalize]\nwidth=72\n");
+    let unlimited = dir.file("unlimited.toml", "[normalize]\nwidth='unlimited'\n");
+    for (first, last, expected, assignment, overridden) in [
+        (
+            &finite,
+            &unlimited,
+            NormalizeWidth::Unlimited,
+            "normalize.width=88",
+            NormalizeWidth::Finite(88),
+        ),
+        (
+            &unlimited,
+            &finite,
+            NormalizeWidth::Finite(72),
+            "normalize.width='unlimited'",
+            NormalizeWidth::Unlimited,
+        ),
+    ] {
+        let files = [(first.clone(), true), (last.clone(), true)];
+        let loaded = load_files(&files, &[]).unwrap();
+        assert_eq!(loaded.settings.normalize.width, expected);
+        assert_eq!(
+            loaded.sources["normalize.width"],
+            last.display().to_string()
+        );
+        let loaded = load_files(&files, &[assignment.into()]).unwrap();
+        assert_eq!(loaded.settings.normalize.width, overridden);
+        assert_eq!(loaded.sources["normalize.width"], "--set");
+    }
+}
+
+#[test]
+fn heading_layout_override_preserves_section_inheritance_and_provenance() {
+    let dir = Scratch::new();
+    let user = dir.file(
+        "user.toml",
+        "[normalize.rules.comments]\nsection='separate'\n",
+    );
+    let project = dir.file(
+        "project.toml",
+        "[normalize.rules.comments]\nheading='compact'\n",
+    );
+    let inherited = load_files(&[(user.clone(), true)], &[]).unwrap();
+    assert_eq!(inherited.settings.normalize.rules.comments.heading, None);
+    let files = [(user, true), (project.clone(), true)];
+    let explicit = load_files(&files, &[]).unwrap();
+    assert_eq!(
+        explicit.settings.normalize.rules.comments.heading,
+        Some(DelimiterStyle::Compact)
+    );
+    assert_eq!(
+        explicit.settings.normalize.rules.comments.section,
+        DelimiterStyle::Separate
+    );
+    assert_eq!(
+        explicit.sources["normalize.rules.comments.heading"],
+        project.display().to_string()
+    );
+    let overridden =
+        load_files(&files, &["normalize.rules.comments.heading='off'".into()]).unwrap();
+    assert_eq!(
+        overridden.settings.normalize.rules.comments.heading,
+        Some(DelimiterStyle::Off)
+    );
+    assert_eq!(
+        overridden.sources["normalize.rules.comments.heading"],
+        "--set"
+    );
+}
+
 #[test]
 fn discovered_project_update_policy_is_ignored_before_validation() {
     let dir = Scratch::new();
@@ -9,7 +127,7 @@ fn discovered_project_update_policy_is_ignored_before_validation() {
     for name in ["leanck.toml", ".leanck.toml"] {
         let project = dir.file(
             name,
-            "[updates]\nautomatic='invalid type'\nunknown_key=true\n",
+            "[updates]\nauto_install='invalid type'\nunknown_key=true\n",
         );
         let loaded = ConfigArgs {
             config: Some(user.clone()),
@@ -18,9 +136,9 @@ fn discovered_project_update_policy_is_ignored_before_validation() {
         .load(&dir.0)
         .unwrap();
         assert!(!loaded.settings.updates.check);
-        assert!(!loaded.settings.updates.automatic);
+        assert!(!loaded.settings.updates.auto_install);
         assert_eq!(loaded.sources["updates.check"], user.display().to_string());
-        assert_eq!(loaded.sources["updates.automatic"], "defaults");
+        assert_eq!(loaded.sources["updates.auto_install"], "defaults");
         assert_eq!(loaded.warnings.len(), 1);
         assert_eq!(
             loaded.warnings[0].code,
@@ -41,24 +159,24 @@ fn discovered_project_update_policy_is_ignored_before_validation() {
             .load(&dir.0)
             .is_err()
         );
-        std::fs::write(&project, "[updates]\ncheck=false\nautomatic=true\n").unwrap();
+        std::fs::write(&project, "[updates]\ncheck=false\nauto_install=true\n").unwrap();
         let explicit = ConfigArgs {
             config: Some(project.clone()),
             ..Default::default()
         }
         .load(&dir.0)
         .unwrap();
-        assert!(explicit.settings.updates.automatic);
+        assert!(explicit.settings.updates.auto_install);
         assert!(explicit.warnings.is_empty());
         let overridden = ConfigArgs {
             config: Some(user.clone()),
-            overrides: vec!["updates.automatic=true".into()],
+            overrides: vec!["updates.auto_install=true".into()],
             ..Default::default()
         }
         .load(&dir.0)
         .unwrap();
-        assert!(overridden.settings.updates.automatic);
-        assert_eq!(overridden.sources["updates.automatic"], "--set");
+        assert!(overridden.settings.updates.auto_install);
+        assert_eq!(overridden.sources["updates.auto_install"], "--set");
         std::fs::remove_file(project).unwrap();
     }
     assert!(load_files(&[], &["updates.check_interval_secs=0".into()]).is_err());
@@ -99,7 +217,7 @@ fn layers_merge_fields_replace_arrays_and_report_winners() {
         &["normalize.width=100".into(), "normalize.header=true".into()],
     )
     .unwrap();
-    assert_eq!(loaded.settings.normalize.width, 100);
+    assert_eq!(loaded.settings.normalize.width, NormalizeWidth::Finite(100));
     assert!(loaded.settings.normalize.header);
     assert!(loaded.settings.loogle.endpoints.is_empty());
     assert_eq!(loaded.sources["normalize.width"], "--set");
@@ -196,7 +314,7 @@ fn project_configuration_ignores_instances_and_records_a_warning() {
         loaded.sources["instances.limit"],
         baseline.sources["instances.limit"]
     );
-    assert_eq!(loaded.settings.normalize.width, 90);
+    assert_eq!(loaded.settings.normalize.width, NormalizeWidth::Finite(90));
     assert_eq!(loaded.warnings.len(), 1);
     let warning = &loaded.warnings[0];
     assert_eq!(warning.code, "ignored_project_machine_wide_section");
@@ -239,7 +357,7 @@ fn project_configuration_ignores_instances_and_records_a_warning() {
     .unwrap();
     assert_eq!(loaded.settings.instances.limit, 6);
     assert_eq!(loaded.settings.instances.on_limit, OnLimit::Warn);
-    assert_eq!(loaded.settings.normalize.width, 90);
+    assert_eq!(loaded.settings.normalize.width, NormalizeWidth::Finite(90));
 }
 #[test]
 fn invalid_keys_types_ranges_urls_and_globs_fail() {
@@ -354,7 +472,7 @@ fn no_config_still_accepts_typed_overrides() {
     .load(&dir.0)
     .unwrap();
     assert!(loaded.files.is_empty());
-    assert_eq!(loaded.settings.normalize.width, 91);
+    assert_eq!(loaded.settings.normalize.width, NormalizeWidth::Finite(91));
 }
 
 #[test]

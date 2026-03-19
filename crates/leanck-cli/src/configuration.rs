@@ -85,7 +85,7 @@ mod tests {
     #[test]
     fn explicit_default_valued_flags_beat_configured_values() {
         let mut settings = Settings::default();
-        settings.normalize.width = 72;
+        settings.normalize.width = leanck_config::NormalizeWidth::Finite(72);
         settings.loogle.limit = 42;
         settings.build.max_output_bytes = 1024;
         for argv in [
@@ -97,7 +97,9 @@ mod tests {
             let mut cli = Cli::from_arg_matches(&matches).unwrap();
             apply(&mut cli.command, &settings, matches.subcommand().unwrap().1);
             match cli.command {
-                Cmd::Normalize(a) => assert_eq!(a.width, 100),
+                Cmd::Normalize(a) => {
+                    assert_eq!(a.width, leanck_config::NormalizeWidth::Finite(100))
+                }
                 Cmd::Loogle(a) => assert_eq!(a.limit, 10),
                 Cmd::Build(a) => assert_eq!(a.max_output_bytes, 8388608),
                 _ => unreachable!(),

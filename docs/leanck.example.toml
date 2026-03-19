@@ -9,14 +9,14 @@
 version = 1 # Configuration schema version; currently only 1 is supported.
 
 [normalize]
-width = 100 # Positive target width for comment reflow and long attribute lines.
+width = 100 # Positive integer or "unlimited" for comment reflow and long attribute lines.
 frontmatter = true # Apply header, import, and frontmatter ordering rules.
 header = true # Normalize existing headers; derive missing attribution from Git history.
 sort_imports = true # Apply import ordering, grouping, and deduplication rules.
 attributes = true # Apply attribute rules.
 headings = false # Apply Markdown heading formatting and conversion rules.
 comments = true # Apply block-comment transformation rules, including spelling.
-comment_reflow = true # Wrap comment prose to target width.
+comment_reflow = true # Apply the width setting to prose. False preserves existing wrapping.
 linkify_urls = false # Turn bare comment URLs into Markdown links.
 spelling = "american" # "american", "british", or "off".
 capitalize_after_colon = false # Capitalize words after a colon.
@@ -31,7 +31,7 @@ exclude = []
 #! for the region while `-- leanck: off` disables all rules for the region.
 #! `-- leanck: on spelling,attributes` restores only those rules, even after disabling all.
 #! `-- leanck: on` restores all configured rules. Repeated directives do not nest.
-#! See CONFIGURATION.md#whitespace-and-local-exceptions for details.
+#! See CONFIGURATION.md#turning-rules-off-locally for details.
 directives = true
 
 [normalize.rules.frontmatter]
@@ -51,6 +51,13 @@ blank_lines = 1
 #! {copyright} is ONE notice with the overall year range and unique author names.
 #! Empty template lines are ignored. Templates must be one outer Lean comment, with no nested
 #! comment delimiters.
+#!
+#! The default template replicates Mathlib style and produces:
+#! /-
+#! Copyright (c) 2026 Firstname Lastname
+#! <license notice if `license_text` is set>
+#! Authors: Firstname Lastname
+#! -/
 header_template = """
 /-
 {copyright}
@@ -103,11 +110,19 @@ ignore_authors = [
 
 #! These policies apply only when normalize.headings = true
 [normalize.rules.headings]
-level = 2 # Generated banner heading level (1–6); existing heading levels are preserved.
 case = "title" # Case for headings: "title", "sentence", or "off".
 #! Title-case exceptions for interior words. Replacing this array replaces the full list.
 small_words = ["a", "an", "and", "as", "at", "but", "by", "for", "from", "in", "into", "nor", "of",
     "off", "on", "onto", "or", "over", "per", "so", "the", "to", "up", "via", "vs", "with", "yet"]
+
+#! Banner heading transformations
+#! This setting converts banner headings like
+#! -- ########################
+#! -- My Heading
+#! -- ########################
+#! to markdown headings like
+#! /-! ## My Heading -/
+level = 2 # Generated banner heading level (1–6); existing heading levels are preserved.
 #! Generated banner comment; {hashes} uses level, and {title} is the formatted title.
 template = "/-! {hashes} {title} -/"
 
@@ -159,7 +174,11 @@ deduplicate = true # Remove duplicate import lines (ignoring whitespace) within 
 #!  -/
 module = "separate" # Opening and closing delimiters on their own lines.
 declaration = "compact" # Delimiters share the first/last content lines when possible.
-section = "compact" # Includes standalone heading comments, even level-one headings.
+section = "compact" # Section documentation; also the fallback for heading-only comments.
+#! Optional layout for /-! comments containing exactly one Markdown heading, at any level.
+#! Surrounding blank lines do not change the classification. Comments with a body use module/section.
+#! Omitted values inherit section. This layout rule does not require normalize.headings=true.
+# heading = "compact"
 
 [normalize.rules.whitespace]
 max_blank_lines = 1 # Consecutive blank-line cap (0–254); protected code/math/literals remain.
@@ -216,22 +235,23 @@ enabled = true
 timeout_ms = 1200000 # 20-minute fetch budget, including execution-lock waiting.
 max_output_bytes = 8388608 # 8 MiB capture limit per stream.
 
-[instances]
-#! Machine-wide daemon cap. User configuration, --config/LEANCK_CONFIG, or --set only;
-#! ignored in discovered project leanck.toml or .leanck.toml files, with a health/doctor warning.
-limit = 8 # Maximum running leanckd daemons on this machine; 0 disables the cap (at most 4096).
-on_limit = "evict_idle" # At the cap: "evict_idle" stops the longest-idle daemon, "refuse", or "warn".
-
 [diagnostics]
 limit = 5 # Diagnostics to show per page
 severity = ["error"] # Any of "error", "warning", "information", "hint"; [] selects none
 
 [output]
-#! Prefer JSON output for supported commands
-json = false
+json = false # Prefer JSON output for supported commands
 
-# User-scoped policy. Discovered project [updates] settings are ignored with a warning.
+#! The following options are user-scoped and are ignored in project configurations with a warning.
+
+[instances]
+#! Set limits on the number of running `leanck` daemons that can be running concurrently.
+#! Limits are conservative by default; increase the limit if you run many concurrent sessions and
+#! your machine can handle it. By default, the longest-idle daemon is evicted.
+limit = 8 # Maximum running leanckd daemons on this machine; 0 disables the cap (at most 4096).
+on_limit = "evict_idle" # At the cap: "evict_idle" stops the longest-idle daemon, "refuse", or "warn".
+
 [updates]
-check = true
-check_interval_secs = 86400 # Between 1 second and one year.
-automatic = false # Apply on eligible managed CLI launches when no clients hold usage leases.
+check = true # Should `leanck` automatically check for updates?
+check_interval_secs = 86400 # Between 1 second and one year (31536000).
+auto_install = false # Should `leanck` automatically install updates?

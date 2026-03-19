@@ -776,7 +776,7 @@ fn lean_line<'a>(line: &'a str, color: bool, block_comment: &mut bool) -> Line<'
 pub(super) fn examples(key: &str) -> Option<&'static str> {
     Some(match key {
         "normalize.width" => {
-            "Comment reflow (illustration)\n\nBefore\n```lean\n/-- A long comment about a proof that is easier to read when wrapped. -/\n```\n\nWith a narrower width\n```lean\n/-- A long comment about a proof\nthat is easier to read when wrapped. -/\n```\n\nLean code and inline math stay intact."
+            "Comment reflow (illustration)\n\nBefore\n```lean\n/-- A long comment about a proof that is easier to read when wrapped. -/\n```\n\nWith a narrower width\n```lean\n/-- A long comment about a proof\nthat is easier to read when wrapped. -/\n```\n\nWith unlimited, soft paragraph breaks are joined without wrapping. Explicit Markdown hard breaks, code, and math stay intact."
         }
         "normalize.spelling" => {
             "American English\n```lean\n/-- The color of the center. -/\n```\n\nBritish English\n```lean\n/-- The colour of the centre. -/\n```\n\nOff\nKeep the original spelling.\n\nCode and identifiers stay intact."
@@ -826,7 +826,7 @@ pub(super) fn examples(key: &str) -> Option<&'static str> {
         "instances.limit" | "instances.on_limit" => {
             "Limit: 3\nAt most three worktree daemons under the default policy.\n\nStop idle: make room safely.\nRefuse: leave existing daemons.\nWarn: allow another daemon.\n\nA limit of 0 disables the cap."
         }
-        "updates.check" | "updates.automatic" => {
+        "updates.check" | "updates.auto_install" => {
             "Release checks\nLook for published leanck releases in the foreground.\n\nAutomatic updates\nInstall for installer-managed releases when no sessions are using the installation.\n\nSource builds keep their source update workflow."
         }
         _ => return None,

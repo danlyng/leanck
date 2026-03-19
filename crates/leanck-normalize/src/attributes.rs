@@ -148,7 +148,7 @@ fn contains_comment(group: &str) -> bool {
 pub(crate) fn configured(
     source: &str,
     rules: &leanck_config::AttributeRules,
-    width: usize,
+    width: leanck_config::NormalizeWidth,
 ) -> (String, usize, Vec<leanck_config::Warning>) {
     use leanck_config::AttributePlacement as P;
     let lines: Vec<_> = source.lines().collect();
@@ -291,7 +291,7 @@ pub(crate) fn configured(
         let measured = doc_comment.map_or(candidate.as_str(), |k| {
             candidate[..candidate.len() - declaration.len() + k].trim_end()
         });
-        let long = rules.above_when_long && measured.chars().count() > width;
+        let long = rules.above_when_long && !width.fits(measured.chars().count());
         let mut rendered = Vec::new();
         for (attr, p) in &attrs {
             if *p == P::Above || long {

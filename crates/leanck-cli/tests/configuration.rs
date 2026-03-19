@@ -114,6 +114,104 @@ fn precedence_user_project_explicit_config_selector_and_set() {
     assert!(report["files"].as_array().unwrap().is_empty());
 }
 #[test]
+fn unlimited_width_config_flags_and_set_precedence() {
+    let dir = Scratch::new();
+    let source = "/-- The first line\ncontinues with a deliberately long explanation. -/\n";
+    let path = dir.0.join("project/Example.lean");
+    for (configured, flags, unlimited) in [
+        ("'unlimited'", vec![], true),
+        ("'unlimited'", vec!["--width", "20"], false),
+        ("20", vec!["--width", "unlimited"], true),
+        ("20", vec!["--set", "normalize.width='unlimited'"], true),
+        ("'unlimited'", vec!["--set", "normalize.width=20"], false),
+    ] {
+        fs::write(
+            dir.0.join("project/leanck.toml"),
+            format!("[normalize]\nwidth={configured}\nfrontmatter=false\nspelling='off'\n"),
+        )
+        .unwrap();
+        fs::write(&path, source).unwrap();
+        let mut args = vec!["--set", "updates.check=false", "normalize", "Example.lean"];
+        args.extend(flags);
+        let output = dir.run(&args);
+        assert!(output.status.success(), "{:?}", output);
+        let actual = fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            actual.contains("The first line continues"),
+            unlimited,
+            "{actual}"
+        );
+        assert!(
+            dir.run(&[
+                "--set",
+                "updates.check=false",
+                "normalize",
+                "Example.lean",
+                "--width",
+                if unlimited { "unlimited" } else { "20" },
+                "--dry-run"
+            ])
+            .status
+            .success()
+        );
+    }
+    let report = json(&dir.run(&["config", "show", "--json"]));
+    assert_eq!(report["settings"]["normalize"]["width"], "unlimited");
+    fs::write(&path, source).unwrap();
+    assert!(
+        dir.run(&[
+            "--set",
+            "updates.check=false",
+            "normalize",
+            "Example.lean",
+            "--no-comment-reflow"
+        ])
+        .status
+        .success()
+    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), source);
+}
+
+#[test]
+fn heading_layout_is_configurable_without_enabling_heading_text_transforms() {
+    let dir = Scratch::new();
+    fs::write(dir.0.join("project/leanck.toml"), "[normalize]\nheadings=false\nheader=false\n[normalize.rules.comments]\nheading='compact'\nmodule='separate'\nsection='separate'\n").unwrap();
+    let source = "/-!\n# A heading\n-/\n\n/-!\n# Another heading\n\nSome documentation\n-/\n";
+    let expected = "/-! # A heading -/\n\n/-!\n# Another heading\n\nSome documentation\n-/\n";
+    let path = dir.0.join("project/Example.lean");
+    fs::write(&path, source).unwrap();
+    let output = dir.run(&["--set", "updates.check=false", "normalize", "Example.lean"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(fs::read_to_string(&path).unwrap(), expected);
+    assert!(
+        dir.run(&[
+            "--set",
+            "updates.check=false",
+            "normalize",
+            "Example.lean",
+            "--dry-run"
+        ])
+        .status
+        .success()
+    );
+    let report = json(&dir.run(&["config", "show", "--json"]));
+    assert_eq!(
+        report["settings"]["normalize"]["rules"]["comments"]["heading"],
+        "compact"
+    );
+    let output = dir.run(&[
+        "--set",
+        "updates.check=false",
+        "--set",
+        "normalize.rules.comments.heading='separate'",
+        "normalize",
+        "Example.lean",
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(fs::read_to_string(&path).unwrap(), source);
+}
+
+#[test]
 fn normalize_without_reflow_formats_delimiters_and_preserves_paragraphs() {
     let dir = Scratch::new();
     fs::write(
@@ -619,12 +717,12 @@ fn project_machine_wide_settings_are_ignored_and_warn_only_in_doctor() {
         assert!(doctor["issues"].as_array().unwrap().is_empty());
         fs::write(
             &path,
-            "[instances]\nlimit=7\n[updates]\ncheck=false\nautomatic=true\n",
+            "[instances]\nlimit=7\n[updates]\ncheck=false\nauto_install=true\n",
         )
         .unwrap();
         let explicit = json(&dir.run(&["--config", name, "config", "show", "--json"]));
         assert_eq!(explicit["settings"]["instances"]["limit"], 7);
-        assert_eq!(explicit["settings"]["updates"]["automatic"], true);
+        assert_eq!(explicit["settings"]["updates"]["auto_install"], true);
         let selected = dir
             .command()
             .env("LEANCK_CONFIG", name)

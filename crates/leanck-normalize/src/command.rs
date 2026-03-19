@@ -3,7 +3,7 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
-use crate::{DEFAULT_WIDTH, Options, SpellingDirection, Stats};
+use crate::{DEFAULT_WIDTH, NormalizeWidth, Options, SpellingDirection, Stats};
 
 /// Options shared by the `leanck normalize` subcommand and the standalone
 /// `leanck-normalize` binary.
@@ -85,9 +85,9 @@ pub struct Args {
     #[arg(long)]
     pub verbose: bool,
 
-    /// Target line width for comment reflow.
-    #[arg(short, long, default_value_t = DEFAULT_WIDTH)]
-    pub width: usize,
+    /// Target line width for comments and attributes: a positive integer or unlimited.
+    #[arg(short, long, default_value_t = NormalizeWidth::Finite(DEFAULT_WIDTH), value_name = "WIDTH")]
+    pub width: NormalizeWidth,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -114,7 +114,10 @@ pub fn run_with_settings(args: Args, settings: &leanck_config::Normalize) -> any
         );
         return Ok(());
     }
-    anyhow::ensure!(args.width > 0, "--width must be greater than zero");
+    anyhow::ensure!(
+        args.width.is_valid(),
+        "--width must be a positive integer or \"unlimited\""
+    );
     settings.rules.validate()?;
     let options = options_from_args(&args, settings);
     let paths: &[PathBuf] = if !options.comments || options.spelling.is_none() {
@@ -616,7 +619,7 @@ mod tests {
     fn omitted_path_uses_stdin_and_default_width() {
         let args = Cli::try_parse_from(["normalize"]).unwrap().args;
         assert_eq!(args.path, None);
-        assert_eq!(args.width, DEFAULT_WIDTH);
+        assert_eq!(args.width, NormalizeWidth::Finite(DEFAULT_WIDTH));
     }
 
     #[test]
@@ -624,7 +627,7 @@ mod tests {
         for path in ["80", "0", "184467440737095516160"] {
             let args = Cli::try_parse_from(["normalize", path]).unwrap().args;
             assert_eq!(args.path, Some(PathBuf::from(path)));
-            assert_eq!(args.width, DEFAULT_WIDTH);
+            assert_eq!(args.width, NormalizeWidth::Finite(DEFAULT_WIDTH));
         }
     }
 
@@ -633,14 +636,14 @@ mod tests {
         for flag in ["--width", "-w"] {
             let args = Cli::try_parse_from(["normalize", flag, "72"]).unwrap().args;
             assert_eq!(args.path, None);
-            assert_eq!(args.width, 72);
+            assert_eq!(args.width, NormalizeWidth::Finite(72));
 
             for path in ["Main.lean", "MyProject", "80"] {
                 let args = Cli::try_parse_from(["normalize", path, flag, "72"])
                     .unwrap()
                     .args;
                 assert_eq!(args.path, Some(PathBuf::from(path)));
-                assert_eq!(args.width, 72);
+                assert_eq!(args.width, NormalizeWidth::Finite(72));
             }
         }
     }
@@ -655,23 +658,29 @@ mod tests {
     }
 
     #[test]
-    fn width_flag_requires_a_usize() {
-        for width in ["abc", "-1", "184467440737095516160"] {
+    fn width_flag_requires_a_positive_integer_or_unlimited() {
+        for width in [
+            "abc",
+            "0",
+            "-1",
+            "80.5",
+            "Unlimited",
+            "184467440737095516160",
+        ] {
             assert!(Cli::try_parse_from(["normalize", "--width", width]).is_err());
         }
     }
 
     #[test]
-    fn zero_width_is_rejected_before_stdin_or_path_io() {
-        for argv in [
-            vec!["normalize", "--width", "0"],
-            vec!["normalize", "--width", "0", "missing.lean"],
-        ] {
-            let args = Cli::try_parse_from(argv).unwrap().args;
-            assert_eq!(
-                run(args).unwrap_err().to_string(),
-                "--width must be greater than zero"
-            );
+    fn unlimited_width_flags_work_with_stdin_and_paths() {
+        for flag in ["--width", "-w"] {
+            for path in [None, Some("Main.lean")] {
+                let mut argv = vec!["normalize", flag, "unlimited"];
+                argv.extend(path);
+                let args = Cli::try_parse_from(argv).unwrap().args;
+                assert_eq!(args.width, NormalizeWidth::Unlimited);
+                assert_eq!(args.path, path.map(PathBuf::from));
+            }
         }
     }
 }

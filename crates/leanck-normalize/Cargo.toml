@@ -1,6 +1,6 @@
 [package]
 name = "leanck-normalize"
-version = "0.17.0"
+version = "0.19.0"
 edition.workspace = true
 
 [lib]
@@ -16,7 +16,7 @@ required-features = ["command"]
 anyhow = { workspace = true, optional = true }
 clap = { workspace = true, optional = true }
 globset = { workspace = true, optional = true }
-leanck-config = { workspace = true, default-features = false }
+leanck-config.workspace = true
 markdown.workspace = true
 markdown-reflow = { git = "https://github.com/danlyng/markdown-reflow.git", rev = "ba132281e4b2fa0b187c6626a30237ba2d7aee8e", version = "0.8.0" }
 regex.workspace = true

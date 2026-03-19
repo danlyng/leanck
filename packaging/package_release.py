@@ -67,6 +67,8 @@ def assemble_distribution(repo, bin_dir, root, version, *, sign_binaries=True):
     (root / ".leanck-update-protocol").write_text("1\n")
     shutil.copy2(repo / "install.sh", root / "install.sh")
     shutil.copy2(repo / "uninstall.sh", root / "uninstall.sh")
+    (root / "docs").mkdir()
+    shutil.copy2(repo / "docs" / "leanck.example.toml", root / "docs" / "leanck.example.toml")
 
 
 def package_release(bin_dir, output, target, version):

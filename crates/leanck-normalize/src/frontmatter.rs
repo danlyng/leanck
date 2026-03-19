@@ -497,7 +497,9 @@ fn reorder(
             // body rather than being the module docstring. Comment reflow
             // makes the same distinction.
             let part = if t.starts_with("/-!") {
-                if crate::reflow::is_section_heading_text(&source[open + 3..end - 2]) {
+                if crate::reflow::doc_comment_kind(&source[open + 3..end - 2])
+                    != crate::prose::DocCommentKind::Documentation
+                {
                     break;
                 }
                 P::Docstring

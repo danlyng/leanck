@@ -3,7 +3,7 @@
 # All execution is inside main so a truncated download cannot start installation.
 
 # Prompts use a separate terminal descriptor: stdin may contain this script.
-INSTALLER_VERSION="0.6.0"
+INSTALLER_VERSION="0.6.1"
 colors() {
     bold='' cyan='' green='' yellow='' red='' reset='' out_bold='' out_reset=''
     prompt_style='' selected_style='' input_style=''
@@ -1569,6 +1569,26 @@ profile_line() {
     case "$shell" in fish) printf "fish_add_path -- '%s'\n" "$quoted" ;;
         *) printf "export PATH='%s':\"\$PATH\"\n" "$quoted" ;; esac
 }
+install_config_example() {
+    if [ -e "$config_example" ] || [ -L "$config_example" ]; then
+        if preview; then plan "Preserve existing configuration example: $config_example"; fi
+        return 0
+    fi
+    example_source=$release/docs/leanck.example.toml
+    if [ -f "$work/config.example.toml" ]; then example_source=$work/config.example.toml; fi
+    if [ -n "$from_repo" ] && preview; then example_source=$from_repo/docs/leanck.example.toml; fi
+    if preview; then
+        plan "Would install configuration example: $config_example"
+    else
+        mkdir -p "$(dirname "$config_example")"
+        pending=$(mktemp "$(dirname "$config_example")/.leanck-install.XXXXXX")
+        cp "$example_source" "$pending"
+        chmod 644 "$pending"
+        commit "$pending" "$config_example"
+        record_install file "$(digest_file "$config_example")" "$config_example"
+        say "Installed configuration example: $config_example"
+    fi
+}
 apply_extras() {
     completion_destination
     if [ "$cli" = 1 ] && [ "$completions" != none ] && ! skipped "$completion_path"; then
@@ -1677,6 +1697,7 @@ PYCODE
         fi
     fi
     extra_locations install
+    install_config_example
     apply_extras
 }
 
@@ -1724,7 +1745,7 @@ register_plugins() {
 
 prepare_plan() {
     validate_skill_selection
-    for key in state_dir bin_dir data_dir claude_dir codex_dir codex_skills fish_completions_dir path_file codex_agents_dir completions_dir; do
+    for key in state_dir bin_dir data_dir claude_dir codex_dir codex_skills fish_completions_dir path_file codex_agents_dir completions_dir config_example; do
         eval 'value=$'"$key"
         [ -n "$value" ] || continue
         absolute_path "$value"; value=$resolved; eval "$key=\$value"
@@ -1860,6 +1881,7 @@ main() {
     bin_dir=$standalone_bin_dir
     data_dir=${XDG_DATA_HOME:-$HOME/.local/share}/leanck
     state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/leanck/installer
+    config_example=${XDG_CONFIG_HOME:-$HOME/.config}/leanck/config.example.toml
     claude_dir=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
     codex_dir=${CODEX_HOME:-$HOME/.codex}
     codex_skills=$HOME/.agents/skills
@@ -2085,6 +2107,15 @@ main() {
                 [ "$installed_version" = "v$version" ] || die 'release bundle version does not match requested version'
             fi
         fi
+    fi
+
+    # Older archives omit docs; fetch the example from that release's source tag.
+    # Keep downloads in the temporary workspace, including during dry runs.
+    if [ -z "$from_repo" ] && [ "$release_unavailable" = 0 ] &&
+        [ ! -e "$config_example" ] && [ ! -L "$config_example" ] &&
+        [ ! -f "$release/docs/leanck.example.toml" ]; then
+        case "$installed_version" in ''|*[!0-9A-Za-z.+-]*) die 'invalid release version' ;; esac
+        download "https://raw.githubusercontent.com/danlyng/leanck/$installed_version/docs/leanck.example.toml" "$work/config.example.toml"
     fi
 
     if [ "$quiet" = 0 ] || [ "$interactive" = 1 ]; then

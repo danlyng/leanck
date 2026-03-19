@@ -590,7 +590,7 @@ mod scope_tests {
             assert!(patch.get(section).is_none());
         }
         let settings: Settings = patch.clone().try_into().unwrap();
-        assert_eq!(settings.normalize.width, 83);
+        assert_eq!(settings.normalize.width, NormalizeWidth::Finite(83));
         assert!(
             ignore_project_machine_wide_sections(
                 Path::new("project/leanck.toml"),

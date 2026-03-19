@@ -391,7 +391,7 @@ async fn automatic_update_reexecutes_once_and_preserves_an_unpinned_installation
             "--set",
             "updates.check=true",
             "--set",
-            "updates.automatic=true",
+            "updates.auto_install=true",
             "daemons",
             "--json",
         ]),

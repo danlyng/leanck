@@ -2,9 +2,11 @@
 mod model;
 mod rules;
 mod warnings;
+mod width;
 pub use model::*;
 pub use rules::*;
 pub use warnings::*;
+pub use width::NormalizeWidth;
 #[cfg(feature = "loader")]
 mod loader;
 #[cfg(feature = "wizard")]
