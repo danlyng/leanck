@@ -17,7 +17,6 @@ mod folding;
 mod query;
 mod request;
 mod resolve;
-mod scan;
 mod server;
 mod sorries;
 mod state;

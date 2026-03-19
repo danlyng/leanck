@@ -208,7 +208,7 @@ request_timeout_ms = 300000 # Default whole-operation budget (5 minutes).
 elaboration_timeout_ms = 120000 # Default elaboration wait cap (2 minutes).
 lsp_timeout_ms = 30000 # Default Lean query/discovery/enrichment wait cap.
 permit_timeout_ms = 30000 # Admission wait before reporting overload.
-sorry_timeout_ms = 5000 # File-sorry elaboration gate before falling back to a text scan.
+sorry_timeout_ms = 5000 # Per-file sorry elaboration gate (also in directories) before text fallback.
 
 [cache]
 #! Try to fetch the Mathlib cache before startup.

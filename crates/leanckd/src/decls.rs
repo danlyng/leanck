@@ -23,7 +23,7 @@ const DECL_MODIFIERS: &[&str] = &["private", "protected", "noncomputable", "unsa
 
 /// Extract every top-level declaration name + start line.
 pub fn extract_decls(source: &str) -> Vec<ParsedDecl> {
-    let tokens = crate::scan::tokens(source);
+    let tokens = leanck_core::scan::tokens(source);
     let mut hits = Vec::new();
     let mut scopes: Vec<Option<String>> = Vec::new();
     let mut i = 0;

@@ -312,6 +312,75 @@ async fn daemon_errors_keep_wire_categories_without_retry() {
     );
 }
 
+async fn sorries_after_daemon_error(kind: ErrorKind) -> Result<SorryResult> {
+    let scratch = Scratch::new();
+    std::fs::write(scratch.0.join("Proof.lean"), "example : True := by admit\n").unwrap();
+    let listener = scratch.listener();
+    let daemon = tokio::spawn(async move {
+        let (mut stream, request) = request(&listener).await;
+        let message = "daemon failed".into();
+        respond(
+            &mut stream,
+            Response::err(request.id, WireError { kind, message }),
+        )
+        .await;
+    });
+    let result = scratch
+        .client()
+        .sorries(
+            &SorryParams {
+                path: "Proof.lean".into(),
+            },
+            RequestOptions::default(),
+        )
+        .await;
+    daemon.await.unwrap();
+    result
+}
+
+#[tokio::test]
+async fn sorry_timeouts_fall_back_to_a_text_scan_but_other_errors_do_not() {
+    let SorryResult::File(file) = sorries_after_daemon_error(ErrorKind::Timeout)
+        .await
+        .unwrap()
+    else {
+        panic!("expected a file result");
+    };
+    assert_eq!(file.sorries.len(), 1);
+    assert!(file.notes[0].ends_with("reporting a text-only scan instead"));
+    assert!(matches!(
+        sorries_after_daemon_error(ErrorKind::NotFound).await,
+        Err(ClientError::Daemon {
+            kind: ErrorKind::NotFound,
+            ..
+        })
+    ));
+}
+
+#[tokio::test]
+async fn fast_sorry_scan_never_contacts_a_daemon() {
+    let scratch = Scratch::new();
+    std::fs::write(scratch.0.join("Proof.lean"), "example : True := sorry\n").unwrap();
+    let client = scratch.client();
+    let result = client
+        .scan_sorries(&SorryParams { path: ".".into() })
+        .await
+        .unwrap();
+    let SorryResult::Directory(directory) = result else {
+        panic!("expected a directory result");
+    };
+    assert_eq!(directory.total, 1);
+    assert!(!client.socket().exists());
+    assert!(matches!(
+        client
+            .scan_sorries(&SorryParams {
+                path: "Missing.lean".into()
+            })
+            .await,
+        Err(ClientError::Scan(_))
+    ));
+}
+
 fn fixture(name: &str) -> Value {
     serde_json::from_str::<Value>(include_str!("../../../test-support/contracts/v4.json")).unwrap()
         [name]

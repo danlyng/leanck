@@ -1,9 +1,9 @@
 //! Shared heuristic Lean lexer. Token positions use the LSP UTF-16 encoding.
-use crate::state::{WirePosition, WireRange};
+use crate::api::{Position, Range};
 #[derive(Debug, Clone)]
 pub struct Token {
     pub text: String,
-    pub range: WireRange,
+    pub range: Range,
 }
 fn ident(c: char) -> bool {
     c.is_alphanumeric()
@@ -13,12 +13,12 @@ fn ident(c: char) -> bool {
 pub fn tokens(source: &str) -> Vec<Token> {
     let chars: Vec<char> = source.chars().collect();
     let mut i = 0;
-    let mut pos = WirePosition {
+    let mut pos = Position {
         line: 0,
         character: 0,
     };
     let mut out = Vec::new();
-    fn advance(chars: &[char], i: &mut usize, p: &mut WirePosition, n: usize) {
+    fn advance(chars: &[char], i: &mut usize, p: &mut Position, n: usize) {
         for _ in 0..n {
             if chars[*i] == '\n' {
                 p.line += 1;
@@ -92,7 +92,7 @@ pub fn tokens(source: &str) -> Vec<Token> {
         }
         out.push(Token {
             text: chars[begin..i].iter().collect(),
-            range: WireRange { start, end: pos },
+            range: Range { start, end: pos },
         });
     }
     out

@@ -331,8 +331,82 @@ async fn diagnostics_goal_list_sorry() {
     .await
     .unwrap();
     let file_sorries = serde_json::to_value(file_sorries).unwrap();
-    assert_eq!(file_sorries["sorries"].as_array().unwrap().len(), 2);
+    let kinds: Vec<_> = file_sorries["sorries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["declaration", "declaration", "tactic", "tactic"]);
     assert!(file_sorries.get("total").is_none());
+    // Lean's own warning must catch a sorry that no scanned token spells.
+    let hidden = "TestProject/Contract/Nested/Hidden.lean";
+    std::fs::create_dir_all(worktree.join("TestProject/Contract/Nested")).unwrap();
+    std::fs::write(
+        worktree.join(hidden),
+        "macro \"trust_me\" : tactic =>\n  `(tactic| exact $(Lean.mkIdent (.mkSimple (\"sorry\" ++ \"Ax\"))) _ false)\ntheorem live_hidden : 1 = 2 := by trust_me\n",
+    )
+    .unwrap();
+    // The directory check must elaborate even a cold file with no sorry tokens.
+    let directory_params = SorryParams {
+        path: "TestProject/Contract".into(),
+    };
+    let lexical = leanck_core::sorry::scan_path(
+        &worktree.join(&directory_params.path),
+        || Ok::<_, String>(()),
+        |message| message,
+    )
+    .unwrap();
+    let leanck_core::api::SorryResult::Directory(lexical) = lexical else {
+        panic!("expected directory report");
+    };
+    assert_eq!(lexical.total, 2);
+    assert!(
+        !lexical
+            .files
+            .iter()
+            .any(|file| file.uri.ends_with("Hidden.lean"))
+    );
+    let directory = query::sorry(
+        &ws,
+        &directory_params,
+        &crate::request::RequestContext::new(None, Default::default()).unwrap(),
+    )
+    .await
+    .unwrap();
+    let directory = serde_json::to_value(directory).unwrap();
+    assert_eq!(directory["total"], 5);
+    let files = directory["files"].as_array().unwrap();
+    assert_eq!(files.len(), 2);
+    let hidden_report = files
+        .iter()
+        .find(|file| file["uri"].as_str().unwrap().ends_with("Hidden.lean"))
+        .unwrap();
+    assert_eq!(hidden_report["sorries"][0]["kind"], "declaration");
+    assert_eq!(hidden_report["sorries"][0]["range"]["start"]["line"], 2);
+    assert!(directory.get("notes").is_none());
+    let hidden_sorries = query::sorry(
+        &ws,
+        &SorryParams {
+            path: hidden.into(),
+        },
+        &crate::request::RequestContext::new(None, Default::default()).unwrap(),
+    )
+    .await;
+    std::fs::remove_file(worktree.join(hidden)).unwrap();
+    let hidden_sorries = serde_json::to_value(hidden_sorries.unwrap()).unwrap();
+    let hidden_lines: Vec<_> = hidden_sorries["sorries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| {
+            (
+                entry["kind"].as_str().unwrap(),
+                entry["range"]["start"]["line"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(hidden_lines, [("declaration", 2)]);
     let directory = query::sorry(
         &ws,
         &SorryParams {
@@ -343,16 +417,11 @@ async fn diagnostics_goal_list_sorry() {
     .await
     .unwrap();
     let directory = serde_json::to_value(directory).unwrap();
-    assert_eq!(directory["total"], 2);
+    assert_eq!(directory["total"], 4);
     assert_eq!(directory["files"].as_array().unwrap().len(), 1);
 
-    assert!(
-        directory["notes"][0]
-            .as_str()
-            .unwrap()
-            .contains("text-only")
-    );
-    // Disk-only scans must not combine cached declaration warnings with edited text.
+    assert!(directory.get("notes").is_none());
+    // Directory checks must not combine cached declaration warnings with edited text.
     std::fs::write(
         worktree.join(support::WARNINGS),
         "def sorry_string := \"sorry /- not a comment -/\"\n-- sorry\n",
@@ -370,7 +439,27 @@ async fn diagnostics_goal_list_sorry() {
     let scan = serde_json::to_value(scan).unwrap();
     assert_eq!(scan["total"], 0);
     assert!(scan["files"].as_array().unwrap().is_empty());
-    assert!(scan["notes"][0].as_str().unwrap().contains("text-only"));
+    assert!(scan.get("notes").is_none());
+
+    // Files with only quality notes must remain visible even with zero sorries.
+    let flagged = worktree.join("TestProject/Contract/Flagged.lean");
+    std::fs::write(&flagged, "axiom contract_cheat : False\n").unwrap();
+    let flagged_scan = query::sorry(
+        &ws,
+        &directory_params,
+        &crate::request::RequestContext::new(None, Default::default()).unwrap(),
+    )
+    .await;
+    std::fs::remove_file(flagged).unwrap();
+    let flagged_scan = serde_json::to_value(flagged_scan.unwrap()).unwrap();
+    assert_eq!(flagged_scan["total"], 0);
+    assert_eq!(flagged_scan["files"].as_array().unwrap().len(), 1);
+    assert!(
+        flagged_scan["files"][0]["notes"][0]
+            .as_str()
+            .unwrap()
+            .contains("axiom")
+    );
 
     // A dependency edit must reopen its unchanged consumer and rebuild its imports.
     let dep = worktree.join("TestProject/Stage7Dependency.lean");

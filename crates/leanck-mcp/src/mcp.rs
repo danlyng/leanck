@@ -90,9 +90,14 @@ pub struct SorryInput {
     /// Workspace-relative path, absolute path, or `file://` URI. If this
     /// points to a directory, `.lean` files are scanned recursively.
     pub path: String,
+    /// Scan source text only, without starting or querying the daemon. Misses
+    /// sorries that macros produce without spelling one.
+    #[serde(default)]
+    pub fast: bool,
     /// Operation budget in milliseconds after cold startup. Defaults: 300s
     /// operation, 5s elaboration gate before text fallback. An explicit value
     /// overrides the brief gate, bounded by the remaining operation budget.
+    /// A timeout returns a text-only scan.
     #[serde(default)]
     pub timeout_ms: Option<u64>,
 }
@@ -361,7 +366,7 @@ impl LeanckServer {
     }
 
     #[tool(
-        description = "Show declarations that rely on `sorry` under `path`.",
+        description = "Show declarations that rely on `sorry` (or `admit`, `stop`, `sorryAx`) under `path`. Set `fast` to skip elaboration and scan text only.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,
@@ -375,17 +380,22 @@ impl LeanckServer {
         cancel: CancellationToken,
     ) -> Result<Content, ErrorData> {
         let client = self.workspace.capture();
-        let body = client
-            .sorries(
-                &SorryParams::from(&p),
-                RequestOptions {
-                    timeout_ms: p.timeout_ms,
-                    cancellation: Some(cancel),
-                    ..Default::default()
-                },
-            )
-            .await
-            .map_err(to_mcp_error)?;
+        let params = SorryParams::from(&p);
+        let body = if p.fast {
+            client.scan_sorries(&params).await
+        } else {
+            client
+                .sorries(
+                    &params,
+                    RequestOptions {
+                        timeout_ms: p.timeout_ms,
+                        cancellation: Some(cancel),
+                        ..Default::default()
+                    },
+                )
+                .await
+        }
+        .map_err(to_mcp_error)?;
         Content::json(body)
     }
 
@@ -663,7 +673,9 @@ impl ServerHandler for LeanckServer {
 fn to_mcp_error(error: ClientError) -> ErrorData {
     let message = error.to_string();
     match error {
-        ClientError::Workspace(_) => ErrorData::invalid_params(message, None),
+        ClientError::Workspace(_) | ClientError::Scan(_) => {
+            ErrorData::invalid_params(message, None)
+        }
         ClientError::Daemon { kind, .. } => {
             let data = Some(serde_json::json!({ "kind": kind }));
             match kind {

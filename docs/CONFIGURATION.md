@@ -346,7 +346,7 @@ Builds use the project's Lake toolchain and the existing shared execution lock. 
 | `daemon.elaboration_timeout_ms` | `120000` | Default elaboration wait cap. |
 | `daemon.lsp_timeout_ms` | `30000` | Default query LSP cap, including declaration discovery and goal enrichment. |
 | `daemon.permit_timeout_ms` | `30000` | Admission wait before reporting overload, bounded by the request deadline. |
-| `daemon.sorry_timeout_ms` | `5000` | Brief file-sorry elaboration gate before text fallback. |
+| `daemon.sorry_timeout_ms` | `5000` | Per-file sorry elaboration gate before text fallback, including directory checks. |
 | `cache.enabled` | `true` | Attempt Mathlib cache fetching before Lean startup. |
 | `cache.timeout_ms` | `1200000` | Cache-fetch budget, including execution-lock waiting. |
 | `cache.max_output_bytes` | `8388608` | Positive per-stream cache output capture limit. |

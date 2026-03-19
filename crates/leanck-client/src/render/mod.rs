@@ -35,7 +35,7 @@ pub fn render_sorry(body: &SorryResult) -> String {
 fn render_sorry_body(body: &SorryResult) -> String {
     match body {
         SorryResult::Directory(body) => {
-            if body.total == 0 {
+            if body.files.is_empty() {
                 return "no sorries found".into();
             }
             let mut out = vec![format!("{} sorries", body.total)];
@@ -46,6 +46,7 @@ fn render_sorry_body(body: &SorryResult) -> String {
                         .iter()
                         .map(|entry| format!("    {}", sorry_line(entry))),
                 );
+                out.extend(file.notes.iter().map(|note| format!("    note: {note}")));
             }
             out.join("\n")
         }

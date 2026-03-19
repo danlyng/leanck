@@ -84,9 +84,21 @@ pub enum ClientError {
     /// `code` is the exit status, or 128 plus the signal number.
     #[error("leanckd exited with status {code} before serving; see {log}")]
     DaemonExited { code: i32, log: PathBuf },
+    #[error("text-only sorry scan failed: {0}")]
+    Scan(String),
 }
 
 impl ClientError {
+    /// A budget expired before the daemon answered; no daemon error explains why.
+    pub fn is_timeout(&self) -> bool {
+        match self {
+            Self::StartupTimeout | Self::TransportTimeout { .. } => true,
+            Self::Daemon { kind, .. } => *kind == ErrorKind::Timeout,
+            Self::Handshake(inner) => inner.is_timeout(),
+            _ => false,
+        }
+    }
+
     /// Only a failed connection proves that the daemon did not receive the request.
     pub fn is_pre_dispatch(&self) -> bool {
         matches!(

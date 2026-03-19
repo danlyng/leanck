@@ -309,7 +309,7 @@ fn imports_stale(
         let Ok(source) = std::fs::read_to_string(file) else {
             return Ok(true);
         };
-        for module in crate::scan::imports(&source) {
+        for module in leanck_core::scan::imports(&source) {
             let rel = PathBuf::from(module.replace('.', "/")).with_extension("lean");
             if let Some(candidate) = roots
                 .iter()

@@ -73,6 +73,19 @@ fn sorry_reports_distinguish_file_and_directory() {
         })),
         "1 sorries\n  /contract/Space #.lean\n    L3 [tactic]"
     );
+    assert_eq!(
+        render_sorry(&SorryResult::Directory(SorryDirectory {
+            uri: "file:///contract".into(),
+            total: 0,
+            files: vec![SorryFile {
+                uri: "file:///contract/Flag.lean".into(),
+                sorries: vec![],
+                notes: vec!["red flag".into()],
+            }],
+            notes: vec![],
+        })),
+        "0 sorries\n  /contract/Flag.lean\n    note: red flag"
+    );
 }
 
 #[test]

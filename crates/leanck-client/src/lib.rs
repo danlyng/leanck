@@ -323,13 +323,40 @@ impl Client {
             .await
     }
 
+    /// Falls back to the daemon-free text scan when startup or the query times out.
     pub async fn sorries(
         &self,
         params: &SorryParams,
         options: RequestOptions,
     ) -> Result<SorryResult> {
-        self.execute(Command::Sorry(params.clone()), options, true)
+        match self
+            .execute(Command::Sorry(params.clone()), options, true)
             .await
+        {
+            Err(error) if error.is_timeout() => {
+                let mut result = self.scan_sorries(params).await?;
+                let notes = match &mut result {
+                    SorryResult::File(file) => &mut file.notes,
+                    SorryResult::Directory(directory) => &mut directory.notes,
+                };
+                notes.insert(0, format!("{error}; reporting a text-only scan instead"));
+                Ok(result)
+            }
+            other => other,
+        }
+    }
+
+    /// Text-only sorry scan that never starts or contacts a daemon.
+    pub async fn scan_sorries(&self, params: &SorryParams) -> Result<SorryResult> {
+        let workspace = self.workspace().to_path_buf();
+        let argument = params.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let path = leanck_core::document::DocumentPath::resolve(&workspace, &argument)
+                .map_err(|e| ClientError::Scan(e.to_string()))?;
+            leanck_core::sorry::scan_path(path.as_path(), || Ok(()), ClientError::Scan)
+        })
+        .await
+        .map_err(|e| ClientError::Scan(e.to_string()))?
     }
 
     pub async fn list(&self, params: &ListParams, options: RequestOptions) -> Result<ListResult> {

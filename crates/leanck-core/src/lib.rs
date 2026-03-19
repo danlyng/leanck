@@ -5,6 +5,8 @@ pub mod document;
 pub mod error;
 pub mod instances;
 pub mod paths;
+pub mod scan;
+pub mod sorry;
 pub mod workspace;
 
 #[cfg(feature = "wire")]

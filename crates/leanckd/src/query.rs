@@ -1,14 +1,14 @@
 //! Workspace-bound queries over document leases and shared declaration discovery.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use crate::declarations::discover;
 use crate::documents::Document;
 use crate::error::{Error, Result};
 use crate::request::RequestContext;
-use crate::sorries::{SorryEntry, SorryKind, text_sorries, with_diagnostics};
+use crate::sorries::{SorryEntry, SorryKind, with_diagnostics};
 use crate::state::{WireDiagnostic, WirePosition, WireRange, filter_by_range, range_overlaps};
 use crate::workspace::Workspace;
 use leanck_core::api::{
@@ -61,8 +61,6 @@ impl<'a> QueryService<'a> {
         }
     }
 }
-
-const DIR_SKIP: &[&str] = &[".git", ".lake", "build", "target", "node_modules"];
 
 // ---- diagnostics ----------------------------------------------------------
 
@@ -120,7 +118,7 @@ pub async fn diagnostics(
     let version = doc.version();
     let all = snapshot.diagnostics;
     let source = doc.source();
-    let sorries = with_diagnostics(&all, source);
+    let sorries = with_diagnostics(&all, source).sorries;
     let mut notes = collect_notes(&all, range.as_ref(), &sorries);
     notes.extend(doc.notes.clone());
     notes.extend(discovery_notes);
@@ -260,56 +258,48 @@ pub async fn sorry(ws: &Workspace, p: &SorryParams, ctx: &RequestContext) -> Res
         .map_err(|_| Error::InvalidPath(format!("not found: {}", abs.display())))?;
 
     if meta.is_dir() {
-        let mut files = Vec::new();
-        let mut total = 0u64;
-        let path = abs.clone();
         let context = ctx.clone();
-        let leaves = ctx
+        let root = abs.clone();
+        let paths = ctx
             .run(async {
-                tokio::task::spawn_blocking(move || walk_lean_files(&path, &context))
-                    .await
-                    .map_err(|e| Error::InvalidPath(e.to_string()))?
+                tokio::task::spawn_blocking(move || {
+                    leanck_core::sorry::lean_files(
+                        &root,
+                        &mut || context.check(),
+                        &Error::InvalidPath,
+                    )
+                })
+                .await
+                .map_err(|e| Error::ServerDown(e.to_string()))?
             })
             .await?;
-        for leaf in leaves {
+        let mut files = Vec::new();
+        let mut total = 0u64;
+        // Check every file, including those without sorry tokens. Release each
+        // document lease before opening the next; retention stays bounded and
+        // all waits share the directory request's deadline and cancellation.
+        for path in paths {
             ctx.check()?;
-            let uri = leanck_core::document::path_to_uri(&leaf)?;
-            let source = ctx
-                .run(async {
-                    tokio::fs::read_to_string(&leaf)
-                        .await
-                        .map_err(|e| Error::InvalidPath(format!("{}: {e}", leaf.display())))
-                })
-                .await?;
-            let entries = ctx
-                .run(async {
-                    tokio::task::spawn_blocking(move || text_sorries(&source))
-                        .await
-                        .map_err(|e| Error::ServerDown(e.to_string()))
-                })
-                .await?;
-            if entries.is_empty() {
-                continue;
-            }
-            total += u64::try_from(entries.len())
+            let file = sorry_file(ws, &path, ctx).await?;
+            total += u64::try_from(file.sorries.len())
                 .map_err(|_| Error::BadRequest("too many sorries".into()))?;
-            files.push(SorryFile {
-                uri,
-                sorries: entries,
-                notes: Vec::new(),
-            });
+            if !file.sorries.is_empty() || !file.notes.is_empty() {
+                files.push(file);
+            }
         }
         return Ok(SorryResult::Directory(SorryDirectory {
             uri: leanck_core::document::path_to_uri(&abs)?,
             total,
             files,
-            notes: vec![
-                "text-only directory scan; declaration diagnostics are not included".into(),
-            ],
+            notes: Vec::new(),
         }));
     }
 
-    let doc = ws.document(&abs, ctx).await?;
+    Ok(SorryResult::File(sorry_file(ws, &abs, ctx).await?))
+}
+
+async fn sorry_file(ws: &Workspace, path: &Path, ctx: &RequestContext) -> Result<SorryFile> {
+    let doc = ws.document(path, ctx).await?;
     let budget = ctx.wait_budget(Duration::from_millis(ws.settings.sorry_timeout_ms))?;
     let deadline = tokio::time::Instant::now() + budget;
     let settled = doc.wait(None, budget, ctx).await;
@@ -349,15 +339,16 @@ pub async fn sorry(ws: &Workspace, p: &SorryParams, ctx: &RequestContext) -> Res
             vec!["elaboration unavailable; sorry report uses a text-only heuristic".into()],
         )
     };
-    let entries = with_diagnostics(&diagnostics, doc.source());
+    let scan = with_diagnostics(&diagnostics, doc.source());
     doc.validate()?;
+    notes.extend(scan.notes);
     notes.dedup();
 
-    Ok(SorryResult::File(SorryFile {
+    Ok(SorryFile {
         uri: doc.uri.clone(),
-        sorries: entries,
+        sorries: scan.sorries,
         notes,
-    }))
+    })
 }
 
 // ---- restart_file ---------------------------------------------------------
@@ -526,35 +517,6 @@ pub fn sorry_note_lines(sorries: &[SorryEntry], target_range: Option<&WireRange>
     lines.sort_unstable();
     lines.dedup();
     lines
-}
-
-fn walk_lean_files(root: &Path, ctx: &RequestContext) -> Result<Vec<PathBuf>> {
-    let mut out = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        ctx.check()?;
-        let entries = std::fs::read_dir(&dir)
-            .map_err(|e| Error::InvalidPath(format!("{}: {e}", dir.display())))?;
-        for entry in entries {
-            let entry = entry.map_err(|e| Error::InvalidPath(e.to_string()))?;
-            ctx.check()?;
-            let path = entry.path();
-            let ft = entry
-                .file_type()
-                .map_err(|e| Error::InvalidPath(format!("{}: {e}", path.display())))?;
-            if ft.is_dir() {
-                let name = entry.file_name();
-                if DIR_SKIP.iter().any(|d| std::ffi::OsStr::new(d) == name) {
-                    continue;
-                }
-                stack.push(path);
-            } else if ft.is_file() && path.extension().is_some_and(|e| e == "lean") {
-                out.push(path);
-            }
-        }
-    }
-    out.sort();
-    Ok(out)
 }
 
 #[cfg(test)]
