@@ -1,5 +1,3 @@
-#![cfg(feature = "command")]
-
 use std::{fs, path::PathBuf, process::Command};
 
 struct Scratch(PathBuf);
@@ -30,7 +28,7 @@ fn standalone_unlimited_width_config_flags_and_overrides() {
         )
         .unwrap();
         fs::write(&path, source).unwrap();
-        let output = Command::new(env!("CARGO_BIN_EXE_leanck-normalize"))
+        let output = normalizer()
             .current_dir(&dir.0)
             .env("XDG_CONFIG_HOME", dir.0.join("user"))
             .env_remove("LEANCK_CONFIG")
@@ -46,4 +44,10 @@ fn standalone_unlimited_width_config_flags_and_overrides() {
             "{actual}"
         );
     }
+}
+
+fn normalizer() -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_leanck"));
+    command.arg("normalize");
+    command
 }

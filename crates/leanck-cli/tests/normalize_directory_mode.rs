@@ -17,7 +17,7 @@ fn temp_root(tag: &str) -> PathBuf {
 }
 
 fn run(args: &[&str], root: &Path) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_leanck-normalize"))
+    normalizer()
         .args(args)
         .arg(root.as_os_str())
         .output()
@@ -34,7 +34,7 @@ fn numeric_filename_is_rewritten_in_place() {
     let path = root.join("80");
     fs::write(&path, DIRTY).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_leanck-normalize"))
+    let output = normalizer()
         .current_dir(&root)
         .args(["--width", "72", "80"])
         .output()
@@ -203,7 +203,7 @@ fn configured_dictionary_paths_are_relative_to_config_and_invalid_resources_writ
     )
     .unwrap();
     fs::write(root.join("Main.lean"), "/-- colour special -/\n").unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_leanck-normalize"))
+    let output = normalizer()
         .arg("--config")
         .arg(root.join("settings/config.toml"))
         .arg(root.join("Main.lean"))
@@ -220,7 +220,7 @@ fn configured_dictionary_paths_are_relative_to_config_and_invalid_resources_writ
     );
     fs::write(root.join("settings/words.json"), "{not json}").unwrap();
     let before = fs::read(root.join("Main.lean")).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_leanck-normalize"))
+    let output = normalizer()
         .arg("--config")
         .arg(root.join("settings/config.toml"))
         .arg(root.join("Main.lean"))
@@ -228,7 +228,7 @@ fn configured_dictionary_paths_are_relative_to_config_and_invalid_resources_writ
         .unwrap();
     assert!(!output.status.success());
     assert_eq!(fs::read(root.join("Main.lean")).unwrap(), before);
-    let output = Command::new(env!("CARGO_BIN_EXE_leanck-normalize"))
+    let output = normalizer()
         .args(["--no-config", "--export-dictionary", "american"])
         .output()
         .unwrap();
@@ -241,7 +241,7 @@ fn configured_dictionary_paths_are_relative_to_config_and_invalid_resources_writ
 fn disabled_spelling_does_not_open_dictionary_files() {
     let root = temp_root("disabled-dictionary");
     fs::write(root.join("Main.lean"), DIRTY).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_leanck-normalize"))
+    let output = normalizer()
         .current_dir(&root)
         .args([
             "--no-config",
@@ -374,7 +374,7 @@ fn frontmatter_spacing_warning_is_once_per_recursive_run_and_dry_run_still_succe
     for name in ["A.lean", "B.lean"] {
         assert_eq!(fs::read_to_string(root.join(name)).unwrap(), source);
     }
-    let output = Command::new(env!("CARGO_BIN_EXE_leanck-normalize"))
+    let output = normalizer()
         .args([
             "--no-config",
             "--set",
@@ -392,4 +392,10 @@ fn frontmatter_spacing_warning_is_once_per_recursive_run_and_dry_run_still_succe
             .is_object()
     );
     fs::remove_dir_all(root).unwrap();
+}
+
+fn normalizer() -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_leanck"));
+    command.arg("normalize");
+    command
 }

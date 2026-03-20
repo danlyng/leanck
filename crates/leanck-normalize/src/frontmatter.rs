@@ -143,7 +143,7 @@ fn is_namespace(line: &str) -> bool {
     line.trim().starts_with("namespace ")
 }
 
-pub(crate) fn is_module_file(source: &str) -> bool {
+pub fn is_module_file(source: &str) -> bool {
     crate::syntax::code_mask(source).lines().any(|l| {
         let t = l.trim();
         t == "module" || is_import(l) || is_section(l)
@@ -154,7 +154,7 @@ pub(crate) fn is_module_file(source: &str) -> bool {
 // 1. Copyright header
 // ---------------------------------------------------------------------------
 
-pub(crate) fn leading_header(source: &str) -> Option<std::ops::Range<usize>> {
+pub fn leading_header(source: &str) -> Option<std::ops::Range<usize>> {
     let start = source.len() - source.trim_start_matches('\u{feff}').trim_start().len();
     let rest = &source[start..];
     if !rest.starts_with("/-") || rest.starts_with("/--") || rest.starts_with("/-!") {
@@ -263,8 +263,8 @@ fn generated_header(
 }
 
 /// Only missing headers and explicitly replaceable mismatches need attribution.
-#[cfg(feature = "command")]
-pub(crate) fn needs_history(
+#[cfg(feature = "history")]
+pub fn needs_history(
     source: &str,
     options: Options,
     rules: &leanck_config::FrontmatterRules,

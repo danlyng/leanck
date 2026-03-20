@@ -1,13 +1,12 @@
 use leanck_core::workspace::WorkspaceRoot;
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, clap::Args)]
+#[derive(Debug, Clone)]
 pub struct Args {
     /// Workspace root the daemon serves. If omitted, the bridge
     /// walks up from the current directory looking for `lakefile.lean`,
     /// `lakefile.toml`, or `lean-toolchain`. If nothing matches, it falls
     /// back to the current directory.
-    #[arg(long)]
     pub workspace: Option<PathBuf>,
 }
 

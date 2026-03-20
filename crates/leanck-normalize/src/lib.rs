@@ -1,4 +1,4 @@
-//! Pure Lean source normalization, with an optional shared command adapter.
+//! Lean source normalization with explicit inputs and optional Git history discovery.
 mod attributes;
 mod configured;
 mod frontmatter;
@@ -11,9 +11,10 @@ pub use configured::{Context, normalize_with_context};
 pub use leanck_config::{NormalizeRules, NormalizeWidth};
 pub use spelling::{Dictionary, builtin_json, configured_map};
 
-#[cfg(feature = "command")]
-pub mod command;
 pub use frontmatter::Options as FrontmatterOptions;
+#[cfg(feature = "history")]
+pub use frontmatter::needs_history;
+pub use frontmatter::{is_module_file, leading_header};
 pub use reflow::{NormalizeResult, Options, SpellingDirection, Stats};
 
 pub const DEFAULT_WIDTH: usize = 100;

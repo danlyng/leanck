@@ -62,7 +62,7 @@ impl Repo {
         );
     }
     fn normalize(&self, file: &str) -> std::process::Output {
-        Command::new(env!("CARGO_BIN_EXE_leanck-normalize"))
+        normalizer()
             .current_dir(&self.0)
             .args(["--no-config", file])
             .output()
@@ -142,7 +142,7 @@ fn hidden_config_maps_mailmapped_names_in_generated_and_replaced_headers() {
     fs::write(repo.0.join(".leanck.toml"), "[normalize.rules.frontmatter]\ninvalid_existing='replace'\n[normalize.rules.frontmatter.author_map]\nAlias='Wrong: raw identity'\n'Canonical Person'='Display Person'\n").unwrap();
     fs::create_dir_all(repo.0.join("config-home")).unwrap();
     let normalize = || {
-        Command::new(env!("CARGO_BIN_EXE_leanck-normalize"))
+        normalizer()
             .current_dir(&repo.0)
             .env("XDG_CONFIG_HOME", repo.0.join("config-home"))
             .env_remove("LEANCK_CONFIG")
@@ -180,7 +180,7 @@ fn hidden_config_maps_mailmapped_names_in_generated_and_replaced_headers() {
 fn existing_header_needs_no_git_and_untracked_files_get_no_invented_identity() {
     let repo = Repo::new();
     fs::write(repo.0.join("Existing.lean"),"/-\n Copyright (c) 1998 Original Author.\n Authors: Original Author\n Custom license text.\n-/\nmodule\nimport Foo\n").unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_leanck-normalize"))
+    let output = normalizer()
         .current_dir(&repo.0)
         .env("PATH", "/no/git/here")
         .args(["--no-config", "Existing.lean"])
@@ -215,7 +215,7 @@ fn tracked_declaration_only_files_get_headers_and_dry_run_is_non_writing() {
         "author@example.invalid",
         "2017-01-01T12:00:00+00:00",
     );
-    let output = Command::new(env!("CARGO_BIN_EXE_leanck-normalize"))
+    let output = normalizer()
         .current_dir(&repo.0)
         .args(["--no-config", "--dry-run", "Basic.lean"])
         .output()
@@ -268,7 +268,7 @@ fn history_timeout_is_bounded_and_keeps_missing_header_absent() {
     fs::write(&fake, "#!/bin/sh\nexec /bin/sleep 2\n").unwrap();
     fs::set_permissions(&fake, fs::Permissions::from_mode(0o700)).unwrap();
     let start = std::time::Instant::now();
-    let output = Command::new(env!("CARGO_BIN_EXE_leanck-normalize"))
+    let output = normalizer()
         .current_dir(&repo.0)
         .env("PATH", repo.0.join("fake-bin"))
         .args([
@@ -316,7 +316,7 @@ fn ai_authors_are_excluded_with_their_years_and_can_be_restored() {
     assert!(source.contains("Copyright (c) 2020 Human."), "{source}");
     assert!(!source.contains("2015") && !source.contains("Agent") && !source.contains("Claude"));
     fs::write(repo.0.join("Basic.lean"), "def x := 2\n").unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_leanck-normalize"))
+    let output = normalizer()
         .current_dir(&repo.0)
         .args([
             "--no-config",
@@ -354,7 +354,7 @@ fn header_mismatch_is_reported_in_dry_run_mode_without_changing_the_file() {
     let repo = Repo::new();
     let source = "/- Existing attribution. -/\n\nmodule\n";
     fs::write(repo.0.join("Basic.lean"), source).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_leanck-normalize"))
+    let output = normalizer()
         .current_dir(&repo.0)
         .env("PATH", "/no/git/here")
         .args(["--no-config", "--dry-run", "Basic.lean"])
@@ -407,7 +407,7 @@ fn agent_committers_and_coauthor_trailers_do_not_remove_human_authorship() {
 }
 
 fn header_policy_command(repo: &Repo, policy: &str) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_leanck-normalize"));
+    let mut command = normalizer();
     command
         .current_dir(&repo.0)
         .args(["--no-config", "--set"])
@@ -528,4 +528,10 @@ fn replacement_with_fully_excluded_git_history_preserves_existing_attribution() 
         fs::read_to_string(repo.0.join("Basic.lean")).unwrap(),
         source
     );
+}
+
+fn normalizer() -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_leanck"));
+    command.arg("normalize");
+    command
 }

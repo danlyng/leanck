@@ -1373,6 +1373,7 @@ dependencies = [
  "color-print",
  "comfy-table",
  "flate2",
+ "globset",
  "leanck-client",
  "leanck-config",
  "leanck-core",
@@ -1389,6 +1390,7 @@ dependencies = [
  "tar",
  "tempfile",
  "tokio",
+ "toml",
  "tracing",
  "tracing-subscriber",
 ]
@@ -1413,7 +1415,6 @@ name = "leanck-config"
 version = "0.1.1"
 dependencies = [
  "anyhow",
- "clap",
  "crossterm",
  "globset",
  "ratatui",
@@ -1474,7 +1475,6 @@ name = "leanck-mcp"
 version = "0.22.0"
 dependencies = [
  "anyhow",
- "clap",
  "leanck-client",
  "leanck-config",
  "leanck-core",
@@ -1493,9 +1493,6 @@ dependencies = [
 name = "leanck-normalize"
 version = "0.20.0"
 dependencies = [
- "anyhow",
- "clap",
- "globset",
  "indoc",
  "leanck-config",
  "markdown",

@@ -3,14 +3,13 @@
 mod args;
 mod cli;
 mod commands;
-mod completions;
 mod configuration;
 mod logging;
-mod serve;
 
 use clap::{CommandFactory, FromArgMatches};
 
 use cli::{Cli, Cmd};
+use commands::{completions, serve};
 
 /// Run an async command body on a fresh current-thread runtime.
 fn block_on<T, F: std::future::Future<Output = anyhow::Result<T>>>(fut: F) -> anyhow::Result<T> {
@@ -131,9 +130,7 @@ fn run(json: &mut bool) -> anyhow::Result<()> {
             args.cancellation = Some(cancel);
             commands::build::run(args)
         }),
-        Cmd::Normalize(args) => {
-            leanck_normalize::command::run_with_settings(args, &loaded.settings.normalize)
-        }
+        Cmd::Normalize(args) => commands::normalize::run(args, &loaded.settings.normalize),
         Cmd::Config(_) | Cmd::Serve(_) | Cmd::Completions(_) | Cmd::UpdateInternal(_) => {
             unreachable!()
         }

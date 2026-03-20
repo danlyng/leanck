@@ -3,10 +3,10 @@
 Normalize Lean source from stdin, or rewrite a file or directory in place:
 
 ```sh
-leanck-normalize [OPTIONS] [PATH]
-leanck-normalize --width 80 < Main.lean > Normalized.lean
-leanck-normalize -w 80 Main.lean
-leanck-normalize --width 80 ./MyProject
+leanck normalize [OPTIONS] [PATH]
+leanck normalize --width 80 < Main.lean > Normalized.lean
+leanck normalize -w 80 Main.lean
+leanck normalize --width 80 ./MyProject
 ```
 
 Omitting `PATH` reads stdin and writes the normalized source to stdout. A file
@@ -16,7 +16,7 @@ directories are skipped. Use `--verbose` for per-file updates.
 
 The target width defaults to 100. Set a positive integer or `unlimited` with `--width` or `-w`, or set `normalize.width` to a positive integer or `"unlimited"` in TOML. Unlimited width joins soft paragraph breaks without inserting width-based breaks; Markdown hard breaks, paragraph boundaries, lists, code, and math remain respected. Comment delimiter policies still apply, and attribute placement never moves above a declaration solely because of line length. Set `normalize.comment_reflow = false` or pass `--no-comment-reflow` to preserve existing prose wrapping instead.
 
-Both `leanck-normalize --width unlimited Main.lean` and `leanck normalize --width unlimited Main.lean` use unlimited width. Positional widths are not accepted: numeric names such as `80` are paths. Run `--help` for transformation flags.
+`leanck normalize --width unlimited Main.lean` uses unlimited width. Positional widths are not accepted: numeric names such as `80` are paths. Run `--help` for transformation flags.
 
 ## Acknowledgments
 
@@ -47,7 +47,7 @@ SOFTWARE.
 
 ## Shared runtime configuration
 
-The executables load user/project TOML configuration and accept `--config FILE`, `--no-config`, and repeatable `--set KEY=VALUE`. See the [configuration reference](../docs/CONFIGURATION.md) for all settings, precedence, and lifecycle behavior. Use `leanck config show --json` to inspect effective settings and `leanck config check` to validate them.
+The CLI loads user/project TOML configuration and accept `--config FILE`, `--no-config`, and repeatable `--set KEY=VALUE`. See the [configuration reference](../docs/CONFIGURATION.md) for all settings, precedence, and lifecycle behavior. Use `leanck config show --json` to inspect effective settings and `leanck config check` to validate them.
 
 ## History and style policies
 
@@ -57,7 +57,7 @@ Structured policies under `normalize.rules` configure frontmatter ordering and t
 
 `normalize.rules.frontmatter.order` may list any subset of frontmatter components. Omitted components stay in place as barriers; `[]` preserves all positions. Use this instead of the removed relocation settings and flags. Header formatting and import-content policies remain independent of component order.
 
-The pure `normalize_with_context` API accepts explicit history and compiled dictionary resources. Schema-only builds retain no configuration loader or command adapter.
+The pure `normalize_with_context` API accepts explicit history and compiled dictionary resources. The library has no Clap interface or configuration loader. Enable the `history` feature for bounded Git attribution discovery; the CLI owns argument parsing, traversal, and output.
 
 Project configuration may be named `leanck.toml` or `.leanck.toml`; `leanck.toml` wins when both exist in the same directory. The `normalize.rules.frontmatter.author_map` table maps exact, case-sensitive Git names after mailmap resolution to display strings in generated or explicitly replaced headers. Exclusions apply first; unmapped names and retained existing headers stay unchanged. For example, `author_map = { "git-handle" = "Full Name" }` inside `[normalize.rules.frontmatter]` changes both the author list and copyright attribution. The pure API applies the same mapping to supplied history.
 

@@ -28,7 +28,7 @@ const AFTER_HELP: &str = color_print::cstr!(
 )]
 pub(crate) struct Cli {
     #[command(flatten)]
-    pub(crate) config: leanck_config::ConfigArgs,
+    pub(crate) config: crate::args::ConfigArgs,
     #[command(subcommand)]
     pub(crate) command: Cmd,
 }
@@ -62,7 +62,7 @@ pub(crate) enum Cmd {
     #[command(
         after_long_help = "Examples:\n  leanck normalize Main.lean\n  leanck normalize . --dry-run\n  leanck normalize Main.lean --width 100"
     )]
-    Normalize(leanck_normalize::command::Args),
+    Normalize(crate::commands::normalize::Args),
 
     /// Search Lean and Mathlib declarations through Loogle.
     ///
@@ -80,7 +80,7 @@ pub(crate) enum Cmd {
     #[command(
         after_long_help = "Examples:\n  leanck config show\n  leanck config check\n  leanck config init"
     )]
-    Config(leanck_config::Command),
+    Config(crate::commands::config::Args),
 
     /// Check for or install a leanck release.
     Update(crate::commands::update::Args),
@@ -88,10 +88,10 @@ pub(crate) enum Cmd {
     #[command(name = "_update", hide = true)]
     UpdateInternal(crate::commands::update::InternalArgs),
     #[command(name = "_completions", hide = true)]
-    Completions(crate::completions::Args),
+    Completions(crate::commands::completions::Args),
     /// Run the MCP server or a workspace daemon.
     #[command(hide = true)]
-    Serve(crate::serve::Args),
+    Serve(crate::commands::serve::Args),
 }
 
 #[cfg(test)]

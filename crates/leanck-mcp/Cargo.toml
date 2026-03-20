@@ -5,7 +5,6 @@ edition = "2024"
 
 [dependencies]
 anyhow.workspace = true
-clap.workspace = true
 leanck-client.workspace = true
 leanck-config = { workspace = true, default-features = true }
 leanck-core = { workspace = true, features = ["schema"] }

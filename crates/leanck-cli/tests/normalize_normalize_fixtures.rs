@@ -92,7 +92,7 @@ fn fixture_path(case: &str, kind: &str) -> std::path::PathBuf {
 }
 
 fn run_normalizer(case: &Case, input: &str) -> String {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_leanck-normalize"))
+    let mut child = normalizer()
         .arg("--no-config")
         .args(case.extra_args)
         .args(["--width", case.width])
@@ -154,4 +154,10 @@ fn first_difference(actual: &str, expected: &str) -> String {
     } else {
         "strings differ outside line content (possibly trailing newline)".to_string()
     }
+}
+
+fn normalizer() -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_leanck"));
+    command.arg("normalize");
+    command
 }

@@ -7,15 +7,7 @@ edition.workspace = true
 name = "leanck_normalize"
 path = "src/lib.rs"
 
-[[bin]]
-name = "leanck-normalize"
-path = "src/main.rs"
-required-features = ["command"]
-
 [dependencies]
-anyhow = { workspace = true, optional = true }
-clap = { workspace = true, optional = true }
-globset = { workspace = true, optional = true }
 leanck-config.workspace = true
 markdown.workspace = true
 markdown-reflow = { git = "https://github.com/danlyng/markdown-reflow.git", rev = "ba132281e4b2fa0b187c6626a30237ba2d7aee8e", version = "0.8.0" }
@@ -26,6 +18,5 @@ serde_json.workspace = true
 indoc.workspace = true
 
 [features]
-default = ["command"]
-command = ["dep:clap", "dep:anyhow", "dep:globset", "leanck-config/loader"]
-globset = ["dep:globset"]
+default = []
+history = []

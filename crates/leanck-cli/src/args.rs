@@ -139,3 +139,51 @@ mod tests {
         }
     }
 }
+
+/// Common flags for all executable entry points.
+#[derive(Debug, Clone, Default, clap::Args)]
+pub struct ConfigArgs {
+    /// Overlay this TOML file after user/project configuration (or LEANCK_CONFIG).
+    #[arg(
+        long,
+        global = true,
+        value_name = "FILE",
+        conflicts_with = "no_config",
+        hide_short_help = true,
+        help_heading = "Global configuration"
+    )]
+    pub config: Option<PathBuf>,
+    /// Ignore configuration files, including LEANCK_CONFIG.
+    #[arg(
+        long,
+        global = true,
+        hide_short_help = true,
+        help_heading = "Global configuration"
+    )]
+    pub no_config: bool,
+    /// Override any setting using a dotted TOML assignment; repeatable.
+    #[arg(
+        long = "set",
+        global = true,
+        value_name = "KEY=VALUE",
+        hide_short_help = true,
+        help_heading = "Global configuration"
+    )]
+    pub overrides: Vec<String>,
+}
+
+impl ConfigArgs {
+    pub(crate) fn options(&self) -> leanck_config::ConfigArgs {
+        leanck_config::ConfigArgs {
+            config: self.config.clone(),
+            no_config: self.no_config,
+            overrides: self.overrides.clone(),
+        }
+    }
+    pub(crate) fn load(
+        &self,
+        start: &std::path::Path,
+    ) -> anyhow::Result<leanck_config::LoadedConfig> {
+        self.options().load(start)
+    }
+}

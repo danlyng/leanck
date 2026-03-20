@@ -86,7 +86,7 @@ impl Default for Options {
 }
 
 impl Options {
-    pub(crate) fn configuration(
+    pub fn configuration(
         self,
         width: NormalizeWidth,
         rules: &NormalizeRules,

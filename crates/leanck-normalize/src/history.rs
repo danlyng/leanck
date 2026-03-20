@@ -1,6 +1,6 @@
 //! Bounded, read-only Git attribution. No identity is guessed when history is absent.
 use std::collections::{BTreeMap, BTreeSet};
-#[cfg(feature = "command")]
+#[cfg(feature = "history")]
 use std::{
     io::Read,
     path::Path,
@@ -82,11 +82,8 @@ fn year_range(years: impl Iterator<Item = i32>) -> String {
     }
 }
 
-#[cfg(feature = "command")]
-pub(crate) fn read(
-    path: &Path,
-    rules: &leanck_config::FrontmatterRules,
-) -> Result<FileHistory, String> {
+#[cfg(feature = "history")]
+pub fn read(path: &Path, rules: &leanck_config::FrontmatterRules) -> Result<FileHistory, String> {
     let path = std::path::absolute(path).map_err(|e| e.to_string())?;
     let mut command = Command::new("git");
     command
@@ -123,7 +120,7 @@ pub(crate) fn read(
     let bytes = capture(command, deadline)?;
     parse(&bytes, &rules.ignore_authors)
 }
-#[cfg(feature = "command")]
+#[cfg(feature = "history")]
 fn capture(mut command: Command, deadline: Instant) -> Result<Vec<u8>, String> {
     let mut child = command
         .spawn()
@@ -161,7 +158,7 @@ fn capture(mut command: Command, deadline: Instant) -> Result<Vec<u8>, String> {
     }
     Ok(bytes)
 }
-#[cfg(any(feature = "command", test))]
+#[cfg(any(feature = "history", test))]
 fn parse(bytes: &[u8], ignore_authors: &[String]) -> Result<FileHistory, String> {
     let text = std::str::from_utf8(bytes).map_err(|_| "Git attribution is not UTF-8")?;
     let mut fields = text.split_terminator('\0');

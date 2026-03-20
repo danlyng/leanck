@@ -9,3 +9,8 @@ pub(crate) mod output;
 pub(crate) mod restart_file;
 pub(crate) mod sorry;
 pub(crate) mod update;
+
+pub(crate) mod completions;
+pub(crate) mod config;
+pub(crate) mod normalize;
+pub(crate) mod serve;

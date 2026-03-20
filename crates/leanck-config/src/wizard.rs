@@ -10,7 +10,7 @@ use std::{
 use toml_edit::{DocumentMut, Item, Table, TableLike, Value};
 use ui::{Navigation, Ui, examples};
 
-pub(crate) fn interactive(json: bool, disabled: bool) -> bool {
+pub fn interactive(json: bool, disabled: bool) -> bool {
     !json
         && !disabled
         && std::io::stdin().is_terminal()
@@ -18,7 +18,7 @@ pub(crate) fn interactive(json: bool, disabled: bool) -> bool {
         && std::env::var("TERM").as_deref() != Ok("dumb")
 }
 
-pub(crate) fn run(
+pub fn run(
     path: Option<&Path>,
     user: bool,
     workspace: Option<&Path>,

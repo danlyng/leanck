@@ -1,8 +1,8 @@
 //! Long-lived modes select their own runtime, configuration root, and logging.
 use std::path::PathBuf;
 
+use crate::args::ConfigArgs;
 use clap::{Args as ClapArgs, Subcommand};
-use leanck_config::ConfigArgs;
 
 #[derive(ClapArgs, Debug)]
 pub(crate) struct Args {
@@ -13,7 +13,11 @@ pub(crate) struct Args {
 #[derive(Subcommand, Debug)]
 enum Mode {
     /// Serve MCP over stdin/stdout; all logs go to stderr.
-    Mcp(leanck_mcp::config::Args),
+    Mcp {
+        /// Workspace root. Defaults to the detected Lake project.
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
     /// Serve one Lake worktree over its Unix socket, in the foreground.
     Daemon {
         /// Lake project directory.
@@ -28,7 +32,7 @@ pub(crate) fn run(args: Args, config: ConfigArgs) -> anyhow::Result<()> {
     use tracing_subscriber::EnvFilter;
 
     let filter = match &args.mode {
-        Mode::Mcp(_) => EnvFilter::try_from_default_env()
+        Mode::Mcp { .. } => EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| EnvFilter::new("info,leanck_mcp=debug")),
         Mode::Daemon { .. } => {
             EnvFilter::try_from_env("LEANCKD_LOG").unwrap_or_else(|_| EnvFilter::new("info"))
@@ -43,8 +47,11 @@ pub(crate) fn run(args: Args, config: ConfigArgs) -> anyhow::Result<()> {
         .enable_all()
         .build()?;
     match args.mode {
-        Mode::Mcp(args) => {
-            let config = leanck_mcp::config::Config::from_args(args, config)?;
+        Mode::Mcp { workspace } => {
+            let config = leanck_mcp::config::Config::from_args(
+                leanck_mcp::config::Args { workspace },
+                config.options(),
+            )?;
             let server = leanck_mcp::mcp::LeanckServer::new(&config)
                 .with_daemon_binary(std::env::current_exe()?)
                 .with_frontend_version(env!("CARGO_PKG_VERSION"));

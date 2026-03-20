@@ -16,7 +16,7 @@ fn temp_root(tag: &str) -> PathBuf {
 }
 
 fn normalize(root: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_leanck-normalize"))
+    normalizer()
         .args(["--no-config"])
         .args(args)
         .arg(root)
@@ -166,7 +166,7 @@ fn missing_history_is_noted_once_for_a_directory_outside_git() {
 fn markdown_parser_panics_are_not_printed_when_reading_stdin() {
     use std::io::Write;
     let source = "/-- * $$\n1) x -/\ndef a := 1\n";
-    let mut child = Command::new(env!("CARGO_BIN_EXE_leanck-normalize"))
+    let mut child = normalizer()
         .args(["--no-config", "-"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -183,4 +183,10 @@ fn markdown_parser_panics_are_not_printed_when_reading_stdin() {
     assert!(output.status.success());
     assert_eq!(String::from_utf8(output.stdout).unwrap(), source);
     assert_eq!(String::from_utf8(output.stderr).unwrap(), "");
+}
+
+fn normalizer() -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_leanck"));
+    command.arg("normalize");
+    command
 }

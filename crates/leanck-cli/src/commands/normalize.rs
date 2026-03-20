@@ -1,12 +1,11 @@
-//! Shared command adapter for file traversal, stdin/stdout, and Clap conversion.
+//! Normalization command, file traversal, and stdin/stdout handling.
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
-use crate::{DEFAULT_WIDTH, NormalizeWidth, Options, SpellingDirection, Stats};
+use leanck_normalize::{DEFAULT_WIDTH, NormalizeWidth, Options, SpellingDirection, Stats};
 
-/// Options shared by the `leanck normalize` subcommand and the standalone
-/// `leanck-normalize` binary.
+/// Options for the `leanck normalize` subcommand.
 #[derive(Debug, clap::Args)]
 pub struct Args {
     /// Print the editable built-in JSON dictionary to stdout, then exit.
@@ -111,18 +110,12 @@ pub enum DictionaryDirection {
     British,
 }
 
-/// Run the normalizer. Reads from stdin (writing the result to stdout) when no
-/// path is given, otherwise rewrites the file or directory in place.
-pub fn run(args: Args) -> anyhow::Result<()> {
-    run_with_settings(args, &leanck_config::Normalize::default())
-}
-
 /// Execute already-resolved settings. The pure normalize API never loads configuration.
-pub fn run_with_settings(args: Args, settings: &leanck_config::Normalize) -> anyhow::Result<()> {
+pub(crate) fn run(args: Args, settings: &leanck_config::Normalize) -> anyhow::Result<()> {
     if let Some(direction) = args.export_dictionary {
         print!(
             "{}",
-            crate::builtin_json(match direction {
+            leanck_normalize::builtin_json(match direction {
                 DictionaryDirection::American => SpellingDirection::BritishToAmerican,
                 DictionaryDirection::British => SpellingDirection::AmericanToBritish,
             })
@@ -167,7 +160,9 @@ pub fn run_with_settings(args: Args, settings: &leanck_config::Normalize) -> any
     }
     let dictionary = options
         .spelling
-        .map(|direction| crate::configured_map(direction, &settings.rules.spelling, &words))
+        .map(|direction| {
+            leanck_normalize::configured_map(direction, &settings.rules.spelling, &words)
+        })
         .transpose()
         .map_err(anyhow::Error::msg)?;
     let patterns = if args.exclude.is_empty() {
@@ -215,8 +210,8 @@ pub fn run_with_settings(args: Args, settings: &leanck_config::Normalize) -> any
             io::stdin().read_to_string(&mut input)?;
             if options.frontmatter.enabled
                 && options.frontmatter.header
-                && crate::frontmatter::is_module_file(&input)
-                && crate::frontmatter::leading_header(&input).is_none()
+                && leanck_normalize::is_module_file(&input)
+                && leanck_normalize::leading_header(&input).is_none()
             {
                 eprintln!(
                     "note: stdin has no file history; missing attribution header left absent"
@@ -224,12 +219,12 @@ pub fn run_with_settings(args: Args, settings: &leanck_config::Normalize) -> any
             }
             let _panics = PanicCapture::install();
             let result = catch_panic(|| {
-                Ok(crate::normalize_with_context(
+                Ok(leanck_normalize::normalize_with_context(
                     &input,
                     args.width,
                     options,
                     &settings.rules,
-                    &crate::Context {
+                    &leanck_normalize::Context {
                         dictionary: dictionary.as_ref(),
                         ..Default::default()
                     },
@@ -252,7 +247,7 @@ pub fn run_with_settings(args: Args, settings: &leanck_config::Normalize) -> any
 
 fn options_from_args(args: &Args, s: &leanck_config::Normalize) -> Options {
     Options {
-        frontmatter: crate::FrontmatterOptions {
+        frontmatter: leanck_normalize::FrontmatterOptions {
             enabled: s.frontmatter && !args.no_frontmatter,
             header: s.header && !args.no_header,
             sort_imports: s.sort_imports && !args.no_sort_imports,
@@ -284,7 +279,7 @@ fn run_path(
     options: Options,
     exclude: &globset::GlobSet,
     rules: &leanck_config::NormalizeRules,
-    dictionary: Option<&crate::Dictionary>,
+    dictionary: Option<&leanck_normalize::Dictionary>,
 ) -> anyhow::Result<()> {
     let is_dir = fs::metadata(path)?.is_dir();
     let mut files = Vec::new();
@@ -309,17 +304,17 @@ fn run_path(
             {
                 panic!("test panic requested by LEANCK_NORMALIZE_TEST_PANIC");
             }
-            let existing_header = crate::frontmatter::leading_header(&original).is_some();
+            let existing_header = leanck_normalize::leading_header(&original).is_some();
             let mut replacement_history_error = None;
             let history = if (path.extension().is_some_and(|e| e == "lean")
-                || crate::frontmatter::is_module_file(&original)
+                || leanck_normalize::is_module_file(&original)
                 || existing_header)
-                && crate::frontmatter::needs_history(
+                && leanck_normalize::needs_history(
                     &original,
                     options.frontmatter,
                     &rules.frontmatter,
                 ) {
-                match crate::history::read(path, &rules.frontmatter) {
+                match leanck_normalize::history::read(path, &rules.frontmatter) {
                     Ok(history) => Some(history),
                     Err(reason) => {
                         if existing_header {
@@ -339,20 +334,21 @@ fn run_path(
                 None
             };
             let module = if path.extension().is_some_and(|e| e == "lean")
-                || crate::frontmatter::is_module_file(&original)
+                || leanck_normalize::is_module_file(&original)
             {
                 path.file_stem().and_then(|s| s.to_str())
             } else {
                 None
             };
-            let context = crate::Context {
+            let context = leanck_normalize::Context {
                 history: history.as_ref(),
                 dictionary,
                 module_name: module,
                 seen_module_doc: false,
             };
-            let result =
-                crate::normalize_with_context(&original, args.width, options, rules, &context)?;
+            let result = leanck_normalize::normalize_with_context(
+                &original, args.width, options, rules, &context,
+            )?;
             for warning in &result.warnings {
                 if let Some(line) = warning.line {
                     let detail = replacement_history_error

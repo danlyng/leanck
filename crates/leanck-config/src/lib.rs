@@ -1,4 +1,4 @@
-//! Shared configuration schema and optional filesystem/CLI loader.
+//! Shared configuration schema and optional filesystem loader.
 mod model;
 mod rules;
 mod warnings;
@@ -10,7 +10,7 @@ pub use width::NormalizeWidth;
 #[cfg(feature = "loader")]
 mod loader;
 #[cfg(feature = "wizard")]
-mod wizard;
+pub mod wizard;
 #[cfg(feature = "loader")]
 pub use loader::*;
 #[cfg(all(test, feature = "loader"))]
