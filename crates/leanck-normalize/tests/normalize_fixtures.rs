@@ -23,7 +23,7 @@ const CASES: &[Case] = &[
     Case {
         name: "american_to_british",
         width: "64",
-        extra_args: &["--british"],
+        extra_args: &["--to-british"],
     },
     Case {
         name: "heading_banners",

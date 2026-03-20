@@ -209,7 +209,7 @@ impl Checker {
                 cache.latest.as_deref().unwrap(),
                 current,
                 if pinned {
-                    "installation is pinned; use `leanck update --version latest` to unpin"
+                    "installation is pinned; use `leanck update --to-version latest` to unpin"
                 } else if installable {
                     "run `leanck update`"
                 } else {

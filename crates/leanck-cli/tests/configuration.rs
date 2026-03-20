@@ -316,7 +316,7 @@ fn normalize_uses_target_config_dry_run_excludes_and_flags() {
         .args([
             "normalize",
             "-",
-            "--british",
+            "--to-british",
             "--set",
             "normalize.spelling='off'",
         ])

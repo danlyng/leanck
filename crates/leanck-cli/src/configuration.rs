@@ -46,8 +46,8 @@ pub(crate) fn apply(command: &mut Cmd, s: &Settings, matches: &ArgMatches) {
             a.warnings |= s.build.warnings;
             a.strict |= s.build.strict;
             a.output.json |= s.output.json;
-            if matches.value_source("max_output_bytes") != Some(ValueSource::CommandLine) {
-                a.max_output_bytes = s.build.max_output_bytes;
+            if matches.value_source("max_output") != Some(ValueSource::CommandLine) {
+                a.max_output = s.build.max_output_bytes;
             }
             if a.targets.is_empty() {
                 a.targets = s.build.targets.clone();
@@ -91,7 +91,7 @@ mod tests {
         for argv in [
             vec!["leanck", "normalize", "--width", "100"],
             vec!["leanck", "loogle", "--limit", "10"],
-            vec!["leanck", "build", "--max-output-bytes", "8388608"],
+            vec!["leanck", "build", "--max-output", "8388608"],
         ] {
             let matches = Cli::command().try_get_matches_from(argv).unwrap();
             let mut cli = Cli::from_arg_matches(&matches).unwrap();
@@ -101,7 +101,7 @@ mod tests {
                     assert_eq!(a.width, leanck_config::NormalizeWidth::Finite(100))
                 }
                 Cmd::Loogle(a) => assert_eq!(a.limit, 10),
-                Cmd::Build(a) => assert_eq!(a.max_output_bytes, 8388608),
+                Cmd::Build(a) => assert_eq!(a.max_output, 8388608),
                 _ => unreachable!(),
             }
         }

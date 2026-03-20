@@ -6,7 +6,7 @@ use std::path::PathBuf;
 #[derive(clap::Args, Debug)]
 pub(crate) struct WorkspaceArgs {
     /// Workspace root. Defaults to the auto-detected Lake project.
-    #[arg(long)]
+    #[arg(long, hide_short_help = true)]
     pub(crate) workspace: Option<PathBuf>,
 }
 
@@ -22,7 +22,7 @@ impl WorkspaceArgs {
 #[derive(clap::Args, Debug)]
 pub(crate) struct OutputArgs {
     /// Print machine-readable JSON instead of compact text.
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = false, hide_short_help = true)]
     pub(crate) json: bool,
 }
 
@@ -32,10 +32,12 @@ pub(crate) struct LiveArgs {
     pub(crate) settings: leanck_config::Settings,
     #[arg(skip)]
     pub(crate) cancellation: Option<leanck_client::CancellationToken>,
-    /// Operation budget in seconds, including queueing. Cold startup uses a
+    /// Operation budget in seconds, including queueing.
+    ///
+    /// Cold startup uses a
     /// separate budget. An explicit value also overrides the applicable Lean
     /// wait (defaults: 300s operation, 120s elaboration).
-    #[arg(long, value_name = "SECS")]
+    #[arg(long, value_name = "SECS", hide_short_help = true)]
     pub(crate) timeout: Option<u64>,
     #[command(flatten)]
     pub(crate) workspace: WorkspaceArgs,

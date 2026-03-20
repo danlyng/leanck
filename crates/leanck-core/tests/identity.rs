@@ -97,6 +97,22 @@ fn equivalent_paths_and_symlinks_have_one_identity() {
 }
 
 #[test]
+fn absolute_paths_are_resolved_without_uri_interpretation() {
+    let scratch = Scratch::new();
+    let workspace = scratch.0.join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let path = scratch.0.join("file:/space # ? % λ.lean");
+    std::fs::create_dir(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "").unwrap();
+    // Preserve doubled separators that resemble a URI in an absolute filename.
+    let argument = path.to_str().unwrap().replace("file:/", "file://");
+    assert_eq!(
+        DocumentPath::resolve(&workspace, &argument).unwrap(),
+        DocumentPath::from_path(&path).unwrap()
+    );
+}
+
+#[test]
 fn file_uris_round_trip_reserved_characters_and_unicode() {
     let scratch = Scratch::new();
     let path = scratch.0.join("space # ? % λ.lean");

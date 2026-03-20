@@ -13,35 +13,40 @@ use std::{
 
 #[derive(clap::Args, Debug)]
 #[command(
-    after_help = "Examples:\n  leanck update --check\n  leanck update --dry-run\n  leanck update --yes\n  leanck update --version latest"
+    after_long_help = "Examples:\n  leanck update --check\n  leanck update --dry-run\n  leanck update --yes\n  leanck update --to-version latest"
 )]
 pub(crate) struct Args {
-    /// Check release availability without installing; bypass the check interval.
+    /// Check release availability without installing.
     #[arg(long, conflicts_with_all = ["dry_run", "retry_registration", "adopt"])]
     check: bool,
-    /// Download and verify the release, then show the installation plan.
+    /// Run the update flow without writing anything.
     #[arg(long, conflicts_with = "retry_registration")]
     dry_run: bool,
-    /// Exact release version, or latest to remove a remembered pin.
-    #[arg(long, conflicts_with = "retry_registration")]
-    version: Option<String>,
+    /// Update to the specified release version (or pass "latest").
+    #[arg(
+        long,
+        value_name = "VERSION",
+        conflicts_with = "retry_registration",
+        hide_short_help = true
+    )]
+    to_version: Option<String>,
     /// Approve this update without an interactive prompt.
     #[arg(short, long)]
     yes: bool,
     /// Print machine-readable output.
-    #[arg(long)]
+    #[arg(long, hide_short_help = true)]
     pub(crate) json: bool,
     /// Total seconds allowed to resolve, download, and verify a release.
-    #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(1..=3600))]
+    #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(1..=3600), hide_short_help = true)]
     timeout: u64,
     /// Installer state directory for this executable.
-    #[arg(long)]
+    #[arg(long, hide_short_help = true)]
     state_dir: Option<PathBuf>,
     /// Record ownership from complete installer selections and source inventory.
-    #[arg(long, conflicts_with_all = ["version", "retry_registration"])]
+    #[arg(long, conflicts_with_all = ["to_version", "retry_registration"], hide_short_help = true)]
     adopt: bool,
-    /// Retry host registration after an otherwise completed update.
-    #[arg(long)]
+    /// Retry plugin registration after an otherwise completed update.
+    #[arg(long, hide_short_help = true)]
     retry_registration: bool,
     #[arg(skip)]
     pub(crate) settings: leanck_config::Settings,
@@ -111,7 +116,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
     }
     let prepared = tokio::time::timeout(
         std::time::Duration::from_secs(args.timeout),
-        install::prepare(receipt, args.version.as_deref()),
+        install::prepare(receipt, args.to_version.as_deref()),
     )
     .await
     .context("release preparation timed out")??;

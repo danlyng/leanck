@@ -10,13 +10,31 @@ use std::{
 #[derive(Debug, Clone, Default, clap::Args)]
 pub struct ConfigArgs {
     /// Overlay this TOML file after user/project configuration (or LEANCK_CONFIG).
-    #[arg(long, global = true, value_name = "FILE", conflicts_with = "no_config")]
+    #[arg(
+        long,
+        global = true,
+        value_name = "FILE",
+        conflicts_with = "no_config",
+        hide_short_help = true,
+        help_heading = "Global configuration"
+    )]
     pub config: Option<PathBuf>,
     /// Ignore configuration files, including LEANCK_CONFIG.
-    #[arg(long, global = true)]
+    #[arg(
+        long,
+        global = true,
+        hide_short_help = true,
+        help_heading = "Global configuration"
+    )]
     pub no_config: bool,
     /// Override any setting using a dotted TOML assignment; repeatable.
-    #[arg(long = "set", global = true, value_name = "KEY=VALUE")]
+    #[arg(
+        long = "set",
+        global = true,
+        value_name = "KEY=VALUE",
+        hide_short_help = true,
+        help_heading = "Global configuration"
+    )]
     pub overrides: Vec<String>,
 }
 
@@ -356,22 +374,32 @@ pub struct Command {
     #[command(subcommand)]
     pub action: Action,
     /// Directory or file used to discover project configuration.
-    #[arg(long, global = true)]
+    #[arg(long, global = true, hide_short_help = true)]
     pub workspace: Option<PathBuf>,
-    #[arg(long, global = true)]
+    /// Print machine-readable JSON, including configuration sources where available.
+    #[arg(long, global = true, hide_short_help = true)]
     pub json: bool,
 }
 #[derive(Debug, clap::Subcommand)]
 pub enum Action {
     /// Show effective configuration (JSON also includes sources).
+    #[command(after_long_help = "Examples:\n  leanck config show\n  leanck config show --json")]
     Show,
     /// Validate all selected configuration files and overrides.
+    #[command(
+        after_long_help = "Examples:\n  leanck config check\n  leanck --config custom.toml config check"
+    )]
     Check,
     /// Print all built-in defaults as a ready-to-save TOML template.
+    #[command(after_long_help = "Example:\n  leanck config defaults")]
     Defaults,
     /// Show loaded files and the winning source of every setting.
+    #[command(after_long_help = "Example:\n  leanck config sources")]
     Sources,
     /// Set up configuration interactively, or write a starter file without a terminal.
+    #[command(
+        after_long_help = "Examples:\n  leanck config init\n  leanck config init --user\n  leanck config init --no-interactive"
+    )]
     Init {
         /// Destination file (default: leanck.toml in the current directory).
         path: Option<PathBuf>,

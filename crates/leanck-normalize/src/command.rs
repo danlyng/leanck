@@ -10,79 +10,94 @@ use crate::{DEFAULT_WIDTH, NormalizeWidth, Options, SpellingDirection, Stats};
 #[derive(Debug, clap::Args)]
 pub struct Args {
     /// Print the editable built-in JSON dictionary to stdout, then exit.
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, hide_short_help = true, help_heading = "Spelling")]
     pub export_dictionary: Option<DictionaryDirection>,
     /// JSON dictionary files; repeat to replace configured files in this order.
-    #[arg(long = "dictionary", value_name = "FILE")]
+    #[arg(
+        long = "dictionary",
+        value_name = "FILE",
+        hide_short_help = true,
+        help_heading = "Spelling"
+    )]
     pub dictionary: Vec<PathBuf>,
     /// Report formatting changes without writing files; exit nonzero if changes are needed.
     #[arg(long)]
     pub dry_run: bool,
-    /// Exclude a glob relative to the directory being normalized; repeat to replace configured exclusions.
+    /// Exclude a glob relative to the directory being normalized (repeatable).
+    ///
+    /// Replaces configured exclusions when supplied.
     #[arg(long)]
     pub exclude: Vec<String>,
-    /// Convert American spellings to British spellings instead of the default
-    /// British-to-American direction.
-    #[arg(long, alias = "american-to-british")]
+    /// Convert American spellings to British spellings.
+    ///
+    /// The default direction is British to American.
+    #[arg(
+        long = "to-british",
+        alias = "american-to-british",
+        hide_short_help = true,
+        help_heading = "Spelling"
+    )]
     pub british: bool,
 
     /// Disable all frontmatter normalization.
-    #[arg(long)]
+    #[arg(long, hide_short_help = true, help_heading = "Frontmatter")]
     pub no_frontmatter: bool,
 
     /// Disable attribution header insertion and formatting.
-    #[arg(long)]
+    #[arg(long, hide_short_help = true, help_heading = "Frontmatter")]
     pub no_header: bool,
 
     /// Do not alphabetize imports.
-    #[arg(long)]
+    #[arg(long, hide_short_help = true, help_heading = "Frontmatter")]
     pub no_sort_imports: bool,
 
     /// Leave declaration attribute placement unchanged.
-    #[arg(long)]
+    #[arg(long, hide_short_help = true, help_heading = "Formatting")]
     pub no_attributes: bool,
 
     /// Convert banner comments and format Markdown heading titles (opt-in).
-    #[arg(long)]
+    #[arg(long, hide_short_help = true, help_heading = "Formatting")]
     pub headings: bool,
 
     /// Disable all Lean block-comment transformations.
-    #[arg(long)]
+    #[arg(long, hide_short_help = true, help_heading = "Formatting")]
     pub no_comments: bool,
 
     /// Do not reflow Lean block comments.
-    #[arg(long)]
+    #[arg(long, hide_short_help = true, help_heading = "Formatting")]
     pub no_comment_reflow: bool,
 
     /// Turn plain URLs inside comments into markdown links (opt-in).
-    #[arg(long)]
+    #[arg(long, hide_short_help = true, help_heading = "Formatting")]
     pub linkify_urls: bool,
 
     /// Do not normalize British/American spelling inside comments.
-    #[arg(long)]
+    #[arg(long, hide_short_help = true, help_heading = "Spelling")]
     pub no_spelling: bool,
 
     /// Do not capitalize words after `: ` inside comments.
-    #[arg(long)]
+    #[arg(long, hide_short_help = true, help_heading = "Formatting")]
     pub no_capitalize_after_colon: bool,
 
     /// Do not collapse consecutive blank lines.
-    #[arg(long)]
+    #[arg(long, hide_short_help = true, help_heading = "Formatting")]
     pub no_collapse_blank_lines: bool,
 
     /// File to rewrite in place, or directory to normalize recursively.
+    ///
     /// Omit to read stdin and write the result to stdout.
     #[arg(value_name = "PATH")]
     pub path: Option<PathBuf>,
 
     /// With a directory argument, normalize every regular file instead of
     /// only `*.lean` files.
-    #[arg(long)]
+    #[arg(long, hide_short_help = true)]
     pub all_files: bool,
 
-    /// With a directory argument, print a line for every updated file
-    /// instead of only the final summary.
-    #[arg(long)]
+    /// Print every updated file instead of only the final summary.
+    ///
+    /// Applies when normalizing a directory.
+    #[arg(long, hide_short_help = true)]
     pub verbose: bool,
 
     /// Target line width for comments and attributes: a positive integer or unlimited.

@@ -24,28 +24,31 @@ impl From<SeverityArg> for DiagnosticSeverity {
 }
 
 #[derive(clap::Args, Debug)]
+#[command(
+    after_long_help = "Examples:\n  leanck diagnostics Main.lean\n  leanck diagnostics Main.lean --ident my_theorem\n  leanck diagnostics Main.lean --severity error,warning"
+)]
 pub(crate) struct Args {
-    /// File to query (workspace-relative path or `file://` URI).
+    /// File to query (paths are relative to the workspace).
     pub(crate) file: String,
 
     /// Restrict diagnostics to the range of this declaration.
     #[arg(long)]
     pub(crate) ident: Option<String>,
 
-    /// Severity filter (repeatable or comma-separated). Defaults to `error` only.
+    /// Include these severities (repeatable or comma-separated; default: error).
     #[arg(long, value_enum, value_delimiter = ',')]
     pub(crate) severity: Vec<SeverityArg>,
 
     /// Include diagnostics of every severity.
-    #[arg(long, conflicts_with = "severity")]
+    #[arg(long, conflicts_with = "severity", hide_short_help = true)]
     pub(crate) all_severities: bool,
 
     /// Pagination offset into the filtered diagnostics.
-    #[arg(long)]
+    #[arg(long, hide_short_help = true)]
     pub(crate) offset: Option<u64>,
 
-    /// Maximum number of diagnostics to return (default 5).
-    #[arg(long)]
+    /// Maximum number of diagnostics to return per page (default 5).
+    #[arg(short = 'k', long)]
     pub(crate) limit: Option<u64>,
 
     #[command(flatten)]

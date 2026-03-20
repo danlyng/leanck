@@ -6,10 +6,12 @@ use crate::commands::output::print_json;
 use leanck_client::render::render_restart;
 
 #[derive(clap::Args, Debug)]
+#[command(after_long_help = "Example:\n  leanck restart-file Main.lean")]
 pub(crate) struct Args {
-    /// File whose elaborator worker should be restarted (workspace-relative
-    /// path or `file://` URI). Rebuilds stale/missing dependencies through the
-    /// warm server (`dependencyBuildMode = once`).
+    /// File whose worker should be restarted; this reloads dependencies.
+    ///
+    /// Paths are relative to the workspace. Remember to pass the file whose
+    /// dependencies are stale, not the dependencies themselves.
     pub(crate) file: String,
 
     #[command(flatten)]

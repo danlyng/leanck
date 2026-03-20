@@ -6,8 +6,9 @@ use crate::commands::output::print_json;
 use leanck_client::render::render_goal;
 
 #[derive(clap::Args, Debug)]
+#[command(after_long_help = "Example (0-indexed line and column):\n  leanck goal Main.lean 10 4")]
 pub(crate) struct Args {
-    /// File (workspace-relative path or `file://` URI).
+    /// File (paths are relative to the workspace).
     pub(crate) file: String,
 
     /// 0-indexed line number.

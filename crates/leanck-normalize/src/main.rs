@@ -9,6 +9,7 @@ use leanck_normalize::command::Args;
     name = "leanck-normalize",
     about = "Normalize Lean comment formatting and top-of-file frontmatter",
     override_usage = "leanck-normalize [OPTIONS] [PATH]",
+    after_long_help = "Examples:\n  leanck-normalize Main.lean\n  leanck-normalize . --dry-run\n  leanck-normalize Main.lean --width 100",
     version
 )]
 struct Cli {

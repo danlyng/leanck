@@ -227,7 +227,7 @@ async fn checksum_failure_preserves_every_installed_component() {
     let result = fixture
         .run(&[
             "update",
-            "--version",
+            "--to-version",
             env!("CARGO_PKG_VERSION"),
             "--yes",
             "--json",
@@ -285,7 +285,7 @@ async fn partial_host_registration_is_recorded_and_can_be_retried() {
         .env("PATH", &path)
         .args([
             "update",
-            "--version",
+            "--to-version",
             env!("CARGO_PKG_VERSION"),
             "--yes",
             "--json",
@@ -347,7 +347,7 @@ async fn native_updates_preserve_disabled_and_enabled_plugin_mcp() {
         let result = fixture
             .run(&[
                 "update",
-                "--version",
+                "--to-version",
                 env!("CARGO_PKG_VERSION"),
                 "--yes",
                 "--json",
@@ -423,7 +423,7 @@ async fn native_command_downloads_verifies_previews_and_updates_all_components()
     let before = digest_file(&fixture.receipt.binary).unwrap();
     let args = [
         "update",
-        "--version",
+        "--to-version",
         env!("CARGO_PKG_VERSION"),
         "--json",
         "--dry-run",
@@ -446,7 +446,7 @@ async fn native_command_downloads_verifies_previews_and_updates_all_components()
     let blocked = fixture
         .run(&[
             "update",
-            "--version",
+            "--to-version",
             env!("CARGO_PKG_VERSION"),
             "--yes",
             "--json",
@@ -457,7 +457,7 @@ async fn native_command_downloads_verifies_previews_and_updates_all_components()
     let update = fixture
         .run(&[
             "update",
-            "--version",
+            "--to-version",
             env!("CARGO_PKG_VERSION"),
             "--yes",
             "--json",
@@ -506,7 +506,7 @@ async fn native_updates_preserve_individual_skill_selections() {
     let result = fixture
         .run(&[
             "update",
-            "--version",
+            "--to-version",
             env!("CARGO_PKG_VERSION"),
             "--yes",
             "--json",
@@ -561,7 +561,7 @@ async fn native_updates_refresh_agent_links_and_add_new_selected_agents() {
     let result = fixture
         .run(&[
             "update",
-            "--version",
+            "--to-version",
             env!("CARGO_PKG_VERSION"),
             "--yes",
             "--json",

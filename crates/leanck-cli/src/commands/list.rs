@@ -11,14 +11,27 @@ fn kind_parser() -> impl TypedValueParser<Value = KindSelector> {
         .try_map(|value| value.parse::<KindSelector>())
 }
 
+fn kind_help() -> String {
+    let values = KindSelector::ALL
+        .iter()
+        .map(|kind| kind.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "Filter by declaration kind (repeatable or comma-separated).\n\nAccepts Lean keywords (theorem, def, lemma, etc.) and LSP kinds (namespace, class, etc.). Omit to list everything.\n\nPossible values: {values}"
+    )
+}
+
 #[derive(clap::Args, Debug)]
+#[command(
+    after_long_help = "Examples:\n  leanck list Main.lean\n  leanck list Main.lean --kind theorem,def"
+)]
 pub(crate) struct Args {
-    /// File to list (workspace-relative path or `file://` URI).
+    /// File to list (paths are relative to the workspace).
     pub(crate) file: String,
 
-    /// Restrict to these Lean keywords (`theorem`, `def`, `lemma`, …) or LSP
-    /// kinds (`namespace`, `class`, …). Repeatable or comma-separated. Empty lists everything.
-    #[arg(long = "kind", value_parser = kind_parser(), value_delimiter = ',')]
+    /// Filter by kind, e.g. theorem,def (repeatable or comma-separated).
+    #[arg(long = "kind", value_parser = kind_parser(), value_delimiter = ',', hide_possible_values = true, long_help = kind_help())]
     pub(crate) kind: Vec<KindSelector>,
 
     #[command(flatten)]

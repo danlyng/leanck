@@ -35,17 +35,6 @@ pub(crate) struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum Cmd {
-    /// Check for or install a leanck release, preserving installer choices.
-    Update(crate::commands::update::Args),
-    #[command(name = "_update", hide = true)]
-    UpdateInternal(crate::commands::update::InternalArgs),
-    #[command(name = "_completions", hide = true)]
-    Completions(crate::completions::Args),
-    /// Run the MCP server or a workspace daemon.
-    #[command(hide = true)]
-    Serve(crate::serve::Args),
-    /// Inspect, validate, or initialize leanck configuration.
-    Config(leanck_config::Command),
     // ── Live Lean state (same `leanckd` daemon the MCP server uses) ──────────
     /// Report diagnostics for a file.
     #[command(visible_alias = "d")]
@@ -64,21 +53,45 @@ pub(crate) enum Cmd {
     #[command(name = "restart-file", alias = "restart_file")]
     RestartFile(crate::commands::restart_file::Args),
 
-    /// Wraps `lake build` for compact output.
+    /// Invoke a workspace build with compact output.
     Build(crate::commands::build::Args),
 
     /// Normalize Lean comment formatting and top-of-file frontmatter.
+    ///
+    /// Prefer configuration via the config file. See `leanck config --help` for details.
+    #[command(
+        after_long_help = "Examples:\n  leanck normalize Main.lean\n  leanck normalize . --dry-run\n  leanck normalize Main.lean --width 100"
+    )]
     Normalize(leanck_normalize::command::Args),
 
     /// Search Lean and Mathlib declarations through Loogle.
+    ///
+    /// Query flags are repeatable. Multiple filters are joined with AND.
     Loogle(crate::commands::loogle::Args),
 
     /// Check the Lean workspace and daemon.
     #[command(visible_alias = "health")]
     Doctor(crate::commands::doctor::Args),
 
-    /// List or stop leanckd daemons on this machine.
+    /// Manage leanck daemons
     Daemons(crate::commands::daemons::Args),
+
+    /// Inspect, validate, or initialize leanck configuration.
+    #[command(
+        after_long_help = "Examples:\n  leanck config show\n  leanck config check\n  leanck config init"
+    )]
+    Config(leanck_config::Command),
+
+    /// Check for or install a leanck release.
+    Update(crate::commands::update::Args),
+
+    #[command(name = "_update", hide = true)]
+    UpdateInternal(crate::commands::update::InternalArgs),
+    #[command(name = "_completions", hide = true)]
+    Completions(crate::completions::Args),
+    /// Run the MCP server or a workspace daemon.
+    #[command(hide = true)]
+    Serve(crate::serve::Args),
 }
 
 #[cfg(test)]

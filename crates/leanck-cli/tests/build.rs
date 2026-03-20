@@ -92,7 +92,7 @@ async fn output_limit_override_returns_a_structured_error_after_cleanup() {
         Project::new("printf '%s' \"$$\" > lake.pid\nhead -c 4096 /dev/zero\nexec sleep 30");
     let output = tokio::time::timeout(
         Duration::from_secs(3),
-        cli(&project).args(["--max-output-bytes", "1024"]).output(),
+        cli(&project).args(["--max-output", "1024"]).output(),
     )
     .await
     .unwrap()

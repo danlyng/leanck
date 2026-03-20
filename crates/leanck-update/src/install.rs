@@ -201,7 +201,7 @@ pub async fn prepare(receipt: Receipt, requested: Option<&str>) -> Result<Prepar
     ensure!(
         Version::parse(&version)? >= Version::parse(&receipt.version)?
             || requested.is_some_and(|s| s != "latest"),
-        "the published release is older than this installation; downgrades require an explicit --version TAG"
+        "the published release is older than this installation; downgrades require an explicit --to-version TAG"
     );
     let download_dir = tempfile::tempdir()?;
     let name = format!("leanck-{}.tar.gz", receipt.target);

@@ -21,7 +21,7 @@ use leanck_core::error::ErrorKind;
 /// overlapping the resolved declaration's range.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct DiagnosticsInput {
-    /// File to query (workspace-relative path or `file://` URI).
+    /// File to query (paths are relative to the workspace).
     pub file: String,
     /// Optional declaration name. When set, diagnostics are restricted
     /// to the range of that declaration; otherwise the whole-file set
@@ -71,7 +71,7 @@ impl From<&DiagnosticsInput> for DiagnosticsParams {
 /// Look up the proof goal at a given file position.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct GoalInput {
-    /// File (workspace-relative path or `file://` URI).
+    /// File (paths are relative to the workspace).
     pub file: String,
     /// 0-indexed line number.
     pub line: u32,
@@ -87,7 +87,7 @@ pub struct GoalInput {
 /// List sorry locations under a file or directory path.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SorryInput {
-    /// Workspace-relative path, absolute path, or `file://` URI. If this
+    /// Paths are relative to the workspace. If this
     /// points to a directory, `.lean` files are scanned recursively.
     pub path: String,
     /// Scan source text only, without starting or querying the daemon. Misses
@@ -105,7 +105,7 @@ pub struct SorryInput {
 /// List declarations in a file.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ListInput {
-    /// File to list (workspace-relative path or `file://` URI).
+    /// File to list (paths are relative to the workspace).
     pub file: String,
     /// Optional Lean keywords (`theorem`, `def`, `lemma`, `instance`, …) or
     /// LSP kind names (`namespace`, `class`, …) to restrict the result.
@@ -122,8 +122,7 @@ pub struct ListInput {
 /// Restart the Lean language server for a single file.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct RestartFileInput {
-    /// File whose elaborator should be restarted. Workspace-relative path
-    /// or `file://` URI.
+    /// File whose elaborator should be restarted (paths are relative to the workspace).
     pub file: String,
     /// Operation budget in milliseconds after cold startup, including file-lock
     /// waits and restart submission. Default 300s. Dependency elaboration runs
@@ -219,8 +218,7 @@ pub struct LoogleInput {
     /// Subexpressions to search for, e.g. `_ * (_ ^ _)`.
     #[serde(default)]
     pub subexpr: Vec<String>,
-    /// Conclusion type patterns. A `|-` turnstile is added when the value does
-    /// not already start with `|-` or `⊢`.
+    /// Conclusion type patterns, e.g. `tsum _ = _`.
     #[serde(default)]
     pub conclusion: Vec<String>,
     /// Max results to show. Omission uses loogle.limit (built-in: 10).
@@ -596,7 +594,7 @@ impl LeanckServer {
     }
 
     #[tool(
-        description = "Search Lean and Mathlib declarations through Loogle. Structured parameters mirror lean-tool: `constant` searches exact constants, `substr` searches quoted name substrings, `subexpr` searches expression patterns, and `conclusion` searches result types with `|-` added when omitted. Returns compact human-readable results.",
+        description = "Search Lean and Mathlib declarations through Loogle.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,

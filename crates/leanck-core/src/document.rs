@@ -49,7 +49,9 @@ impl DocumentPath {
 
 /// Interpret an argument without requiring it to exist. Use `DocumentPath` for identity.
 pub fn argument_path(workspace: &Path, argument: &str) -> Result<PathBuf, DocumentError> {
-    if argument.starts_with("file:") || argument.contains("://") {
+    if Path::new(argument).is_absolute() {
+        Ok(PathBuf::from(argument))
+    } else if argument.starts_with("file:") || argument.contains("://") {
         uri_to_path(argument)
     } else {
         Ok(workspace.join(argument))

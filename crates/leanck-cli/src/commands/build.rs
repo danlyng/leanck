@@ -1,6 +1,9 @@
 use crate::args::{OutputArgs, WorkspaceArgs};
 use std::io::IsTerminal;
 #[derive(clap::Args, Debug)]
+#[command(
+    after_long_help = "Examples:\n  leanck build\n  leanck build MyProject --warnings\n  leanck build --strict"
+)]
 pub(crate) struct Args {
     #[arg(skip)]
     pub(crate) settings: leanck_config::Build,
@@ -13,11 +16,11 @@ pub(crate) struct Args {
     #[arg(long, default_value_t = false)]
     pub(crate) strict: bool,
     /// Budget in seconds, including waiting for other leanck builds/cache fetches. Default: 1800.
-    #[arg(long, value_name = "SECS")]
+    #[arg(long, value_name = "SECS", hide_short_help = true)]
     pub(crate) timeout: Option<u64>,
     /// Maximum captured bytes per output stream. Raising this permits larger build logs.
-    #[arg(long,value_name="BYTES",default_value_t=leanck_lake::DEFAULT_OUTPUT_LIMIT)]
-    pub(crate) max_output_bytes: usize,
+    #[arg(long, value_name = "BYTES", default_value_t = leanck_lake::DEFAULT_OUTPUT_LIMIT, hide_short_help = true)]
+    pub(crate) max_output: usize,
     #[arg(skip)]
     pub(crate) cancellation: Option<leanck_lake::CancellationToken>,
     #[command(flatten)]
@@ -46,7 +49,7 @@ pub(crate) async fn run(args: Args) -> anyhow::Result<()> {
                     .map(std::time::Duration::from_secs)
                     .unwrap_or(std::time::Duration::from_millis(args.settings.timeout_ms)),
                 cancellation: args.cancellation,
-                max_output_bytes: args.max_output_bytes,
+                max_output_bytes: args.max_output,
             },
         )
         .await?)

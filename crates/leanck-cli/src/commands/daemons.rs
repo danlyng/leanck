@@ -27,30 +27,33 @@ const AFTER_HELP: &str = color_print::cstr!(
 );
 
 #[derive(clap::Args, Debug)]
-#[command(after_help = AFTER_HELP)]
+#[command(after_long_help = AFTER_HELP)]
 pub(crate) struct Args {
     #[arg(skip)]
     pub(crate) settings: Settings,
     #[command(subcommand)]
     pub(crate) action: Option<Action>,
-    /// Print machine-readable JSON instead of compact text.
-    #[arg(long, global = true)]
-    pub(crate) json: bool,
     /// Show daemon versions and SemVer compatibility with this CLI.
-    #[arg(long, short, global = true)]
+    #[arg(long, short, global = true, hide_short_help = true)]
     pub(crate) verbose: bool,
+    /// Print machine-readable JSON instead of compact text.
+    #[arg(long, global = true, hide_short_help = true)]
+    pub(crate) json: bool,
 }
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum Action {
     /// List running daemons (the default).
+    #[command(
+        after_long_help = "Examples:\n  leanck daemons list\n  leanck daemons list --verbose"
+    )]
     List,
     /// Ask daemons to shut down and wait for them to exit.
     Stop(StopArgs),
 }
 
 #[derive(clap::Args, Debug)]
-#[command(group(
+#[command(after_long_help = "Examples:\n  leanck daemons stop --idle\n  leanck daemons stop ~/src/my-project\n  leanck daemons stop --all", group(
     ArgGroup::new("target")
         .required(true)
         .multiple(false)
@@ -59,19 +62,27 @@ pub(crate) enum Action {
 pub(crate) struct StopArgs {
     /// Worktree whose daemon to stop.
     pub(crate) worktree: Option<PathBuf>,
-    /// Stop every ready daemon with no queued or running requests. Each one
+    /// Stop ready daemons with no queued or running requests.
+    ///
+    /// Each one
     /// stops only if it is still idle when asked; one that has accepted work
     /// meanwhile keeps running and is reported as skipped.
-    #[arg(long)]
+    #[arg(long, help_heading = "Selection")]
     pub(crate) idle: bool,
     /// Stop every daemon that is serving its socket.
-    #[arg(long)]
+    #[arg(long, help_heading = "Selection")]
     pub(crate) all: bool,
     /// Stop only daemons with a known SemVer-incompatible version.
-    #[arg(long)]
+    #[arg(long, help_heading = "Selection")]
     pub(crate) incompatible: bool,
     /// Seconds to wait for each daemon to exit.
-    #[arg(long, value_name = "SECS", default_value_t = 15)]
+    #[arg(
+        long,
+        value_name = "SECS",
+        default_value_t = 15,
+        hide_short_help = true,
+        help_heading = "Execution"
+    )]
     pub(crate) wait: u64,
 }
 

@@ -333,7 +333,7 @@ Blank lines inside code fences, display math, and string literals are kept. Insi
 | `diagnostics.severity` | `["error"]` | Any of `error`, `warning`, `information`, `hint`. |
 | `output.json` | `false` | Default to JSON output for build, live-query, doctor, and Loogle commands. |
 
-CLI flags override these: `--warnings`, `--strict`, `--timeout SECS` (seconds, unlike the config), `--max-output-bytes`, `--limit`, `--severity`, `--all-severities`, `--json`.
+CLI flags override these: `--warnings`, `--strict`, `--timeout SECS` (seconds, unlike the config), `--max-output`, `--limit`, `--severity`, `--all-severities`, `--json`.
 
 ## Client, daemon, and cache
 
@@ -404,7 +404,7 @@ Only installer-managed copies of `leanck` check for updates during ordinary comm
 
 `auto_install` installs a new release before a CLI command, but only when no other `leanck` process (MCP server, daemon, or another command) is using the installation. `check = false` turns off checks, notices, and automatic installs. Running `leanck update` explicitly still works.
 
-`leanck update --version TAG` pins a version; with a pin, `doctor` still reports newer releases but nothing installs automatically. `leanck update --version latest` removes the pin. Check state lives in `$XDG_STATE_HOME/leanck/updates`, by default `~/.local/state/leanck/updates`.
+`leanck update --to-version TAG` pins a version; with a pin, `doctor` still reports newer releases but nothing installs automatically. `leanck update --to-version latest` removes the pin. Check state lives in `$XDG_STATE_HOME/leanck/updates`, by default `~/.local/state/leanck/updates`.
 
 ## Runtime directories
 

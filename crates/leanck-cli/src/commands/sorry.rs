@@ -6,14 +6,21 @@ use crate::commands::output::print_json;
 use leanck_client::render::render_sorry;
 
 #[derive(clap::Args, Debug)]
+#[command(
+    after_long_help = "Examples:\n  leanck sorry Main.lean\n  leanck sorry .\n  leanck sorry --fast ."
+)]
 pub(crate) struct Args {
-    /// File or directory to scan. A directory is scanned recursively for
-    /// `.lean` files. Uses Lean diagnostics and source tokens unless --fast is set.
+    /// File or directory to scan (paths are relative to the workspace).
+    ///
+    /// A directory is scanned recursively for  `.lean` files. Uses Lean diagnostics and
+    /// source tokens unless --fast is set. Falls back to `--fast` after the `--timeout` interval.
     #[arg(value_name = "PATH")]
     pub(crate) path: String,
 
-    /// Scan source text only, without starting or querying the daemon. Misses
-    /// sorries that macros produce without spelling one.
+    /// Scan source text only, without starting or querying the daemon.
+    ///
+    /// This option produces much faster output but is less resistant to manipulation or unusual
+    /// invocations of `sorry`.
     #[arg(long)]
     pub(crate) fast: bool,
 
