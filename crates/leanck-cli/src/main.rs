@@ -4,6 +4,7 @@ mod args;
 mod cli;
 mod commands;
 mod configuration;
+mod help;
 mod logging;
 
 use clap::{CommandFactory, FromArgMatches};

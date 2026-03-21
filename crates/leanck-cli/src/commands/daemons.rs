@@ -27,7 +27,7 @@ const AFTER_HELP: &str = color_print::cstr!(
 );
 
 #[derive(clap::Args, Debug)]
-#[command(after_long_help = AFTER_HELP)]
+#[command(after_help = AFTER_HELP)]
 pub(crate) struct Args {
     #[arg(skip)]
     pub(crate) settings: Settings,
@@ -45,7 +45,7 @@ pub(crate) struct Args {
 pub(crate) enum Action {
     /// List running daemons (the default).
     #[command(
-        after_long_help = "Examples:\n  leanck daemons list\n  leanck daemons list --verbose"
+        after_help = crate::help::examples("  leanck daemons list\n  leanck daemons list --verbose")
     )]
     List,
     /// Ask daemons to shut down and wait for them to exit.
@@ -53,7 +53,7 @@ pub(crate) enum Action {
 }
 
 #[derive(clap::Args, Debug)]
-#[command(after_long_help = "Examples:\n  leanck daemons stop --idle\n  leanck daemons stop ~/src/my-project\n  leanck daemons stop --all", group(
+#[command(after_help = crate::help::examples("  leanck daemons stop --idle\n  leanck daemons stop ~/src/my-project\n  leanck daemons stop --all"), group(
     ArgGroup::new("target")
         .required(true)
         .multiple(false)

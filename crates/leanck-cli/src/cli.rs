@@ -60,7 +60,7 @@ pub(crate) enum Cmd {
     ///
     /// Prefer configuration via the config file. See `leanck config --help` for details.
     #[command(
-        after_long_help = "Examples:\n  leanck normalize Main.lean\n  leanck normalize . --dry-run\n  leanck normalize Main.lean --width 100"
+        after_help = crate::help::examples("  leanck normalize Main.lean\n  leanck normalize . --dry-run\n  leanck normalize Main.lean --width 100")
     )]
     Normalize(crate::commands::normalize::Args),
 
@@ -78,7 +78,7 @@ pub(crate) enum Cmd {
 
     /// Inspect, validate, or initialize leanck configuration.
     #[command(
-        after_long_help = "Examples:\n  leanck config show\n  leanck config check\n  leanck config init"
+        after_help = crate::help::examples("  leanck config show\n  leanck config check\n  leanck config init")
     )]
     Config(crate::commands::config::Args),
 

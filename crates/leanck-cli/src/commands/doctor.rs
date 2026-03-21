@@ -7,7 +7,7 @@ use leanck_client::instances::Summary;
 use leanck_config::OnLimit;
 
 #[derive(clap::Args, Debug)]
-#[command(after_long_help = "Examples:\n  leanck doctor\n  leanck doctor --verbose")]
+#[command(after_help = crate::help::examples("  leanck doctor\n  leanck doctor --verbose"))]
 pub(crate) struct Args {
     #[arg(skip)]
     pub(crate) settings: leanck_config::Settings,

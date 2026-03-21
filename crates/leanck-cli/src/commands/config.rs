@@ -18,22 +18,22 @@ pub(crate) struct Args {
 #[derive(Debug, clap::Subcommand)]
 pub enum Action {
     /// Show effective configuration (JSON also includes sources).
-    #[command(after_long_help = "Examples:\n  leanck config show\n  leanck config show --json")]
+    #[command(after_help = crate::help::examples("  leanck config show\n  leanck config show --json"))]
     Show,
     /// Validate all selected configuration files and overrides.
     #[command(
-        after_long_help = "Examples:\n  leanck config check\n  leanck --config custom.toml config check"
+        after_help = crate::help::examples("  leanck config check\n  leanck --config custom.toml config check")
     )]
     Check,
     /// Print all built-in defaults as a ready-to-save TOML template.
-    #[command(after_long_help = "Example:\n  leanck config defaults")]
+    #[command(after_help = crate::help::examples("  leanck config defaults"))]
     Defaults,
     /// Show loaded files and the winning source of every setting.
-    #[command(after_long_help = "Example:\n  leanck config sources")]
+    #[command(after_help = crate::help::examples("  leanck config sources"))]
     Sources,
     /// Set up configuration interactively, or write a starter file without a terminal.
     #[command(
-        after_long_help = "Examples:\n  leanck config init\n  leanck config init --user\n  leanck config init --no-interactive"
+        after_help = crate::help::examples("  leanck config init\n  leanck config init --user\n  leanck config init --no-interactive")
     )]
     Init {
         /// Destination file (default: leanck.toml in the current directory).

@@ -2,7 +2,7 @@ use crate::args::{OutputArgs, WorkspaceArgs};
 use std::io::IsTerminal;
 #[derive(clap::Args, Debug)]
 #[command(
-    after_long_help = "Examples:\n  leanck build\n  leanck build MyProject --warnings\n  leanck build --strict"
+    after_help = crate::help::examples("  leanck build\n  leanck build MyProject --warnings\n  leanck build --strict")
 )]
 pub(crate) struct Args {
     #[arg(skip)]

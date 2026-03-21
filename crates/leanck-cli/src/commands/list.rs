@@ -24,7 +24,7 @@ fn kind_help() -> String {
 
 #[derive(clap::Args, Debug)]
 #[command(
-    after_long_help = "Examples:\n  leanck list Main.lean\n  leanck list Main.lean --kind theorem,def"
+    after_help = crate::help::examples("  leanck list Main.lean\n  leanck list Main.lean --kind theorem,def")
 )]
 pub(crate) struct Args {
     /// File to list (paths are relative to the workspace).

@@ -6,7 +6,7 @@ use crate::commands::output::print_json;
 use leanck_client::render::render_restart;
 
 #[derive(clap::Args, Debug)]
-#[command(after_long_help = "Example:\n  leanck restart-file Main.lean")]
+#[command(after_help = crate::help::examples("  leanck restart-file Main.lean"))]
 pub(crate) struct Args {
     /// File whose worker should be restarted; this reloads dependencies.
     ///

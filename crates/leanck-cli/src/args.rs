@@ -150,7 +150,7 @@ pub struct ConfigArgs {
         value_name = "FILE",
         conflicts_with = "no_config",
         hide_short_help = true,
-        help_heading = "Global configuration"
+        help_heading = "Global options"
     )]
     pub config: Option<PathBuf>,
     /// Ignore configuration files, including LEANCK_CONFIG.
@@ -158,7 +158,7 @@ pub struct ConfigArgs {
         long,
         global = true,
         hide_short_help = true,
-        help_heading = "Global configuration"
+        help_heading = "Global options"
     )]
     pub no_config: bool,
     /// Override any setting using a dotted TOML assignment; repeatable.
@@ -167,7 +167,7 @@ pub struct ConfigArgs {
         global = true,
         value_name = "KEY=VALUE",
         hide_short_help = true,
-        help_heading = "Global configuration"
+        help_heading = "Global options"
     )]
     pub overrides: Vec<String>,
 }

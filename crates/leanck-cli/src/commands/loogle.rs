@@ -7,7 +7,7 @@ const USAGE: &str = "leanck loogle [OPTIONS] \
     <--constant|--substr|--subexpr|--conclusion> <QUERY>...";
 
 #[derive(clap::Args, Debug)]
-#[command(override_usage = USAGE)]
+#[command(override_usage = USAGE, after_help = crate::help::examples("  leanck loogle --constant Nat.add\n  leanck loogle --substr add --conclusion \"_ <= _\""))]
 pub(crate) struct Args {
     /// Exact constants / declarations to search for, e.g. `Real.sin`.
     #[arg(short = 'c', long, help_heading = "Query (Repeatable)")]

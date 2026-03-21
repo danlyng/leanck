@@ -7,7 +7,7 @@ use leanck_client::render::render_sorry;
 
 #[derive(clap::Args, Debug)]
 #[command(
-    after_long_help = "Examples:\n  leanck sorry Main.lean\n  leanck sorry .\n  leanck sorry --fast ."
+    after_help = crate::help::examples("  leanck sorry Main.lean\n  leanck sorry .\n  leanck sorry --fast .")
 )]
 pub(crate) struct Args {
     /// File or directory to scan (paths are relative to the workspace).

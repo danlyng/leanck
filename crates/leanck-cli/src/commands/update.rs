@@ -13,7 +13,7 @@ use std::{
 
 #[derive(clap::Args, Debug)]
 #[command(
-    after_long_help = "Examples:\n  leanck update --check\n  leanck update --dry-run\n  leanck update --yes\n  leanck update --to-version latest"
+    after_help = crate::help::examples("  leanck update --check\n  leanck update --dry-run\n  leanck update --yes\n  leanck update --to-version latest")
 )]
 pub(crate) struct Args {
     /// Check release availability without installing.

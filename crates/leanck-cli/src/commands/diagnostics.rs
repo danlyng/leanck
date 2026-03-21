@@ -25,7 +25,7 @@ impl From<SeverityArg> for DiagnosticSeverity {
 
 #[derive(clap::Args, Debug)]
 #[command(
-    after_long_help = "Examples:\n  leanck diagnostics Main.lean\n  leanck diagnostics Main.lean --ident my_theorem\n  leanck diagnostics Main.lean --severity error,warning"
+    after_help = crate::help::examples("  leanck diagnostics Main.lean\n  leanck diagnostics Main.lean --ident my_theorem\n  leanck diagnostics Main.lean --severity error,warning")
 )]
 pub(crate) struct Args {
     /// File to query (paths are relative to the workspace).
