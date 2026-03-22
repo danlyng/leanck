@@ -17,7 +17,7 @@ use std::{
 )]
 pub(crate) struct Args {
     /// Check release availability without installing.
-    #[arg(long, conflicts_with_all = ["dry_run", "retry_registration", "adopt"])]
+    #[arg(long, conflicts_with_all = ["dry_run", "retry_registration"])]
     check: bool,
     /// Run the update flow without writing anything.
     #[arg(long, conflicts_with = "retry_registration")]
@@ -42,9 +42,6 @@ pub(crate) struct Args {
     /// Installer state directory for this executable.
     #[arg(long, hide_short_help = true)]
     state_dir: Option<PathBuf>,
-    /// Record ownership from complete installer selections and source inventory.
-    #[arg(long, conflicts_with_all = ["to_version", "retry_registration"], hide_short_help = true)]
-    adopt: bool,
     /// Retry plugin registration after an otherwise completed update.
     #[arg(long, hide_short_help = true)]
     retry_registration: bool,
@@ -54,14 +51,30 @@ pub(crate) struct Args {
 
 pub(crate) async fn run(args: Args) -> Result<()> {
     let exe = std::env::current_exe()?;
-    if let Some(state) = args.state_dir.clone().or(Receipt::recorded_state(&exe)?)
-        && !args.dry_run
-        && !args.check
-    {
+    let known_state = args.state_dir.clone().or(Receipt::recorded_state(&exe)?);
+    let state = match &known_state {
+        Some(state) => state.clone(),
+        None => leanck_update::state_directory()?.join("installer"),
+    };
+    if !args.dry_run && !args.check {
         install::recover(&state)?;
     }
+    let receipt = if state.join("receipt.json").try_exists()? {
+        Receipt::discover(&exe, Some(&state)).context("this executable wasn't installed by the leanck installer; update it through its package manager or rerun the installer")?
+    } else {
+        None
+    };
+    if let Some(receipt) = &receipt
+        && known_state.is_none()
+    {
+        // A default state directory is not a discovery marker for relocated copies.
+        ensure!(
+            receipt.binary.canonicalize()? == exe.canonicalize()?,
+            "this executable wasn't installed by the leanck installer; update it through its package manager or rerun the installer"
+        );
+    }
     if args.check {
-        let checker = if let Some(receipt) = Receipt::discover(&exe, args.state_dir.as_deref())? {
+        let checker = if let Some(receipt) = receipt {
             Checker::new(
                 env!("CARGO_PKG_VERSION"),
                 leanck_update::state_directory()?.join("updates"),
@@ -83,43 +96,31 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         ensure!(status.error.is_none(), "release check failed");
         return Ok(());
     }
-    if args.adopt {
-        let state = args
-            .state_dir
-            .clone()
-            .unwrap_or(leanck_update::state_directory()?.join("installer"));
-        let receipt = Receipt::from_installer(&state, &exe)?;
-        if args.json {
-            println!("{}", serde_json::to_string_pretty(&receipt)?);
-        } else {
-            eprintln!("Record installer ownership for {}", exe.display());
-        }
-        if args.dry_run {
-            return Ok(());
-        }
-        approve(args.yes)?;
-        let _gate = Maintenance::acquire(&state)?;
-        Receipt::from_installer(&state, &exe)?.write()?;
-        return Ok(());
-    }
-    let mut receipt = Receipt::discover(&exe, args.state_dir.as_deref())?.context("this executable has no installation receipt; update it through its package manager or rerun the leanck installer")?;
     if args.retry_registration {
+        let receipt = receipt.context("installation ownership has not been recorded; run leanck update before retrying plugin registration")?;
         approve(args.yes)?;
         let _lease = Lease::acquire(&receipt)?;
-        receipt = Receipt::discover(&exe, args.state_dir.as_deref())?
-            .context("installation receipt disappeared")?;
+        let mut receipt =
+            Receipt::discover(&exe, Some(&state))?.context("installation receipt disappeared")?;
         show(&install::register(&mut receipt).await?, args.json)?;
         return Ok(());
     }
     if !args.json {
         eprintln!("Checking and preparing leanck update…");
     }
-    let prepared = tokio::time::timeout(
-        std::time::Duration::from_secs(args.timeout),
-        install::prepare(receipt, args.to_version.as_deref()),
-    )
+    let prepared = tokio::time::timeout(std::time::Duration::from_secs(args.timeout), async {
+        match receipt {
+            Some(receipt) => install::prepare(receipt, args.to_version.as_deref()).await,
+            None => install::prepare_from_installer(&state, &exe, args.to_version.as_deref()).await,
+        }
+    })
     .await
     .context("release preparation timed out")??;
+    if let Some(binary) = &prepared.plan.recording_installer_ownership
+        && (!args.json || !args.yes)
+    {
+        eprintln!("Recording installer ownership for {}", binary.display());
+    }
     if args.json && args.dry_run {
         println!("{}", serde_json::to_string_pretty(&prepared.plan)?);
     } else if !args.json || !args.yes {

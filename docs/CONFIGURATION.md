@@ -404,6 +404,8 @@ Only installer-managed copies of `leanck` check for updates during ordinary comm
 
 `auto_install` installs a new release before a CLI command, but only when no other `leanck` process (MCP server, daemon, or another command) is using the installation. `check = false` turns off checks, notices, and automatic installs. Running `leanck update` explicitly still works.
 
+If an installation receipt is missing, `leanck update` can recover ownership from complete installer state only when the canonical running executable matches the installer's `last_binary_path` and its SHA-256 matches `last_binary_digest`. Recording ownership and applying the update share one confirmation prompt (or `--yes`). `--dry-run` reports the proposed ownership recovery without creating a receipt or marker. A different executable must be updated through its package manager or reinstalled.
+
 `leanck update --to-version TAG` pins a version; with a pin, `doctor` still reports newer releases but nothing installs automatically. `leanck update --to-version latest` removes the pin. Check state lives in `$XDG_STATE_HOME/leanck/updates`, by default `~/.local/state/leanck/updates`.
 
 ## Runtime directories

@@ -1,7 +1,7 @@
 use crate::{
     ReleaseSource,
     gate::Maintenance,
-    receipt::{Component, Receipt, digest_file, fingerprint, tree_digest},
+    receipt::{Component, Receipt, UNMANAGED_EXECUTABLE, digest_file, fingerprint, tree_digest},
     safe_path,
     transaction::Transaction,
 };
@@ -33,6 +33,8 @@ pub struct Plan {
     pub to_version: String,
     pub changes: Vec<PathBuf>,
     pub downgrade: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recording_installer_ownership: Option<PathBuf>,
 }
 pub struct Prepared {
     _download: tempfile::TempDir,
@@ -40,6 +42,46 @@ pub struct Prepared {
     receipt: Receipt,
     components: Vec<Component>,
     pub plan: Plan,
+    adoption: Option<InstallerAdoption>,
+}
+
+struct InstallerAdoption {
+    receipt: Receipt,
+    selections: Vec<u8>,
+    sources: Vec<u8>,
+}
+
+impl InstallerAdoption {
+    fn read(state: &Path, binary: &Path) -> Result<Self> {
+        let read = |name: &str| -> Result<Vec<u8>> {
+            let path = state.join(name);
+            safe_path(&path)?;
+            Ok(fs::read(path)?)
+        };
+        let selections = read("selections.tsv").context(UNMANAGED_EXECUTABLE)?;
+        let sources = read("sources.tsv").context(UNMANAGED_EXECUTABLE)?;
+        let receipt = Receipt::from_recorded_installer(state, binary)?;
+        let adoption = Self {
+            receipt,
+            selections,
+            sources,
+        };
+        adoption.validate()?;
+        Ok(adoption)
+    }
+
+    fn validate(&self) -> Result<()> {
+        let state = &self.receipt.state_dir;
+        safe_path(&state.join("selections.tsv"))?;
+        safe_path(&state.join("sources.tsv"))?;
+        ensure!(
+            fs::read(state.join("selections.tsv"))? == self.selections
+                && fs::read(state.join("sources.tsv"))? == self.sources,
+            "installer state changed during download; rerun update"
+        );
+        Receipt::from_recorded_installer(state, &self.receipt.binary)?;
+        Ok(())
+    }
 }
 #[derive(Debug, Serialize)]
 pub struct Outcome {
@@ -359,6 +401,7 @@ pub async fn prepare(receipt: Receipt, requested: Option<&str>) -> Result<Prepar
         to_version: version.clone(),
         changes,
         downgrade: Version::parse(&version)? < Version::parse(&receipt.version)?,
+        recording_installer_ownership: None,
     };
     let mut receipt = receipt;
     if let Some(requested) = requested {
@@ -370,7 +413,21 @@ pub async fn prepare(receipt: Receipt, requested: Option<&str>) -> Result<Prepar
         receipt,
         components,
         plan,
+        adoption: None,
     })
+}
+
+/// Prepare an update without writing ownership until the approved transaction is applied.
+pub async fn prepare_from_installer(
+    state: &Path,
+    binary: &Path,
+    requested: Option<&str>,
+) -> Result<Prepared> {
+    let adoption = InstallerAdoption::read(state, binary)?;
+    let mut prepared = prepare(adoption.receipt.clone(), requested).await?;
+    prepared.plan.recording_installer_ownership = Some(binary.to_owned());
+    prepared.adoption = Some(adoption);
+    Ok(prepared)
 }
 
 fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
@@ -415,8 +472,17 @@ impl Prepared {
             crate::gate::ensure_no_legacy_users(&bundle.join("plugin/bin/leanck"))?;
         }
         Transaction::recover(&self.receipt.state_dir)?;
-        let current = Receipt::discover(&self.receipt.binary, Some(&self.receipt.state_dir))?
-            .context("installation receipt disappeared")?;
+        let current = if let Some(adoption) = &self.adoption {
+            ensure!(
+                !self.receipt.path().try_exists()?,
+                "installation ownership changed during download; rerun update"
+            );
+            adoption.validate()?;
+            adoption.receipt.clone()
+        } else {
+            Receipt::discover(&self.receipt.binary, Some(&self.receipt.state_dir))?
+                .context("installation receipt disappeared")?
+        };
         ensure!(
             current.generation == self.receipt.generation,
             "installation changed during download; rerun update"
@@ -890,6 +956,7 @@ mod tests {
             to_version: "2.0.0".into(),
             changes: components.iter().map(|c| c.destination.clone()).collect(),
             downgrade: false,
+            recording_installer_ownership: None,
         };
         (
             dir,
@@ -899,6 +966,7 @@ mod tests {
                 receipt,
                 components,
                 plan,
+                adoption: None,
             },
         )
     }

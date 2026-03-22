@@ -213,7 +213,7 @@ impl Checker {
                 } else if installable {
                     "run `leanck update`"
                 } else {
-                    "update through your installation method or adopt this installation"
+                    "update through your installation method or rerun the installer"
                 }
             ))
         } else {

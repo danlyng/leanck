@@ -202,6 +202,44 @@ impl Fixture {
             server,
         }
     }
+    fn legacy_installer(&mut self) {
+        fs::remove_file(self.receipt.path()).unwrap();
+        fs::remove_file(Receipt::marker(&self.receipt.binary)).unwrap();
+        self.receipt.state_dir = self.root.join("state/leanck/installer");
+        fs::create_dir_all(&self.receipt.state_dir).unwrap();
+        *self.latest.lock().unwrap() = env!("CARGO_PKG_VERSION").into();
+        let selections = format!(
+            "mode\tstandalone\nplugin_claude\t0\nplugin_codex\t0\nfrom_repo\t\nrelease_url\t{}\nrelease_api\t{}\ninstalled_version\tv{}\ninstalled_target\t{}\nversion\tlatest\nselected_skills\tall\nlast_binary_path\t{}\nlast_binary_digest\t{}\n",
+            self.receipt.source.releases,
+            self.receipt.source.api,
+            self.receipt.version,
+            self.receipt.target,
+            self.receipt.binary.display(),
+            digest_file(&self.receipt.binary).unwrap(),
+        );
+        fs::write(self.receipt.state_dir.join("selections.tsv"), selections).unwrap();
+        let sources = self
+            .receipt
+            .components
+            .iter()
+            .map(|c| {
+                format!(
+                    "{}\t{}\t{}\t{}\n",
+                    c.kind,
+                    c.fingerprint,
+                    c.destination.display(),
+                    c.source
+                )
+            })
+            .collect::<String>();
+        fs::write(self.receipt.state_dir.join("sources.tsv"), sources).unwrap();
+    }
+
+    fn assert_no_ownership(&self) {
+        assert!(!self.receipt.path().exists());
+        assert!(!Receipt::marker(&self.receipt.binary).exists());
+    }
+
     fn command(&self) -> tokio::process::Command {
         let mut command = tokio::process::Command::new(&self.receipt.binary);
         command
@@ -795,5 +833,253 @@ printf 200
     assert!(
         !fixture.root.join("state/leanck/updates").exists(),
         "uninstall must not perform release checks"
+    );
+}
+
+#[tokio::test]
+async fn implicit_adoption_previews_requires_approval_and_updates_in_one_flow() {
+    let mut fixture = Fixture::new().await;
+    fixture.legacy_installer();
+    let selections = fs::read(fixture.receipt.state_dir.join("selections.tsv")).unwrap();
+    let sources = fs::read(fixture.receipt.state_dir.join("sources.tsv")).unwrap();
+    let before = digest_file(&fixture.receipt.binary).unwrap();
+    let preview = fixture.run(&["update", "--dry-run", "--json"]).await;
+    assert!(
+        preview.status.success(),
+        "{}",
+        String::from_utf8_lossy(&preview.stderr)
+    );
+    let plan: serde_json::Value = serde_json::from_slice(&preview.stdout).unwrap();
+    assert_eq!(
+        plan["recording_installer_ownership"],
+        fixture.receipt.binary.to_str().unwrap()
+    );
+    assert_eq!(plan["to_version"], env!("CARGO_PKG_VERSION"));
+    fixture.assert_no_ownership();
+    assert_eq!(
+        fs::read(fixture.receipt.state_dir.join("selections.tsv")).unwrap(),
+        selections
+    );
+    assert_eq!(
+        fs::read(fixture.receipt.state_dir.join("sources.tsv")).unwrap(),
+        sources
+    );
+    assert_eq!(digest_file(&fixture.receipt.binary).unwrap(), before);
+
+    let unapproved = fixture.run(&["update"]).await;
+    assert!(!unapproved.status.success());
+    let error = String::from_utf8_lossy(&unapproved.stderr);
+    assert!(
+        error.contains("Recording installer ownership for"),
+        "{error}"
+    );
+    assert!(error.contains("use --yes"), "{error}");
+    fixture.assert_no_ownership();
+
+    let lease = Lease::acquire(&fixture.receipt).unwrap();
+    let busy = fixture.run(&["update", "--yes", "--json"]).await;
+    assert!(!busy.status.success());
+    assert!(String::from_utf8_lossy(&busy.stderr).contains("installation is in use"));
+    fixture.assert_no_ownership();
+    drop(lease);
+
+    let applied = fixture.run(&["update", "--yes", "--json"]).await;
+    assert!(
+        applied.status.success(),
+        "{}",
+        String::from_utf8_lossy(&applied.stderr)
+    );
+    let outcome: serde_json::Value = serde_json::from_slice(&applied.stdout).unwrap();
+    assert_eq!(outcome["status"], "updated");
+    let receipt = Receipt::discover(&fixture.receipt.binary, None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(receipt.version, env!("CARGO_PKG_VERSION"));
+    assert!(receipt.pin.is_none());
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("skills/prove/SKILL.md")).unwrap(),
+        "updated proof skill"
+    );
+}
+
+#[tokio::test]
+async fn implicit_adoption_rejects_foreign_changed_incomplete_and_missing_state_before_download() {
+    for invalid in ["path", "digest", "incomplete", "sources", "missing"] {
+        let mut fixture = Fixture::new().await;
+        fixture.legacy_installer();
+        let path = fixture.receipt.state_dir.join("selections.tsv");
+        let original = fs::read_to_string(&path).unwrap();
+        match invalid {
+            "path" => {
+                let copy = fixture.root.join("other-leanck");
+                fs::copy(&fixture.receipt.binary, &copy).unwrap();
+                assert_eq!(
+                    digest_file(&copy).unwrap(),
+                    digest_file(&fixture.receipt.binary).unwrap()
+                );
+                fs::write(
+                    &path,
+                    original.replace(
+                        &format!("last_binary_path\t{}", fixture.receipt.binary.display()),
+                        &format!("last_binary_path\t{}", copy.display()),
+                    ),
+                )
+                .unwrap();
+            }
+            "digest" => fs::write(
+                &path,
+                original.replace(
+                    &digest_file(&fixture.receipt.binary).unwrap(),
+                    &"0".repeat(64),
+                ),
+            )
+            .unwrap(),
+            "incomplete" => fs::write(&path, original.replace("mode\tstandalone\n", "")).unwrap(),
+            "sources" => fs::remove_file(fixture.receipt.state_dir.join("sources.tsv")).unwrap(),
+            "missing" => fs::remove_dir_all(&fixture.receipt.state_dir).unwrap(),
+            _ => unreachable!(),
+        }
+        let result = fixture.run(&["update", "--yes", "--json"]).await;
+        assert!(!result.status.success(), "{invalid}");
+        assert!(
+            String::from_utf8_lossy(&result.stderr)
+                .contains("this executable wasn't installed by the leanck installer"),
+            "{invalid}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert_eq!(fixture.calls.load(Ordering::SeqCst), 0, "{invalid}");
+        fixture.assert_no_ownership();
+    }
+}
+
+#[tokio::test]
+async fn implicit_adoption_handles_a_marker_whose_receipt_is_missing() {
+    let mut fixture = Fixture::new().await;
+    fixture.legacy_installer();
+    let marker = Receipt::marker(&fixture.receipt.binary);
+    let bytes = serde_json::to_vec(&json!({"state_dir": fixture.receipt.state_dir})).unwrap();
+    fs::write(&marker, &bytes).unwrap();
+    let result = fixture.run(&["update", "--dry-run", "--json"]).await;
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(!fixture.receipt.path().exists());
+    assert_eq!(fs::read(marker).unwrap(), bytes);
+}
+
+#[tokio::test]
+async fn failed_download_never_records_implicit_ownership() {
+    let mut fixture = Fixture::new().await;
+    fixture.legacy_installer();
+    fixture.bad_checksum.store(true, Ordering::SeqCst);
+    let result = fixture.run(&["update", "--yes", "--json"]).await;
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("checksum mismatch"));
+    fixture.assert_no_ownership();
+}
+
+#[tokio::test]
+async fn implicit_adoption_revalidates_installer_state_under_the_maintenance_lock() {
+    for changed in ["selections", "sources", "receipt", "binary"] {
+        let mut fixture = Fixture::new().await;
+        fixture.legacy_installer();
+        let prepared = leanck_update::install::prepare_from_installer(
+            &fixture.receipt.state_dir,
+            &fixture.receipt.binary,
+            None,
+        )
+        .await
+        .unwrap();
+        match changed {
+            "selections" => {
+                let path = fixture.receipt.state_dir.join("selections.tsv");
+                let mut bytes = fs::read(&path).unwrap();
+                bytes.extend_from_slice(b"extra\tchanged\n");
+                fs::write(path, bytes).unwrap();
+            }
+            "sources" => {
+                let path = fixture.receipt.state_dir.join("sources.tsv");
+                let mut bytes = fs::read(&path).unwrap();
+                bytes.push(b'\n');
+                fs::write(path, bytes).unwrap();
+            }
+            "receipt" => fixture.receipt.write().unwrap(),
+            "binary" => {
+                let mut bytes = fs::read(&fixture.receipt.binary).unwrap();
+                bytes.push(0);
+                fs::write(&fixture.receipt.binary, bytes).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        assert!(prepared.apply().await.is_err(), "{changed}");
+        assert_eq!(
+            fs::read_to_string(fixture.root.join("skills/prove/SKILL.md")).unwrap(),
+            "old skill"
+        );
+        if changed == "receipt" {
+            let receipt = Receipt::discover(&fixture.receipt.binary, None)
+                .unwrap()
+                .unwrap();
+            assert_eq!(receipt.generation, 1);
+        } else {
+            fixture.assert_no_ownership();
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_unmarked_identical_copy_cannot_claim_the_default_installations_receipt() {
+    let mut fixture = Fixture::new().await;
+    fixture.legacy_installer();
+    fixture.receipt.write().unwrap();
+    let copied = fixture.root.join("foreign/leanck");
+    fs::create_dir(copied.parent().unwrap()).unwrap();
+    fs::copy(&fixture.receipt.binary, &copied).unwrap();
+    #[cfg(target_os = "macos")]
+    assert!(
+        std::process::Command::new("/usr/bin/codesign")
+            .args(["--force", "-s", "-"])
+            .arg(&copied)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert_eq!(
+        digest_file(&copied).unwrap(),
+        digest_file(&fixture.receipt.binary).unwrap()
+    );
+    let result = tokio::process::Command::new(&copied)
+        .current_dir(&fixture.root)
+        .env("HOME", &fixture.root)
+        .env("XDG_STATE_HOME", fixture.root.join("state"))
+        .env("XDG_CONFIG_HOME", fixture.root.join("config"))
+        .env("XDG_CACHE_HOME", fixture.root.join("cache"))
+        .env("TMPDIR", &fixture.root)
+        .args([
+            "--no-config",
+            "--set",
+            "updates.check=false",
+            "update",
+            "--yes",
+            "--json",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(
+        String::from_utf8_lossy(&result.stderr)
+            .contains("this executable wasn't installed by the leanck installer")
+    );
+    assert_eq!(fixture.calls.load(Ordering::SeqCst), 0);
+    assert!(!Receipt::marker(&copied).exists());
+    assert_eq!(
+        Receipt::discover(&fixture.receipt.binary, None)
+            .unwrap()
+            .unwrap()
+            .generation,
+        1
     );
 }

@@ -9,6 +9,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub(crate) const UNMANAGED_EXECUTABLE: &str = "this executable wasn't installed by the leanck installer; update it through its package manager or rerun the installer";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Component {
     pub kind: String,
@@ -265,6 +267,104 @@ impl Receipt {
         receipt.validate()?;
         Ok(receipt)
     }
+
+    /// Recover ownership only for the exact executable recorded by a complete installer run.
+    /// This validates state without creating a receipt or discovery marker.
+    pub fn from_recorded_installer(state: &Path, binary: &Path) -> Result<Self> {
+        Self::verified_installer_receipt(state, binary).context(UNMANAGED_EXECUTABLE)
+    }
+
+    fn verified_installer_receipt(state: &Path, binary: &Path) -> Result<Self> {
+        safe_path(state)?;
+        safe_path(&state.join("selections.tsv"))?;
+        safe_path(&state.join("sources.tsv"))?;
+        let selections = fs::read_to_string(state.join("selections.tsv"))?;
+        let mut values = BTreeMap::new();
+        for line in selections.lines() {
+            let (key, value) = line
+                .split_once('\t')
+                .context("malformed installer selection")?;
+            ensure!(
+                values.insert(key, value).is_none(),
+                "duplicate installer selection {key}"
+            );
+        }
+        for key in [
+            "mode",
+            "installed_version",
+            "installed_target",
+            "last_binary_path",
+            "last_binary_digest",
+            "plugin_claude",
+            "plugin_codex",
+            "from_repo",
+            "release_url",
+            "version",
+            "selected_skills",
+        ] {
+            ensure!(
+                values.contains_key(key),
+                "incomplete installer selections: missing {key}"
+            );
+        }
+        ensure!(
+            matches!(values["mode"], "standalone" | "plugin"),
+            "invalid installer mode"
+        );
+        ensure!(
+            !values["installed_target"].is_empty() && !values["release_url"].is_empty(),
+            "incomplete installer selections"
+        );
+        for (enabled, home) in [
+            ("plugin_claude", "claude_dir"),
+            ("plugin_codex", "codex_dir"),
+        ] {
+            ensure!(
+                matches!(values[enabled], "0" | "1"),
+                "invalid installer host selection"
+            );
+            if values[enabled] == "1" {
+                ensure!(
+                    values.get(home).is_some_and(|s| !s.is_empty()),
+                    "missing installer host directory"
+                );
+            }
+        }
+        if values["mode"] == "plugin" {
+            ensure!(
+                values.get("data_dir").is_some_and(|s| !s.is_empty()),
+                "missing installer data directory"
+            );
+        }
+        let recorded = Path::new(values["last_binary_path"]);
+        ensure!(
+            recorded.is_absolute() && recorded.canonicalize()? == binary.canonicalize()?,
+            "installer recorded a different executable"
+        );
+        let digest = values["last_binary_digest"];
+        ensure!(
+            digest.len() == 64 && digest_file(binary)? == digest,
+            "executable differs from the installer record"
+        );
+        if let Some(recorded_state) = Self::recorded_state(binary)? {
+            ensure!(
+                recorded_state == state,
+                "installation marker points at different state"
+            );
+        }
+        let receipt = Self::from_installer(state, recorded)?;
+        ensure!(
+            receipt
+                .components
+                .iter()
+                .any(|c| c.destination == receipt.binary
+                    && c.kind == "file"
+                    && c.fingerprint == digest),
+            "installer sources do not match the recorded executable"
+        );
+        Ok(receipt)
+    }
+
     pub fn write(&self) -> Result<()> {
         self.validate()?;
         atomic_json(&self.path(), self)?;
