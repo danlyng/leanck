@@ -96,7 +96,7 @@ impl Fixture {
             format!("v{}\n", env!("CARGO_PKG_VERSION")),
         )
         .unwrap();
-        fs::write(package.join(".leanck-update-protocol"), "1\n").unwrap();
+        fs::write(package.join(".leanck-update-protocol"), "2\n").unwrap();
         let archive = root.join("release.tar.gz");
         let encoder = flate2::write::GzEncoder::new(
             fs::File::create(&archive).unwrap(),
@@ -741,6 +741,43 @@ fn inherited_shell_descriptor_holds_the_same_maintenance_lock() {
     );
     drop(file);
     assert!(Maintenance::acquire(&state).is_ok());
+}
+
+#[test]
+fn installer_configures_packaged_plugin_definitions() {
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../packaging/plugin");
+    for disable in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let plugin = dir.path().join("plugin");
+        fs::create_dir_all(plugin.join(".codex-plugin")).unwrap();
+        for name in [".mcp.json", ".mcp.codex.json", ".codex-plugin/plugin.json"] {
+            fs::copy(source.join(name), plugin.join(name)).unwrap();
+        }
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_leanck"));
+        command
+            .args(["_update", "configure-plugin", "--plugin"])
+            .arg(&plugin)
+            .args(["--binary", "/opt/leanck/bin/leanck"]);
+        if disable {
+            command.arg("--disable-mcp");
+        }
+        assert!(command.status().unwrap().success());
+        let suffix = if disable { ".disabled.json" } else { ".json" };
+        let config = fs::read_to_string(plugin.join(format!(".mcp.codex{suffix}"))).unwrap();
+        assert!(config.ends_with("}\n"));
+        let config: serde_json::Value = serde_json::from_str(&config).unwrap();
+        assert_eq!(
+            config["mcpServers"]["leanck"],
+            json!({"command": "/opt/leanck/bin/leanck", "args": ["serve", "mcp"]})
+        );
+        assert!(plugin.join(format!(".mcp{suffix}")).is_file());
+        assert_eq!(plugin.join(".mcp.json").exists(), !disable);
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(plugin.join(".codex-plugin/plugin.json")).unwrap())
+                .unwrap();
+        assert_eq!(manifest.get("mcpServers").is_none(), disable);
+        assert_eq!(manifest["name"], "leanck");
+    }
 }
 
 #[tokio::test]

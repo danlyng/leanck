@@ -37,11 +37,38 @@ class InstallerTests(unittest.TestCase):
         cls.fixture = Path(cls.shared.name)
         binaries = cls.fixture / "bin"
         binaries.mkdir()
+        # Mirror leanck_update::install::configure_plugin so the suite stays offline.
+        configure_plugin = cls.fixture / "configure_plugin.py"
+        configure_plugin.write_text('''
+import argparse, json, os, sys
+from pathlib import Path
+parser = argparse.ArgumentParser()
+parser.add_argument('--plugin', type=Path, required=True)
+parser.add_argument('--binary', required=True)
+parser.add_argument('--disable-mcp', action='store_true')
+args = parser.parse_args()
+if os.environ.get('LEANCK_TEST_CONFIGURE_FAILURE'):
+    sys.exit('error: simulated plugin configuration failure')
+path = args.plugin / '.mcp.codex.json'
+data = json.loads(path.read_text())
+data['mcpServers']['leanck']['command'] = args.binary
+path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + '\\n')
+if args.disable_mcp:
+    for name in ('.mcp.json', '.mcp.codex.json'):
+        (args.plugin / name).rename(args.plugin / name.replace('.json', '.disabled.json'))
+    manifest = args.plugin / '.codex-plugin/plugin.json'
+    data = json.loads(manifest.read_text())
+    data.pop('mcpServers', None)
+    manifest.write_text(json.dumps(data, indent=2, ensure_ascii=False) + '\\n')
+''')
         executable(binaries / "leanck", '''#!/bin/sh
 if [ -n "${LEANCK_TEST_BINARY_EXECUTIONS:-}" ]; then
     { printf leanck; printf ' %s' "$@"; printf '\\n'; } >> "$LEANCK_TEST_BINARY_EXECUTIONS"
 fi
-if [ "${1:-}" = daemons ]; then
+if [ "${1:-}" = _update ] && [ "${2:-}" = configure-plugin ]; then
+    shift 2
+    exec ''' + f"'{sys.executable}' -I '{configure_plugin}'" + ''' "$@"
+elif [ "${1:-}" = daemons ]; then
     if [ "${2:-}" = list ]; then
         [ -z "${LEANCK_TEST_DAEMON_LIST_FAILURE:-}" ] || exit 1
         printf '{\\n  "incompatible": %s\\n}\\n' "${LEANCK_TEST_INCOMPATIBLE_DAEMONS:-0}"
@@ -1464,6 +1491,50 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
                 if enabled:
                     self.assertEqual(manifest["mcpServers"], "./.mcp.codex.json")
                 self.assertIn(f"mcp_enabled\t{int(enabled)}\n", state.read_text())
+
+    def test_plugin_configuration_runs_bundled_binary_without_python(self):
+        executable(self.commands / "python3", "#!/bin/sh\necho python3 >> \"$LEANCK_TEST_LOG.python3\"\nexit 1\n")
+        binary = self.home / "data/leanck/bin/leanck"
+        for args, flag in ((("--mcp",), False), (("--no-mcp",), True)):
+            with self.subTest(args=args):
+                self.binary_executions.unlink(missing_ok=True)
+                self.run_install(*args, standalone=False)
+                calls = [line for line in self.binary_executions.read_text().splitlines() if "configure-plugin" in line]
+                self.assertEqual(len(calls), 1)
+                self.assertTrue(calls[0].startswith("leanck _update configure-plugin --plugin "))
+                self.assertIn(f" --binary {binary}", calls[0])
+                self.assertEqual(calls[0].endswith(" --disable-mcp"), flag)
+        self.assertFalse(Path(f"{self.log}.python3").exists())
+
+    def test_plugin_configuration_failure_installs_nothing(self):
+        self.env["LEANCK_TEST_CONFIGURE_FAILURE"] = "1"
+        result = self.run_install(standalone=False, success=False)
+        self.assertIn(b"plugin configuration failed", result.stderr)
+        self.assertIn(b"simulated plugin configuration failure", result.stderr)
+        self.assertFalse((self.home / "data/leanck/bundle").exists())
+        self.assertFalse((self.home / "data/leanck/bin/leanck").exists())
+        self.assertFalse(any(call[1:3] == ["plugin", "marketplace"] for call in self.calls()))
+
+    def test_plugin_mode_refuses_release_without_protocol_2(self):
+        marker = "leanck/.leanck-update-protocol"
+        def old_marker(archive):
+            member = tarfile.TarInfo(marker)
+            member.size = 2
+            archive.addfile(member, io.BytesIO(b"1\n"))
+        for mutate in (lambda archive: None, old_marker):
+            with self.subTest(mutate=mutate):
+                shutil.copy2(self.fixture / "assets" / ARCHIVE, self.assets / ARCHIVE)
+                self.binary_executions.unlink(missing_ok=True)
+                self.rewrite_archive(mutate, exclude={marker})
+                for dry_run in ((), ("--dry-run",)):
+                    result = self.run_install(*dry_run, standalone=False, success=False)
+                    self.assertIn(b"v1.2.3 predates this installer's plugin setup", result.stderr)
+                    self.assertIn(b"install.sh attached to that release", result.stderr)
+                self.assertFalse((self.home / "data/leanck").exists())
+                self.assertFalse(self.binary_executions.exists())
+                self.assertFalse(self.host_executions.exists())
+                self.run_install()
+                self.assertTrue((self.home / ".local/bin/leanck").is_file())
 
     def test_plain_advanced_config_can_enable_mcp(self):
         def drive(t):

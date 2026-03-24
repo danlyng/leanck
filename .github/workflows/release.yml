@@ -28,8 +28,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+      # A fast release-critical subset; `just test-installer` runs the full suite.
       - name: Check installer and release packaging
-        run: python3 -m unittest discover -s test-support -p test_installer.py -v
+        run: >-
+          python3 -m unittest discover -s test-support -p test_installer.py -v
+          -k packaged_catalogs_and_plugin_versions_match
+          -k dry_run_validates_release_version_and_checksum
+          -k archive_traversal_and_links_are_rejected
+          -k checksum_failure_preserves_previous_install
+          -k invalid_arguments_fail_without_network
+          -k unsupported_platform_fails_without_network
+          -k macos_arm64_detection_without_signing
+          -k standalone_installs_only_cli_and_can_upgrade
       - name: Install Linux build tools
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y musl-tools

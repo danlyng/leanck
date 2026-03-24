@@ -1621,28 +1621,19 @@ apply_extras() {
 apply_install() {
     if ! preview; then migrate_codex_agents; fi
     if [ "$mode" = plugin ] && ! preview && ! skipped "$bundle_dir"; then
-        # Configure a temporary copy only after approval. Python startup may itself
-        # write user caches, so even this preparation belongs after confirmation.
+        # Configure a temporary copy only after approval: the bundled executable
+        # runs only once the user has confirmed, like every other release binary.
         plugin_release=$work/configured
         cp -R "$release" "$plugin_release"
-        cat > "$work/configure-plugin.py" <<'PYCODE'
-import json
-from pathlib import Path
-import sys
-plugin = Path(sys.argv[1])
-path = plugin / '.mcp.codex.json'
-data = json.loads(path.read_text())
-data['mcpServers']['leanck']['command'] = sys.argv[2]
-path.write_text(json.dumps(data, indent=2) + '\n')
-if sys.argv[3] == '0':
-    for name in ('.mcp.json', '.mcp.codex.json'):
-        (plugin / name).rename(plugin / name.replace('.json', '.disabled.json'))
-    manifest = plugin / '.codex-plugin/plugin.json'
-    data = json.loads(manifest.read_text())
-    data.pop('mcpServers', None)
-    manifest.write_text(json.dumps(data, indent=2) + '\n')
-PYCODE
-        run_logged "$timeout" python3 python3 "$work/configure-plugin.py" "$plugin_release/plugin" "$bin_dir/leanck" "$mcp_enabled"
+        if [ "$mcp_enabled" = 1 ]; then
+            run_logged "$timeout" leanck "$plugin_release/plugin/bin/leanck" _update configure-plugin \
+                --plugin "$plugin_release/plugin" --binary "$bin_dir/leanck" ||
+                die 'plugin configuration failed'
+        else
+            run_logged "$timeout" leanck "$plugin_release/plugin/bin/leanck" _update configure-plugin \
+                --plugin "$plugin_release/plugin" --binary "$bin_dir/leanck" --disable-mcp ||
+                die 'plugin configuration failed'
+        fi
     fi
     if [ "$cli" = 1 ] && ! skipped "$bin_dir/leanck"; then
         [ ! -d "$bin_dir/leanck" ] || die "$bin_dir/leanck is a directory"
@@ -1771,19 +1762,27 @@ prepare_plan() {
         if [ "$plugin_codex" = 1 ]; then
             command -v codex >/dev/null 2>&1 || die '--plugin codex requires Codex on PATH'
         fi
-        if [ "$mode" = plugin ] || [ -n "$from_repo" ]; then
-            command -v python3 >/dev/null 2>&1 || die 'plugin configuration and local packaging require python3'
+        if [ -n "$from_repo" ]; then
+            command -v python3 >/dev/null 2>&1 || die 'local packaging requires python3'
         fi
     fi
     plugin_release=$release
     if [ "$mode" = plugin ]; then
+        # Protocol 2 bundles can configure their own plugin directory; older
+        # releases relied on the installer published with them.
+        if [ -z "$from_repo" ] && [ "$release_unavailable" = 0 ]; then
+            protocol=''
+            [ ! -f "$release/.leanck-update-protocol" ] || protocol=$(awk 'NR == 1 {print; exit}' "$release/.leanck-update-protocol")
+            case "$protocol" in ''|*[!0-9]*) protocol=0 ;; esac
+            [ "$protocol" -ge 2 ] ||
+                die "$installed_version predates this installer's plugin setup; use the install.sh attached to that release, or --standalone"
+        fi
         # The marketplace directory must always belong to this installer, even with --force.
         if [ -e "$bundle_dir" ] || [ -L "$bundle_dir" ]; then
             [ ! -L "$bundle_dir" ] && [ -f "$bundle_dir/.leanck-installed" ] ||
                 die "$bundle_dir already exists and is not installer-managed; choose another --data-dir"
         fi
         check_destination "$bundle_dir"
-
     fi
     for host in claude codex; do
         if [ "$host" = claude ]; then

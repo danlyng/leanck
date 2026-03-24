@@ -193,19 +193,18 @@ fn extract(archive: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-// Match the installer transformations before computing managed tree fingerprints.
-fn configure_plugin(root: &Path, receipt: &Receipt) -> Result<()> {
-    let plugin = root.join("plugin");
+/// Configure an unpacked `plugin/` directory in place for an installation.
+///
+/// Points the Codex MCP definition at `binary`. When `mcp_enabled` is false,
+/// renames both MCP definitions to `*.disabled.json` and drops `mcpServers`
+/// from the Codex manifest. The installer and updater share this, so their
+/// configured trees, and thus fingerprints, match byte for byte.
+pub fn configure_plugin(plugin: &Path, binary: &Path, mcp_enabled: bool) -> Result<()> {
     let config = plugin.join(".mcp.codex.json");
-    let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&config)?)?;
-    value["mcpServers"]["leanck"]["command"] = receipt.binary.to_string_lossy().into_owned().into();
-    fs::write(&config, serde_json::to_vec_pretty(&value)?)?;
-    // Older installations have active definitions; preserve their opt-in too.
-    if receipt
-        .bundle
-        .as_ref()
-        .is_some_and(|bundle| bundle.join("plugin/.mcp.codex.disabled.json").is_file())
-    {
+    let mut value = read_json(&config)?;
+    value["mcpServers"]["leanck"]["command"] = binary.to_string_lossy().into_owned().into();
+    write_json(&config, &value)?;
+    if !mcp_enabled {
         for name in [".mcp.json", ".mcp.codex.json"] {
             fs::rename(
                 plugin.join(name),
@@ -213,14 +212,26 @@ fn configure_plugin(root: &Path, receipt: &Receipt) -> Result<()> {
             )?;
         }
         let manifest = plugin.join(".codex-plugin/plugin.json");
-        let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&manifest)?)?;
+        let mut value = read_json(&manifest)?;
         value
             .as_object_mut()
             .context("invalid Codex plugin manifest")?
-            .remove("mcpServers");
-        fs::write(manifest, serde_json::to_vec_pretty(&value)?)?;
+            .shift_remove("mcpServers");
+        write_json(&manifest, &value)?;
     }
     Ok(())
+}
+
+fn read_json(path: &Path) -> Result<serde_json::Value> {
+    serde_json::from_slice(&fs::read(path).with_context(|| format!("reading {}", path.display()))?)
+        .with_context(|| format!("parsing {}", path.display()))
+}
+
+// Two-space indentation, original key order, and a trailing newline.
+fn write_json(path: &Path, value: &serde_json::Value) -> Result<()> {
+    let mut bytes = serde_json::to_vec_pretty(value)?;
+    bytes.push(b'\n');
+    fs::write(path, bytes).with_context(|| format!("writing {}", path.display()))
 }
 
 pub async fn prepare(receipt: Receipt, requested: Option<&str>) -> Result<Prepared> {
@@ -293,7 +304,13 @@ pub async fn prepare(receipt: Receipt, requested: Option<&str>) -> Result<Prepar
         None,
     )
     .await?;
-    configure_plugin(&root, &receipt)?;
+    // Match the installer transformations before computing managed tree fingerprints.
+    // Older installations have active definitions; preserve their opt-in too.
+    let mcp_enabled = !receipt
+        .bundle
+        .as_ref()
+        .is_some_and(|bundle| bundle.join("plugin/.mcp.codex.disabled.json").is_file());
+    configure_plugin(&root.join("plugin"), &receipt.binary, mcp_enabled)?;
     let mut components = receipt.components.clone();
     // Discover new members of previously selected skill/agent collections.
     let mut added = vec![];
@@ -1076,6 +1093,85 @@ mod tests {
                 .contains("local edits")
         );
         assert_eq!(fs::read_to_string(binary).unwrap(), "old binary");
+    }
+
+    fn plugin_fixture() -> (tempfile::TempDir, PathBuf) {
+        let (dir, path) = scratch();
+        let plugin = path.join("plugin");
+        fs::create_dir_all(plugin.join(".codex-plugin")).unwrap();
+        fs::write(
+            plugin.join(".mcp.codex.json"),
+            r#"{"mcpServers": {"leanck": {"command": "leanck", "args": ["serve", "mcp"]}}, "after": {}}"#,
+        )
+        .unwrap();
+        fs::write(plugin.join(".mcp.json"), "{\"claude\": true}\n").unwrap();
+        fs::write(
+            plugin.join(".codex-plugin/plugin.json"),
+            r#"{"name": "leanck", "version": "1.0.0", "mcpServers": "./.mcp.codex.json", "hooks": "./hooks/hooks.json", "keywords": []}"#,
+        )
+        .unwrap();
+        (dir, plugin)
+    }
+
+    const CONFIGURED_CODEX_MCP: &str = r#"{
+  "mcpServers": {
+    "leanck": {
+      "command": "/opt/leanck/bin/leanck",
+      "args": [
+        "serve",
+        "mcp"
+      ]
+    }
+  },
+  "after": {}
+}
+"#;
+
+    #[test]
+    fn plugin_configuration_keeps_enabled_mcp_and_key_order() {
+        let (_dir, plugin) = plugin_fixture();
+        let manifest = fs::read(plugin.join(".codex-plugin/plugin.json")).unwrap();
+        configure_plugin(&plugin, Path::new("/opt/leanck/bin/leanck"), true).unwrap();
+        assert_eq!(
+            fs::read_to_string(plugin.join(".mcp.codex.json")).unwrap(),
+            CONFIGURED_CODEX_MCP
+        );
+        assert_eq!(
+            fs::read_to_string(plugin.join(".mcp.json")).unwrap(),
+            "{\"claude\": true}\n"
+        );
+        assert_eq!(
+            fs::read(plugin.join(".codex-plugin/plugin.json")).unwrap(),
+            manifest
+        );
+        assert!(!plugin.join(".mcp.disabled.json").exists());
+        assert!(!plugin.join(".mcp.codex.disabled.json").exists());
+    }
+
+    #[test]
+    fn plugin_configuration_disables_mcp_definitions_and_manifest_entry() {
+        let (_dir, plugin) = plugin_fixture();
+        configure_plugin(&plugin, Path::new("/opt/leanck/bin/leanck"), false).unwrap();
+        assert!(!plugin.join(".mcp.json").exists());
+        assert!(!plugin.join(".mcp.codex.json").exists());
+        assert_eq!(
+            fs::read_to_string(plugin.join(".mcp.disabled.json")).unwrap(),
+            "{\"claude\": true}\n"
+        );
+        assert_eq!(
+            fs::read_to_string(plugin.join(".mcp.codex.disabled.json")).unwrap(),
+            CONFIGURED_CODEX_MCP
+        );
+        assert_eq!(
+            fs::read_to_string(plugin.join(".codex-plugin/plugin.json")).unwrap(),
+            r#"{
+  "name": "leanck",
+  "version": "1.0.0",
+  "hooks": "./hooks/hooks.json",
+  "keywords": []
+}
+"#
+        );
     }
 
     #[test]

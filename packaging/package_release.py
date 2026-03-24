@@ -64,7 +64,8 @@ def assemble_distribution(repo, bin_dir, root, version, *, sign_binaries=True):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(catalog, indent=2) + "\n")
     (root / ".leanck-release").write_text(f"v{version}\n")
-    (root / ".leanck-update-protocol").write_text("1\n")
+    # Protocol 2: the bundled binary supports `leanck _update configure-plugin`.
+    (root / ".leanck-update-protocol").write_text("2\n")
     shutil.copy2(repo / "install.sh", root / "install.sh")
     shutil.copy2(repo / "uninstall.sh", root / "uninstall.sh")
     (root / "docs").mkdir()

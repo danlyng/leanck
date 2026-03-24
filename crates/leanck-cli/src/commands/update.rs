@@ -201,6 +201,15 @@ enum Internal {
         #[arg(long)]
         binary: Vec<PathBuf>,
     },
+    /// Configure an unpacked plugin directory in place for an installation.
+    ConfigurePlugin {
+        #[arg(long)]
+        plugin: PathBuf,
+        #[arg(long)]
+        binary: PathBuf,
+        #[arg(long)]
+        disable_mcp: bool,
+    },
 }
 pub(crate) fn internal(args: InternalArgs) -> Result<()> {
     match args.command {
@@ -233,6 +242,11 @@ pub(crate) fn internal(args: InternalArgs) -> Result<()> {
                 leanck_update::gate::ensure_no_legacy_users(&path)?;
             }
         }
+        Internal::ConfigurePlugin {
+            plugin,
+            binary,
+            disable_mcp,
+        } => install::configure_plugin(&plugin, &binary, !disable_mcp)?,
     }
     Ok(())
 }
