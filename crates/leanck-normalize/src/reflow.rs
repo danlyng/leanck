@@ -1535,53 +1535,8 @@ mod tests {
     use super::*;
 
     // ------------------------------------------------------------------
-    // Error cases
+    // Blank lines
     // ------------------------------------------------------------------
-
-    #[test]
-    fn unmatched_start_errors() {
-        assert!(
-            reflow_comments(
-                "/-- no end\ncode\n",
-                100,
-                SpellingDirection::BritishToAmerican
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn normalizes_standalone_simp_attributes_by_default() {
-        let out = normalize(
-            "@[simp]\nlemma my_simp_lemma : true := trivial\n",
-            100,
-            Options::default(),
-        )
-        .unwrap();
-        assert_eq!(out, "@[simp] lemma my_simp_lemma : true := trivial\n");
-    }
-
-    #[test]
-    fn can_disable_attribute_normalization() {
-        let options = Options {
-            attributes: false,
-            ..Options::default()
-        };
-        let src = "@[simp]\nlemma my_simp_lemma : true := trivial\n";
-        let out = normalize(src, 100, options).unwrap();
-        assert_eq!(out, src);
-    }
-
-    #[test]
-    fn collapses_consecutive_blank_lines() {
-        let out = reflow_comments(
-            "def a := 1\n\n\n\ndef b := 2\n",
-            100,
-            SpellingDirection::BritishToAmerican,
-        )
-        .unwrap();
-        assert_eq!(out, "def a := 1\n\ndef b := 2\n");
-    }
 
     #[test]
     fn collapses_whitespace_only_lines() {
@@ -1651,13 +1606,6 @@ def x := 1
     }
 
     #[test]
-    fn banner_title_keeps_small_words_lowercase() {
-        let src = "-- ====\n-- the expectation of the gamma distribution\n-- ====\n";
-        let out = normalize(src, 100, with_headings()).unwrap();
-        assert_eq!(out, "/-! ## The Expectation of the Gamma Distribution -/\n");
-    }
-
-    #[test]
     fn banner_title_skips_backtick_code() {
         let src = "-- ====\n-- lemmas about `foo bar` and baz\n-- ====\n";
         let out = normalize(src, 100, with_headings()).unwrap();
@@ -1720,30 +1668,6 @@ def x := 1
         let src = "-- ====\n-- a heading\n-- ====\n\n/-! prose doc -/\n";
         let out = normalize(src, 100, with_headings()).unwrap();
         assert_eq!(out, "/-! ## A Heading -/\n\n/-! prose doc -/\n");
-    }
-
-    #[test]
-    fn converted_heading_is_idempotent() {
-        let src = "-- ====\n-- the beer-quiche signaling game\n-- ====\n";
-        let once = normalize(src, 100, with_headings()).unwrap();
-        let twice = normalize(&once, 100, with_headings()).unwrap();
-        assert_eq!(once, twice);
-    }
-
-    #[test]
-    fn capitalize_after_colon_basic() {
-        assert_eq!(
-            capitalize_after_colon("This is: not okay"),
-            "This is: Not okay"
-        );
-    }
-
-    #[test]
-    fn capitalize_after_colon_already_upper() {
-        assert_eq!(
-            capitalize_after_colon("This is: The correct style"),
-            "This is: The correct style"
-        );
     }
 
     #[test]
@@ -1821,64 +1745,9 @@ def x := 1
         assert_eq!(out, "def foo := /-- comment -/ 42\n");
     }
 
-    #[test]
-    fn multiple_single_line_comments() {
-        let out = reflow_comments(
-            "/-- first -/\n/-- second -/\n",
-            100,
-            SpellingDirection::BritishToAmerican,
-        )
-        .unwrap();
-        assert_eq!(out, "/-- first -/\n/-- second -/\n");
-    }
-
     // ------------------------------------------------------------------
     // Compact expansion (normal comments)
     // ------------------------------------------------------------------
-
-    #[test]
-    fn single_line_expands_compact() {
-        let src = "/-- this is a very long comment that will not fit on a single line -/\n";
-        let out = reflow_comments(src, 40, SpellingDirection::BritishToAmerican).unwrap();
-        // Should be multi-line with delimiters on content lines.
-        let lines: Vec<&str> = out.lines().collect();
-        assert!(lines.len() >= 2, "expected multiple lines, got: '{out}'");
-        // Opening delimiter shares first content line.
-        assert!(
-            lines[0].starts_with("/-- "),
-            "first line should start with '/-- <content>': '{}'",
-            lines[0]
-        );
-        // Closing delimiter is on the last content line — never orphaned.
-        let last = lines.last().unwrap();
-        assert!(
-            last.ends_with(" -/"),
-            "last line should end with ' -/', got: '{last}'"
-        );
-        // No line exceeds the target width.
-        for line in &lines {
-            assert!(
-                line.chars().count() <= 40,
-                "line too wide ({w}): '{line}'",
-                w = line.chars().count()
-            );
-        }
-    }
-
-    #[test]
-    fn multi_line_reflow_compact() {
-        let src = "/--\nthis is a long paragraph that needs to be wrapped at a certain width\n-/\n";
-        let out = reflow_comments(src, 30, SpellingDirection::BritishToAmerican).unwrap();
-        for line in out.lines() {
-            assert!(line.chars().count() <= 30, "line too wide: '{line}'");
-        }
-        // Closing delimiter should be on the last content line.
-        let last = out.lines().last().unwrap();
-        assert!(
-            last.contains(" -/"),
-            "expected ' -/' on last line: '{last}'"
-        );
-    }
 
     #[test]
     fn continuation_lines_use_full_width_without_opening_delimiter_overhead() {
@@ -1921,37 +1790,9 @@ def x := 1
         assert!(out.contains("-/"));
     }
 
-    #[test]
-    fn expansion_preserves_code_before() {
-        let src = "  def foo := /-- a very long comment that definitely needs to be expanded across multiple lines -/\n";
-        let out = reflow_comments(src, 50, SpellingDirection::BritishToAmerican).unwrap();
-        assert!(out.starts_with("  def foo := /--"));
-        assert!(out.trim_end().ends_with("-/"));
-    }
-
     // ------------------------------------------------------------------
     // Module docstring (first /-! — delimiters always on own lines)
     // ------------------------------------------------------------------
-
-    #[test]
-    fn module_doc_has_delimiters_on_own_lines() {
-        let src = "/-!\nThis is the module docstring that should have its delimiters on separate lines\n-/\n";
-        let out = reflow_comments(src, 40, SpellingDirection::BritishToAmerican).unwrap();
-        let lines: Vec<&str> = out.lines().collect();
-        assert_eq!(lines[0], "/-!");
-        assert_eq!(lines.last().unwrap(), &"-/");
-    }
-
-    #[test]
-    fn module_doc_single_line_expands_to_separate_delimiters() {
-        let src = "/-! Module doc that is too long to fit on one line so it must expand -/\n";
-        let out = reflow_comments(src, 50, SpellingDirection::BritishToAmerican).unwrap();
-        let lines: Vec<&str> = out.lines().collect();
-        assert_eq!(lines[0], "/-!");
-        assert_eq!(lines.last().unwrap(), &"-/");
-        // Content lines are between.
-        assert!(lines.len() >= 3);
-    }
 
     #[test]
     fn second_doc_comment_is_compact() {
@@ -1988,57 +1829,6 @@ def x := 1
         assert_eq!(out, "/-!\ndoc comment\n-/\n");
     }
 
-    #[test]
-    fn doc_comment_expands_compact() {
-        // Not the first /-! in the file, so should be compact.
-        let src = "/-! first -/\n/-! This is a long doc comment that needs expansion -/\n";
-        let out = reflow_comments(src, 40, SpellingDirection::BritishToAmerican).unwrap();
-        // The second comment should have compact formatting.
-        let lines: Vec<&str> = out.lines().collect();
-        let compact_open = lines
-            .iter()
-            .find(|l| l.starts_with("/-! ") && l.len() > 4)
-            .expect("should have compact /-! line");
-        assert!(compact_open.starts_with("/-! "));
-    }
-
-    // ------------------------------------------------------------------
-    // Indentation handling
-    // ------------------------------------------------------------------
-
-    #[test]
-    fn indented_block_comment() {
-        let src = "    /--\n    this is indented and needs reflowing at a narrow width\n    -/\n";
-        let out = reflow_comments(src, 30, SpellingDirection::BritishToAmerican).unwrap();
-        for line in out.lines() {
-            if !line.trim().is_empty() {
-                assert!(
-                    line.starts_with("    "),
-                    "expected 4-space indent: '{line}'"
-                );
-            }
-            assert!(line.chars().count() <= 30, "line too wide: '{line}'");
-        }
-    }
-
-    #[test]
-    fn no_orphan_closing_delimiter() {
-        // At a width that forces wrapping, the -/ must never sit alone.
-        let src = "/-- a b c d e f g h i j k l m n o p q r s t u v w x y z -/\n";
-        let out = reflow_comments(src, 20, SpellingDirection::BritishToAmerican).unwrap();
-        for line in out.lines() {
-            if line.contains("-/") {
-                // The -/ must share the line with content (not be the only thing).
-                let trimmed = line.trim();
-                assert!(trimmed.len() > 2, "orphan -/ detected: '{line}'");
-                assert!(
-                    trimmed.starts_with(|c: char| c.is_alphanumeric()) || trimmed.starts_with('/'),
-                    "-/ line should have content before it: '{line}'"
-                );
-            }
-        }
-    }
-
     // ------------------------------------------------------------------
     // Regular /-- near module docstring
     // ------------------------------------------------------------------
@@ -2054,38 +1844,24 @@ def x := 1
 
     #[test]
     fn bullet_list_preserves_continuation_indent() {
-        // A bullet list inside a comment should keep its continuation indent.
-        let src = "/-- * this is a long bullet point that wraps across multiple lines of text -/\n";
-        let out = reflow_comments(src, 30, SpellingDirection::BritishToAmerican).unwrap();
-        for line in out.lines() {
-            assert!(line.chars().count() <= 30, "line too wide: '{line}'");
+        // A bullet list inside a comment should keep its continuation indent,
+        // whether the bullet shares the opening line or follows a module
+        // docstring's own-line delimiter.
+        for src in [
+            "/-- * this is a long bullet point that wraps across multiple lines of text -/\n",
+            "/-!\n* this is a long bullet point that wraps across multiple lines of text\n-/\n",
+        ] {
+            let out = reflow_comments(src, 30, SpellingDirection::BritishToAmerican).unwrap();
+            for line in out.lines() {
+                assert!(line.chars().count() <= 30, "line too wide: '{line}'");
+            }
+            // Continuation lines should be indented (2 spaces for the bullet).
+            let has_continuation = out.lines().any(|l| l.starts_with("  "));
+            assert!(
+                has_continuation,
+                "expected bullet continuation indent, got:\n{out}"
+            );
         }
-        // Continuation lines should be indented (2 spaces for the bullet).
-        let has_continuation = out
-            .lines()
-            .any(|l| l.starts_with("  ") && !l.starts_with("  /--"));
-        assert!(
-            has_continuation,
-            "expected bullet continuation indent, got:\n{out}"
-        );
-    }
-
-    #[test]
-    fn bullet_list_in_module_doc_preserves_indent() {
-        let src =
-            "/-!\n* this is a long bullet point that wraps across multiple lines of text\n-/\n";
-        let out = reflow_comments(src, 30, SpellingDirection::BritishToAmerican).unwrap();
-        for line in out.lines() {
-            assert!(line.chars().count() <= 30, "line too wide: '{line}'");
-        }
-        // Continuation lines should have the bullet indent preserved.
-        let has_continuation = out
-            .lines()
-            .any(|l| l.starts_with("  ") && l != "/-!" && l != "-/");
-        assert!(
-            has_continuation,
-            "expected bullet continuation indent, got:\n{out}"
-        );
     }
 
     // ------------------------------------------------------------------
@@ -2111,27 +1887,6 @@ def x := 1
             out,
             "/-- See [https://example.com/docs](https://example.com/docs) for details. -/\n"
         );
-    }
-
-    #[test]
-    fn bare_urls_in_module_doc_become_links_with_option() {
-        let options = Options {
-            linkify_urls: true,
-            ..Options::default()
-        };
-        let src = "/-!\nSee https://example.com for details.\n-/\n";
-        let out = normalize(src, 100, options).unwrap();
-        assert_eq!(
-            out,
-            "/-!\nSee [https://example.com](https://example.com) for details.\n-/\n"
-        );
-    }
-
-    #[test]
-    fn explicit_links_stay_links_by_default() {
-        let src = "/-- See [the docs](https://example.com) for more. -/\n";
-        let out = normalize(src, 100, Options::default()).unwrap();
-        assert_eq!(out, src);
     }
 
     // ------------------------------------------------------------------

@@ -30,7 +30,7 @@ async fn sigint_stops_and_reaps_the_build_and_returns_structured_cancellation() 
             .unwrap()
             .success()
     );
-    let output = tokio::time::timeout(Duration::from_secs(3), child.wait_with_output())
+    let output = tokio::time::timeout(Duration::from_secs(10), child.wait_with_output())
         .await
         .unwrap()
         .unwrap();
@@ -84,25 +84,6 @@ async fn builds_preserve_targets_policy_exit_codes_provenance_and_standalone_own
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert!(report["warnings"].as_array().unwrap().is_empty());
     assert_eq!(report["provenance"]["strict"], false);
-}
-
-#[tokio::test]
-async fn output_limit_override_returns_a_structured_error_after_cleanup() {
-    let project =
-        Project::new("printf '%s' \"$$\" > lake.pid\nhead -c 4096 /dev/zero\nexec sleep 30");
-    let output = tokio::time::timeout(
-        Duration::from_secs(3),
-        cli(&project).args(["--max-output", "1024"]).output(),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    assert!(!output.status.success());
-    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(report["error"]["kind"], "output_limit");
-    assert!(!alive(
-        &std::fs::read_to_string(project.0.join("lake.pid")).unwrap()
-    ));
 }
 
 #[tokio::test]

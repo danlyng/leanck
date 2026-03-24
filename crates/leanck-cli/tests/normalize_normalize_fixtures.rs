@@ -65,18 +65,6 @@ fn pathological_expected_outputs_are_idempotent() {
     }
 }
 
-#[test]
-fn pathological_outputs_do_not_contain_tabs() {
-    for case in CASES {
-        let input = fixture(case.name, "input.lean");
-        let expected = fixture(case.name, "expected.lean");
-        let actual = run_normalizer(case, &input);
-
-        assert_no_tabs(case.name, "expected", &expected);
-        assert_no_tabs(case.name, "actual", &actual);
-    }
-}
-
 fn fixture(case: &str, kind: &str) -> String {
     let path = fixture_path(case, kind);
     fs::read_to_string(&path)
@@ -123,16 +111,6 @@ fn run_normalizer(case: &Case, input: &str) -> String {
 
     String::from_utf8(output.stdout)
         .unwrap_or_else(|err| panic!("normalizer wrote non-UTF-8 output for {}: {err}", case.name))
-}
-
-fn assert_no_tabs(case: &str, kind: &str, text: &str) {
-    for (idx, line) in text.lines().enumerate() {
-        assert!(
-            !line.contains('\t'),
-            "fixture `{case}` {kind} output contains a tab on line {}: {line:?}",
-            idx + 1
-        );
-    }
 }
 
 fn first_difference(actual: &str, expected: &str) -> String {

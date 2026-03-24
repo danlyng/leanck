@@ -192,12 +192,4 @@ mod tests {
         assert_eq!(args, vec!["--server".to_string()]);
         std::fs::remove_dir_all(&dir).ok();
     }
-
-    #[test]
-    fn uri_round_trips_path() {
-        assert_eq!(
-            leanck_core::document::path_to_uri(Path::new("/a/b.lean")).unwrap(),
-            "file:///a/b.lean"
-        );
-    }
 }

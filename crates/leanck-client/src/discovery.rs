@@ -65,19 +65,10 @@ mod tests {
             resolve_binary_from(current_exe.clone(), search_path.clone()).unwrap(),
             path_bin
         );
+        // A library host is never assumed to support daemon mode itself.
+        std::fs::write(current_exe.as_ref().unwrap(), "").unwrap();
         assert!(matches!(
-            resolve_binary_from(None, None),
-            Err(ClientError::BinaryNotFound)
-        ));
-    }
-
-    #[test]
-    fn a_library_host_is_never_assumed_to_support_daemon_mode() {
-        let scratch = Scratch::new();
-        let host = scratch.0.join("host-application");
-        std::fs::write(&host, "").unwrap();
-        assert!(matches!(
-            resolve_binary_from(Some(host), None),
+            resolve_binary_from(current_exe, None),
             Err(ClientError::BinaryNotFound)
         ));
     }

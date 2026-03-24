@@ -501,12 +501,10 @@ async fn null_goals_are_success_but_missing_goals_are_protocol_errors() {
 
 #[tokio::test]
 async fn incompatible_protocol_never_dispatches_or_shuts_down_the_peer() {
-    assert_incompatible_protocol_is_not_dispatched(999).await;
-}
-
-#[tokio::test]
-async fn previous_protocol_three_is_rejected_before_dispatch() {
-    assert_incompatible_protocol_is_not_dispatched(3).await;
+    // Both a previous and a future protocol are rejected before dispatch.
+    for version in [3, 999] {
+        assert_incompatible_protocol_is_not_dispatched(version).await;
+    }
 }
 
 async fn assert_incompatible_protocol_is_not_dispatched(version: u64) {

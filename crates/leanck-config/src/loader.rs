@@ -417,22 +417,6 @@ mod scope_tests {
     use super::*;
 
     #[test]
-    fn machine_wide_registry_contains_unique_schema_sections() {
-        let defaults = toml::Value::try_from(Settings::default()).unwrap();
-        let mut seen = std::collections::BTreeSet::new();
-        for section in MACHINE_WIDE_SECTIONS {
-            assert!(
-                seen.insert(section),
-                "duplicate scope registration: {section}"
-            );
-            assert!(
-                defaults.get(*section).is_some_and(toml::Value::is_table),
-                "machine-wide section is missing from the schema: {section}"
-            );
-        }
-    }
-
-    #[test]
     fn project_filter_obeys_the_registry_and_preserves_other_sections() {
         let mut patch = toml::from_str(
             "[instances]\nlimit='invalid'\n[daemon]\nunknown=true\n[normalize]\nwidth=83\n",

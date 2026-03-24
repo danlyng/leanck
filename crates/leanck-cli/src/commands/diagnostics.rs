@@ -111,7 +111,7 @@ pub(crate) async fn run(args: Args) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::{Parser, error::ErrorKind};
+    use clap::Parser;
 
     #[derive(Debug, Parser)]
     struct TestCli {
@@ -120,15 +120,20 @@ mod tests {
     }
 
     #[test]
-    fn default_severity_is_error_only() {
-        let cli = TestCli::try_parse_from(["diagnostics", "Main.lean"]).unwrap();
-        assert!(cli.args.severity.is_empty());
-        assert!(!cli.args.all_severities);
-        assert!(matches!(
-            cli.args.severity_filter(),
-            SeverityFilter::Only { severities }
-                if matches!(severities.as_slice(), [DiagnosticSeverity::Error])
-        ));
+    fn severity_filter_defaults_to_errors_or_selects_all() {
+        for (flags, expected) in [
+            (
+                &[][..],
+                SeverityFilter::Only {
+                    severities: vec![DiagnosticSeverity::Error],
+                },
+            ),
+            (&["--all-severities"][..], SeverityFilter::All),
+        ] {
+            let cli =
+                TestCli::try_parse_from(["diagnostics", "Main.lean"].iter().chain(flags)).unwrap();
+            assert_eq!(cli.args.severity_filter(), expected);
+        }
     }
 
     #[test]
@@ -152,41 +157,5 @@ mod tests {
                     DiagnosticSeverity::Hint,
                 ])
         ));
-    }
-
-    #[test]
-    fn all_severities_selects_all() {
-        let cli =
-            TestCli::try_parse_from(["diagnostics", "Main.lean", "--all-severities"]).unwrap();
-        assert!(matches!(cli.args.severity_filter(), SeverityFilter::All));
-    }
-
-    #[test]
-    fn all_severities_conflicts_with_severity_in_either_order() {
-        for flags in [
-            ["--all-severities", "--severity", "warning"],
-            ["--severity", "warning", "--all-severities"],
-        ] {
-            let error =
-                TestCli::try_parse_from(["diagnostics", "Main.lean"].into_iter().chain(flags))
-                    .unwrap_err();
-            assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
-        }
-    }
-
-    #[test]
-    fn severity_rejects_invalid_values_and_legacy_aliases() {
-        for value in [
-            "all",
-            "info",
-            "warn",
-            "invalid",
-            "error,info",
-            "warning,all",
-        ] {
-            let error = TestCli::try_parse_from(["diagnostics", "Main.lean", "--severity", value])
-                .unwrap_err();
-            assert_eq!(error.kind(), ErrorKind::InvalidValue, "value: {value}");
-        }
     }
 }

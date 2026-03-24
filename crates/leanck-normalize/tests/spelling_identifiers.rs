@@ -37,16 +37,3 @@ fn a_quote_closing_a_phrase_does_not_prime_its_last_word() {
         expected
     );
 }
-
-#[test]
-fn builtin_entries_wrong_in_mathematical_prose_are_not_applied() {
-    let source =
-        "/-- The gauge of a tonne; a cancellation. Program the meter on the disk. -/\ndef x := 1\n";
-    assert_eq!(apply(source, SpellingDirection::BritishToAmerican), source);
-    assert_eq!(apply(source, SpellingDirection::AmericanToBritish), source);
-    let source = "/-- The cancelled programme. -/\ndef x := 1\n";
-    assert_eq!(
-        apply(source, SpellingDirection::BritishToAmerican),
-        "/-- The canceled program. -/\ndef x := 1\n"
-    );
-}

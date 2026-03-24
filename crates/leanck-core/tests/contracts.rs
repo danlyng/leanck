@@ -85,10 +85,7 @@ fn operations_bind_their_parameters_in_both_directions() {
             line: 1,
             character: 2,
         }),
-        Command::Sorry(SorryParams {
-            path: ".".into(),
-            ..Default::default()
-        }),
+        Command::Sorry(SorryParams { path: ".".into() }),
         Command::List(ListParams {
             file: "Basic.lean".into(),
             kind: None,
@@ -237,13 +234,6 @@ fn pinned_source_and_lifecycle_reject_missing_or_null_fields() {
         assert!(serde_json::from_value::<DiagnosticsResult>(diagnostics).is_err());
         assert!(serde_json::from_value::<HealthResult>(health).is_err());
     }
-}
-
-#[test]
-fn sorry_params_only_serialize_the_scan_path() {
-    round_trip::<SorryParams>(json!({"path":"."}));
-    let params = SorryParams { path: ".".into() };
-    assert_eq!(serde_json::to_value(params).unwrap(), json!({"path":"."}));
 }
 
 #[test]

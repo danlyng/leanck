@@ -73,26 +73,3 @@ impl LoogleResult {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn into_result_truncates_hits_to_the_limit() {
-        let resp = LoogleApiResponse {
-            count: 5,
-            hits: (0..5)
-                .map(|i| LoogleApiHit {
-                    name: format!("n{i}"),
-                    type_sig: "T".to_string(),
-                    module: "M".to_string(),
-                })
-                .collect(),
-            suggestions: vec![],
-            error: None,
-        };
-        let result = resp.into_result(2);
-        assert_eq!(result.count, 5); // upstream total preserved
-        assert_eq!(result.hits.len(), 2); // local view truncated
-    }
-}

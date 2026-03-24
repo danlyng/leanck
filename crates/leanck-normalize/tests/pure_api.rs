@@ -86,25 +86,3 @@ fn unmatched_delimiters_preserve_kind_line_and_message() {
         );
     }
 }
-
-#[test]
-fn reflow_error_preserves_the_complete_dependency_message() {
-    let message = "reflow failed: dependency detail\nadditional context";
-    let error = NormalizeError::Reflow(message.to_owned());
-    assert_eq!(error, NormalizeError::Reflow(message.to_owned()));
-    assert_eq!(error.to_string(), message);
-    let boxed: Box<dyn std::error::Error + Send + Sync> = Box::new(error);
-    assert_eq!(boxed.to_string(), message);
-}
-
-#[test]
-fn zero_width_is_rejected_even_when_comments_are_disabled() {
-    let options = Options {
-        comments: false,
-        ..Default::default()
-    };
-    assert_eq!(
-        normalize("/-! unclosed", 0, options, 2000).unwrap_err(),
-        NormalizeError::InvalidWidth
-    );
-}

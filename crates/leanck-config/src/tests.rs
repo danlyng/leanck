@@ -48,40 +48,6 @@ fn normalization_width_round_trips_and_rejects_invalid_values() {
 }
 
 #[test]
-fn normalization_width_layers_and_overrides_can_switch_types() {
-    let dir = Scratch::new();
-    let finite = dir.file("finite.toml", "[normalize]\nwidth=72\n");
-    let unlimited = dir.file("unlimited.toml", "[normalize]\nwidth='unlimited'\n");
-    for (first, last, expected, assignment, overridden) in [
-        (
-            &finite,
-            &unlimited,
-            NormalizeWidth::Unlimited,
-            "normalize.width=88",
-            NormalizeWidth::Finite(88),
-        ),
-        (
-            &unlimited,
-            &finite,
-            NormalizeWidth::Finite(72),
-            "normalize.width='unlimited'",
-            NormalizeWidth::Unlimited,
-        ),
-    ] {
-        let files = [(first.clone(), true), (last.clone(), true)];
-        let loaded = load_files(&files, &[]).unwrap();
-        assert_eq!(loaded.settings.normalize.width, expected);
-        assert_eq!(
-            loaded.sources["normalize.width"],
-            last.display().to_string()
-        );
-        let loaded = load_files(&files, &[assignment.into()]).unwrap();
-        assert_eq!(loaded.settings.normalize.width, overridden);
-        assert_eq!(loaded.sources["normalize.width"], "--set");
-    }
-}
-
-#[test]
 fn heading_layout_override_preserves_section_inheritance_and_provenance() {
     let dir = Scratch::new();
     let user = dir.file(
@@ -400,19 +366,6 @@ fn missing_optional_files_are_allowed_but_required_and_unreadable_are_errors() {
     assert!(load_files(&[(dir.0.join("missing"), false)], &[]).is_ok());
     assert!(load_files(&[(dir.0.join("missing"), true)], &[]).is_err());
     assert!(load_files(&[(dir.0.clone(), false)], &[]).is_err());
-}
-#[test]
-fn discovery_is_nearest_and_stops_at_project_or_git_boundary() {
-    let dir = Scratch::new();
-    let outer = dir.file("leanck.toml", "");
-    let marker = dir.file("project/lakefile.toml", "");
-    let file = dir.file("project/src/Main.lean", "");
-    assert_eq!(project_config_path(&file).unwrap(), None);
-    let project = dir.file("project/leanck.toml", "");
-    assert_eq!(project_config_path(&file).unwrap(), Some(project));
-    let nearest = dir.file("project/src/leanck.toml", "");
-    assert_eq!(project_config_path(&file).unwrap(), Some(nearest));
-    assert!(marker.exists() && outer.exists());
 }
 #[test]
 fn hidden_project_config_obeys_nearest_boundary_and_filename_precedence() {
@@ -818,52 +771,6 @@ fn author_maps_merge_by_name_and_allow_explicit_replacement() {
             )
             .is_err(),
             "accepted {value}"
-        );
-    }
-}
-
-#[test]
-fn invalid_existing_header_policy_defaults_to_warn_and_accepts_only_named_actions() {
-    assert_eq!(
-        Settings::default()
-            .normalize
-            .rules
-            .frontmatter
-            .invalid_existing,
-        InvalidExistingHeader::Warn
-    );
-    for (name, policy) in [
-        ("replace", InvalidExistingHeader::Replace),
-        ("warn", InvalidExistingHeader::Warn),
-        ("ignore", InvalidExistingHeader::Ignore),
-    ] {
-        let loaded = load_files(
-            &[],
-            &[format!(
-                "normalize.rules.frontmatter.invalid_existing='{name}'"
-            )],
-        )
-        .unwrap();
-        assert_eq!(
-            loaded.settings.normalize.rules.frontmatter.invalid_existing,
-            policy
-        );
-        let text = toml::to_string_pretty(&loaded.settings).unwrap();
-        let restored: Settings = toml::from_str(&text).unwrap();
-        assert_eq!(
-            restored.normalize.rules.frontmatter.invalid_existing,
-            policy
-        );
-    }
-    for value in ["false", "true", "'off'", "'invalid'"] {
-        assert!(
-            load_files(
-                &[],
-                &[format!(
-                    "normalize.rules.frontmatter.invalid_existing={value}"
-                )]
-            )
-            .is_err()
         );
     }
 }

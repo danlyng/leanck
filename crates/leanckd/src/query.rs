@@ -556,30 +556,11 @@ mod tests {
     }
 
     #[test]
-    fn keep_by_severity_rules() {
-        use leanck_core::api::DiagnosticSeverity;
-        let warnings = SeverityFilter::Only {
-            severities: vec![DiagnosticSeverity::Warning],
-        };
-        assert!(keep_by_severity(&diag(Some(3), ""), &SeverityFilter::All));
-        assert!(keep_by_severity(&diag(Some(99), ""), &SeverityFilter::All));
+    fn missing_severity_counts_as_error() {
         assert!(keep_by_severity(
             &diag(None, ""),
             &SeverityFilter::default()
         ));
-        assert!(!keep_by_severity(&diag(None, ""), &warnings));
-        assert!(keep_by_severity(&diag(Some(2), ""), &warnings));
-        assert!(!keep_by_severity(&diag(Some(99), ""), &warnings));
-        assert!(!keep_by_severity(
-            &diag(Some(1), ""),
-            &SeverityFilter::Only { severities: vec![] }
-        ));
-    }
-
-    #[test]
-    fn goals_accomplished_exact_match() {
-        assert!(is_goals_accomplished(&diag(None, "Goals accomplished!")));
-        assert!(!is_goals_accomplished(&diag(None, "goals accomplished")));
     }
 
     #[test]

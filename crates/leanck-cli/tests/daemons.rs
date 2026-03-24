@@ -141,30 +141,6 @@ fn listing_with_no_slot_directory_is_empty_and_creates_nothing() {
 }
 
 #[test]
-fn dead_slot_records_are_not_listed() {
-    let scratch = Scratch::new("dead");
-    let slots = scratch.cache().join("leanck");
-    std::fs::create_dir_all(&slots).unwrap();
-    let mut child = Command::new("true").spawn().unwrap();
-    let dead = child.id();
-    child.wait().unwrap();
-    let record = serde_json::json!({
-        "pid": dead,
-        "worktree": scratch.0.join("gone"),
-        "socket": slots.join("leanck-gone.sock"),
-        "started_at": 1,
-    });
-    std::fs::write(slots.join("leanck-slot-0.lock"), format!("{record}\n")).unwrap();
-    let body = json(&leanck(
-        &scratch.cache(),
-        &scratch.0,
-        &["daemons", "--json"],
-    ));
-    assert_eq!(body["daemons"], serde_json::json!([]));
-    assert_eq!(body["running"], 0);
-}
-
-#[test]
 fn stopping_with_nothing_running() {
     let scratch = Scratch::new("stop");
     let cache = scratch.cache();

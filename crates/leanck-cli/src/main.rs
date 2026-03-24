@@ -27,13 +27,16 @@ where
     Fut: std::future::Future<Output = anyhow::Result<()>>,
 {
     block_on(async {
+        // Register before starting work; `ctrl_c()` installs its handler only
+        // when first polled, which can be after the work has spawned children.
+        let mut interrupt =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
         let cancel = leanck_client::CancellationToken::new();
         let work = run(cancel.clone());
         tokio::pin!(work);
         tokio::select! {
             result = &mut work => result,
-            signal = tokio::signal::ctrl_c() => {
-                signal?;
+            _ = interrupt.recv() => {
                 cancel.cancel();
                 tokio::time::timeout(std::time::Duration::from_secs(2), work).await
                     .unwrap_or_else(|_| Err(anyhow::anyhow!("operation interrupted")))

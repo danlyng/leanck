@@ -136,38 +136,6 @@ mod tests {
         assert!(error.contains("--conclusion"));
     }
 
-    #[test]
-    fn usage_requires_a_query_flag() {
-        let mut command = Cli::command();
-        let usage = command
-            .find_subcommand_mut("loogle")
-            .expect("loogle subcommand exists")
-            .render_usage()
-            .to_string();
-        assert!(
-            usage.contains("<--constant|--substr|--subexpr|--conclusion>"),
-            "{usage}"
-        );
-    }
-
-    #[test]
-    fn query_flags_have_their_own_help_section() {
-        let mut command = Cli::command();
-        let help = command
-            .find_subcommand_mut("loogle")
-            .expect("loogle subcommand exists")
-            .render_help()
-            .to_string();
-        let query = help.find("\nQuery (Repeatable):\n").expect("query section");
-        for flag in ["--constant", "--substr", "--subexpr", "--conclusion"] {
-            assert!(
-                help[query..].contains(flag),
-                "{flag} not under Query (Repeatable):\n{help}"
-            );
-        }
-        assert!(!help[query..].contains("--limit"), "{help}");
-    }
-
     #[tokio::test]
     async fn blank_query_flags_are_rejected_before_search() {
         let cli = Cli::try_parse_from(["leanck", "loogle", "--constant", " "]).unwrap();

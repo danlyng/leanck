@@ -1,4 +1,4 @@
-use leanck_config::{AttributePlacement, DelimiterStyle};
+use leanck_config::AttributePlacement;
 use leanck_normalize::{Context, NormalizeRules, Options, normalize_with_context};
 
 #[test]
@@ -38,39 +38,6 @@ fn linkification_without_reflow_preserves_soft_breaks_and_protects_code_and_math
     )
     .unwrap();
     assert_eq!(result.output, twice.output);
-}
-
-#[test]
-fn no_reflow_linkification_also_applies_with_unchanged_delimiter_layout() {
-    let mut rules = NormalizeRules::default();
-    rules.comments.declaration = DelimiterStyle::Off;
-    let options = Options {
-        comment_reflow: false,
-        linkify_urls: true,
-        ..Default::default()
-    };
-    let source = "/--\nSee https://example.test\nwithout joining this line. -/\n";
-    let result = normalize_with_context(source, 10, options, &rules, &Context::default()).unwrap();
-    assert!(
-        result
-            .output
-            .contains("[https://example.test](https://example.test)\nwithout joining this line."),
-        "{}",
-        result.output
-    );
-    assert_eq!(
-        result.output,
-        source.replace(
-            "https://example.test",
-            "[https://example.test](https://example.test)"
-        )
-    );
-    assert_eq!(
-        normalize_with_context(&result.output, 10, options, &rules, &Context::default())
-            .unwrap()
-            .output,
-        result.output
-    );
 }
 
 #[test]

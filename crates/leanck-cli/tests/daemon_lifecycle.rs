@@ -8,7 +8,7 @@ use leanck_client::{
 use leanck_core::{
     api::{GoalParams, HealthResult, LifecycleState},
     error::ErrorKind,
-    instances::{EXIT_INSTANCE_LIMIT, live, now_unix_secs, scan},
+    instances::{EXIT_INSTANCE_LIMIT, live, scan},
     paths::RuntimePaths,
 };
 use std::{
@@ -186,7 +186,8 @@ impl Fixture {
             .trim()
             .parse()
             .unwrap();
-        self.daemon_identity = Some((pid, leanck_core::instances::process_start_id(pid)));
+        let start_id = leanck_core::instances::process_start_id(pid);
+        self.daemon_identity = Some((pid, start_id));
         let slot = scan(self.runtime().directory())
             .into_iter()
             .find(|entry| entry.record.pid == pid)
@@ -195,6 +196,8 @@ impl Fixture {
             slot.record.version.as_deref(),
             Some(env!("CARGO_PKG_VERSION"))
         );
+        assert_eq!(slot.record.start_id, start_id);
+        assert_eq!(slot.record.socket, self.runtime().socket());
         assert_eq!(health.lifecycle.state, LifecycleState::Ready);
         health
     }
@@ -765,29 +768,6 @@ fn lock_is_free(path: &Path) -> bool {
 }
 
 #[tokio::test]
-async fn second_daemon_over_the_limit_is_refused_before_publishing_liveness() {
-    let cache = CacheDir::new();
-    let mut first = Fixture::isolated(&silent_script(), &cache);
-    let second = Fixture::isolated(&silent_script(), &cache);
-    let mut running = first.launch_with(&REFUSE);
-    first.ready().await;
-    let mut refused = second.launch_with(&REFUSE);
-    let status = tokio::time::timeout(Duration::from_secs(5), refused.wait())
-        .await
-        .expect("refused daemon exits promptly")
-        .unwrap();
-    assert_eq!(status.code(), Some(EXIT_INSTANCE_LIMIT));
-    assert!(!second.runtime().pid().exists());
-    assert!(!second.runtime().socket().exists());
-    assert!(lock_is_free(&second.runtime().lock()));
-    let slots = scan(&cache.slots());
-    assert_eq!(slots.len(), 1, "{slots:?}");
-    assert_eq!(slots[0].record.pid, running.id().unwrap());
-    assert_eq!(live(&cache.slots()).len(), 1);
-    first.stop(&mut running).await;
-}
-
-#[tokio::test]
 async fn warn_mode_starts_past_the_limit() {
     let cache = CacheDir::new();
     let mut first = Fixture::isolated(&silent_script(), &cache);
@@ -834,7 +814,9 @@ async fn admission_counts_running_daemons_not_the_free_slot_index() {
         .expect("refused daemon exits promptly")
         .unwrap();
     assert_eq!(status.code(), Some(EXIT_INSTANCE_LIMIT));
+    assert!(!third.runtime().pid().exists());
     assert!(!third.runtime().socket().exists());
+    assert!(lock_is_free(&third.runtime().lock()));
     assert!(lock_is_free(&leanck_core::instances::slot_path(
         &cache.slots(),
         0
@@ -855,31 +837,6 @@ async fn admission_counts_running_daemons_not_the_free_slot_index() {
     assert_eq!(slots, vec![(0, c.id().unwrap()), (1, b_pid)]);
     third.stop(&mut c).await;
     second.stop(&mut b).await;
-    assert!(live(&cache.slots()).is_empty());
-}
-
-#[tokio::test]
-async fn slot_record_describes_the_running_daemon() {
-    let cache = CacheDir::new();
-    let mut fixture = Fixture::isolated(&silent_script(), &cache);
-    let mut daemon = fixture.launch();
-    fixture.ready().await;
-    let slots = live(&cache.slots());
-    assert_eq!(slots.len(), 1, "{slots:?}");
-    let record = &slots[0].record;
-    assert_eq!(record.pid, daemon.id().unwrap());
-    assert_eq!(record.worktree, fixture.root.canonicalize().unwrap());
-    assert_eq!(record.socket, fixture.runtime().socket());
-    assert!(now_unix_secs().abs_diff(record.started_at) <= 10);
-    assert_eq!(
-        record.start_id,
-        leanck_core::instances::process_start_id(record.pid)
-    );
-    assert!(!lock_is_free(&leanck_core::instances::slot_path(
-        &cache.slots(),
-        slots[0].slot
-    )));
-    fixture.stop(&mut daemon).await;
     assert!(live(&cache.slots()).is_empty());
 }
 

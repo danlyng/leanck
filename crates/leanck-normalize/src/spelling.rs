@@ -601,12 +601,6 @@ mod tests {
     }
 
     #[test]
-    fn exact_base_still_works() {
-        assert_eq!(b2a("marginalise"), "marginalize");
-        assert_eq!(b2a("colour"), "color");
-    }
-
-    #[test]
     fn inflections_of_ise_verbs() {
         assert_eq!(b2a("marginalised"), "marginalized");
         assert_eq!(b2a("marginalises"), "marginalizes");
@@ -638,6 +632,11 @@ mod tests {
         // "premised"/"wise" de-inflect to stems that are not in the dictionary.
         assert_eq!(b2a("premised"), "premised");
         assert_eq!(b2a("wise rises"), "wise rises");
+        // Words already in the target spelling are not stems of any entry.
+        assert_eq!(
+            b2a("marginalized colorful coloring"),
+            "marginalized colorful coloring"
+        );
     }
 
     #[test]
@@ -704,12 +703,6 @@ mod tests {
             dictionary.correct("coloring colorings flavorings"),
             "sketch colorings seasonings"
         );
-    }
-
-    #[test]
-    fn already_converted_words_are_untouched() {
-        assert_eq!(b2a("marginalized"), "marginalized");
-        assert_eq!(b2a("colorful coloring"), "colorful coloring");
     }
 
     #[test]
@@ -846,11 +839,5 @@ mod tests {
                 assert_eq!(configured.correct(word), correct_spelling(word, direction));
             }
         }
-    }
-
-    #[test]
-    fn multiple_entries_converted_correctly() {
-        assert_eq!(b2a("programming"), "programming");
-        assert_eq!(b2a("programing"), "programming");
     }
 }

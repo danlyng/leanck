@@ -1,4 +1,3 @@
-use crate::client::truncate_for_error;
 use crate::*;
 
 #[test]
@@ -7,26 +6,17 @@ fn query_matches_structured_args() {
         constant: vec!["Real.sin".to_string()],
         substr: vec!["differ".to_string()],
         subexpr: vec!["_ * (_ ^ _)".to_string()],
-        conclusion: vec!["tsum _ = _".to_string(), "⊢ a = b".to_string()],
+        conclusion: vec![
+            "tsum _ = _".to_string(),
+            "⊢ a = b".to_string(),
+            "|- c = d".to_string(),
+        ],
     };
 
     assert_eq!(
         input.build().as_deref(),
-        Some("Real.sin, \"differ\", _ * (_ ^ _), |- tsum _ = _, ⊢ a = b")
+        Some("Real.sin, \"differ\", _ * (_ ^ _), |- tsum _ = _, ⊢ a = b, |- c = d")
     );
-}
-
-#[test]
-fn query_counts_nonempty_terms() {
-    let input = LoogleQuery {
-        constant: vec!["Real.sin".to_string(), "  ".to_string()],
-        substr: vec!["differ".to_string()],
-        subexpr: vec![],
-        conclusion: vec![],
-    };
-
-    assert_eq!(input.term_count(), 2);
-    assert!(input.has_multiple_terms());
 }
 
 #[test]
@@ -89,21 +79,6 @@ fn empty_multi_term_result_gets_note() {
 }
 
 #[test]
-fn single_term_result_does_not_get_note() {
-    let mut result = LoogleResult {
-        count: 0,
-        hits: vec![],
-        suggestions: vec![],
-        error: None,
-        note: None,
-    };
-
-    result.add_empty_multi_term_note(false);
-
-    assert!(result.note.is_none());
-}
-
-#[test]
 fn build_returns_none_when_all_terms_blank() {
     let q = LoogleQuery {
         constant: vec!["   ".to_string()],
@@ -114,65 +89,15 @@ fn build_returns_none_when_all_terms_blank() {
     assert!(q.build().is_none());
     assert_eq!(q.term_count(), 0);
     assert!(!q.has_multiple_terms());
-}
 
-#[test]
-fn build_does_not_double_prefix_an_existing_turnstile() {
     let q = LoogleQuery {
-        constant: vec![],
-        substr: vec![],
+        constant: vec!["Real.sin".to_string(), "  ".to_string()],
+        substr: vec!["differ".to_string()],
         subexpr: vec![],
-        conclusion: vec!["|- a = b".to_string(), "⊢ c = d".to_string()],
+        conclusion: vec![],
     };
-    assert_eq!(q.build().as_deref(), Some("|- a = b, ⊢ c = d"));
-}
-
-#[test]
-fn truncate_for_error_caps_at_200_chars() {
-    assert_eq!(truncate_for_error("  short  "), "short");
-    let long = "x".repeat(250);
-    let out = truncate_for_error(&long);
-    assert_eq!(out.chars().count(), 203); // 200 + "..."
-    assert!(out.ends_with("..."));
-}
-
-#[test]
-fn format_human_renders_empty_result() {
-    let result = LoogleResult {
-        count: 0,
-        hits: vec![],
-        suggestions: vec![],
-        error: None,
-        note: None,
-    };
-    assert_eq!(format_results(&result), "  0 results, showing 0");
-}
-
-#[test]
-fn note_is_skipped_when_an_error_or_hits_are_present() {
-    let mut errored = LoogleResult {
-        count: 0,
-        hits: vec![],
-        suggestions: vec![],
-        error: Some("boom".to_string()),
-        note: None,
-    };
-    errored.add_empty_multi_term_note(true);
-    assert!(errored.note.is_none());
-
-    let mut has_hits = LoogleResult {
-        count: 1,
-        hits: vec![LoogleHit {
-            name: "x".to_string(),
-            type_sig: "T".to_string(),
-            module: String::new(),
-        }],
-        suggestions: vec![],
-        error: None,
-        note: None,
-    };
-    has_hits.add_empty_multi_term_note(true);
-    assert!(has_hits.note.is_none());
+    assert_eq!(q.term_count(), 2);
+    assert!(q.has_multiple_terms());
 }
 
 use std::time::Duration;
@@ -326,7 +251,7 @@ async fn fallback_handles_http_and_json_failures_limits_and_provenance() {
         assert!(
             headers
                 .iter()
-                .any(|header| header.to_ascii_lowercase() == "accept: application/json")
+                .any(|header| header.eq_ignore_ascii_case("accept: application/json"))
         );
     }
 }

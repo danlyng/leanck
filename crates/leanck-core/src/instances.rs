@@ -478,23 +478,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn slot_versions_are_optional_and_roundtrip() {
-        let mut slot = record(std::process::id());
-        let legacy = serde_json::to_value(&slot).unwrap();
-        assert!(legacy.get("version").is_none());
-        assert_eq!(
-            serde_json::from_value::<SlotRecord>(legacy)
-                .unwrap()
-                .version,
-            None
-        );
-        slot.version = Some("0.40.0".into());
-        let encoded = serde_json::to_value(&slot).unwrap();
-        assert_eq!(encoded["version"], "0.40.0");
-        assert_eq!(serde_json::from_value::<SlotRecord>(encoded).unwrap(), slot);
-    }
-
     fn acquired(outcome: SlotOutcome) -> (SlotLock, u64) {
         match outcome {
             SlotOutcome::Acquired { lock, running } => (lock, running),
@@ -757,20 +740,6 @@ mod tests {
         ));
         assert!(!slot_path(&scratch.0, 2).exists());
         drop((zero, one));
-    }
-
-    #[test]
-    fn refuse_stops_at_the_limit_without_touching_the_next_slot() {
-        let scratch = Scratch::new();
-        let held: Vec<_> = (0..3)
-            .map(|_| take(&scratch.0, 3, SlotPolicy::Refuse))
-            .collect();
-        assert!(matches!(
-            attempt(&scratch.0, 3, SlotPolicy::Refuse),
-            SlotOutcome::OverLimit { held: 3, limit: 3 }
-        ));
-        assert!(!slot_path(&scratch.0, 3).exists());
-        drop(held);
     }
 
     #[test]

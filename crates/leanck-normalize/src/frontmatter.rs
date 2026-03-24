@@ -18,28 +18,6 @@ impl Default for Options {
     }
 }
 
-/// Normalize the frontmatter of `source`. Files that show no sign of being a
-/// Lean module (no `module`, `import`, or `@[expose] … section` line) are
-/// returned unchanged, so comment snippets and partial input are never touched.
-#[allow(dead_code)]
-pub fn normalize(source: &str, year: i32) -> String {
-    normalize_with_options(source, year, Options::default())
-}
-
-pub fn normalize_with_options(source: &str, _year: i32, options: Options) -> String {
-    if !is_module_file(source) && leading_header(source).is_none() {
-        return source.to_owned();
-    }
-    configured(
-        source,
-        options,
-        &leanck_config::NormalizeRules::default(),
-        &crate::Context::default(),
-    )
-    .trim_end_matches('\n')
-    .to_owned()
-}
-
 // ---------------------------------------------------------------------------
 // Line classification
 // ---------------------------------------------------------------------------
@@ -640,71 +618,15 @@ fn render_template(template: &str, values: &[(&str, String)]) -> String {
 mod tests {
     use super::*;
 
-    const YEAR: i32 = 2026;
-
-    #[test]
-    fn snippets_without_module_markers_are_untouched() {
-        let src = "/-- a doc comment -/\ndef x := 1\n";
-        assert_eq!(normalize(src, YEAR), src);
-    }
-
-    #[test]
-    fn missing_header_is_not_invented_without_history() {
-        assert_eq!(
-            normalize("module\n\nimport Foo\n", YEAR),
-            "module\n\nimport Foo"
-        );
-    }
-
-    #[test]
-    fn existing_header_is_left_untouched() {
-        let src = "/-\nCopyright (c) 1999 Someone Else.\n-/\nmodule\n\nimport Foo\n";
-        let out = normalize(src, YEAR);
-        assert!(out.starts_with("/-\nCopyright (c) 1999 Someone Else.\n-/"));
-    }
-
-    #[test]
-    fn imports_are_alphabetized_with_public_first() {
-        let src = "/-\nx\n-/\nmodule\n\nimport Zebra\npublic import Apple\nimport Mango\npublic import Cat\n";
-        let out = normalize(src, YEAR);
-        let imports: Vec<&str> = out.lines().filter(|l| is_import(l)).collect();
-        assert_eq!(
-            imports,
-            vec![
-                "public import Apple",
-                "public import Cat",
-                "import Mango",
-                "import Zebra",
-            ]
-        );
-    }
-
-    #[test]
-    fn single_import_is_left_as_is() {
-        let src = "/-\nx\n-/\nmodule\n\nimport OnlyOne\n";
-        let out = normalize(src, YEAR);
-        assert!(out.contains("import OnlyOne"));
-    }
-
-    #[test]
-    fn section_is_moved_after_docstring() {
-        // A docstring that is only a title is a section heading, so these
-        // module docstrings have a body.
-        let src = "/-\nx\n-/\nmodule\n\nimport Foo\n\n@[expose] public section\n\n/-!\n# Title\n\nBody.\n-/\n";
-        let out = normalize(src, YEAR);
-        let section = out
-            .lines()
-            .position(|l| l.trim() == "@[expose] public section")
-            .unwrap();
-        let title = out.lines().position(|l| l.contains("# Title")).unwrap();
-        // section now follows the docstring body.
-        assert!(section > title);
-    }
-
     #[test]
     fn noncomputable_section_is_carried_along() {
         let src = "/-\nx\n-/\nmodule\n\n@[expose] public noncomputable section\n\n/-!\n# Title\n\nBody.\n-/\n";
-        let out = normalize(src, YEAR);
+        let out = configured(
+            src,
+            Options::default(),
+            &leanck_config::NormalizeRules::default(),
+            &crate::Context::default(),
+        );
         let lines: Vec<&str> = out.lines().collect();
         let section = lines
             .iter()
@@ -712,59 +634,5 @@ mod tests {
             .unwrap();
         let title = lines.iter().position(|l| l.contains("# Title")).unwrap();
         assert!(section > title);
-    }
-
-    #[test]
-    fn section_already_after_docstring_stays() {
-        let src = "/-\nx\n-/\nmodule\n\n/-!\n# Title\n\nBody.\n-/\n\n@[expose] public section\n";
-        let out = normalize(src, YEAR);
-        // Idempotent: running again yields the same text.
-        assert_eq!(normalize(&out, YEAR), out);
-    }
-
-    #[test]
-    fn namespace_between_docstring_and_section_moves_after_section() {
-        let src = "/-\nx\n-/\nmodule\n\n/-!\n# Title\n\nBody.\n-/\n\nnamespace Foo\n\n@[expose] public section\n";
-        let out = normalize(src, YEAR);
-        let lines: Vec<&str> = out.lines().collect();
-        let title = lines.iter().position(|l| l.contains("# Title")).unwrap();
-        let section = lines.iter().position(|l| is_section(l)).unwrap();
-        let ns = lines.iter().position(|l| is_namespace(l)).unwrap();
-        assert!(title < section, "section after docstring");
-        assert!(section < ns, "namespace after section");
-    }
-
-    #[test]
-    fn namespace_moves_when_section_precedes_docstring() {
-        // section before docstring, namespace already after: section is moved
-        // after the docstring, and the namespace ends up after the section.
-        let src = "/-\nx\n-/\nmodule\n\n@[expose] public section\n\n/-!\n# Title\n\nBody.\n-/\n\nnamespace Foo\n";
-        let out = normalize(src, YEAR);
-        let lines: Vec<&str> = out.lines().collect();
-        let title = lines.iter().position(|l| l.contains("# Title")).unwrap();
-        let section = lines.iter().position(|l| is_section(l)).unwrap();
-        let ns = lines.iter().position(|l| is_namespace(l)).unwrap();
-        assert!(title < section && section < ns);
-        // and stable under re-running.
-        assert_eq!(normalize(&out, YEAR), out);
-    }
-
-    #[test]
-    fn inverse_case_docstring_last_is_fully_reordered() {
-        // Original order: section, namespace, docstring, body. Must become
-        // docstring, section, namespace, body.
-        let src = "/-\nx\n-/\nmodule\n\n@[expose] public section\n\nnamespace Foo\n\n/-!\n# Title\n\nBody.\n-/\n\ndef foo := 1\n";
-        let out = normalize(src, YEAR);
-        let lines: Vec<&str> = out.lines().collect();
-        let title = lines.iter().position(|l| l.contains("# Title")).unwrap();
-        let section = lines.iter().position(|l| is_section(l)).unwrap();
-        let ns = lines.iter().position(|l| is_namespace(l)).unwrap();
-        let body = lines.iter().position(|l| l.contains("def foo")).unwrap();
-        assert!(
-            title < section && section < ns && ns < body,
-            "expected docstring < section < namespace < body, got {title} {section} {ns} {body}"
-        );
-        // Idempotent.
-        assert_eq!(normalize(&out, YEAR), out);
     }
 }

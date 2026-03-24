@@ -717,45 +717,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn full_slots_evict_the_longest_idle_daemon_then_spawn() {
-        let scratch = Scratch::new();
-        let runtime = private_runtime(&scratch);
-        let dir = runtime.directory();
-        let (recent_socket, stale_socket) =
-            (scratch.0.join("recent.sock"), scratch.0.join("stale.sock"));
-        // The recent daemon holds the lower slot, so only idle time decides.
-        let (recent_pid, recent_ops, recent) = fake_daemon(&recent_socket, 10, 0, false);
-        let (stale_pid, stale_ops, stale) = fake_daemon(&stale_socket, 300, 0, false);
-        write_record(dir, 0, recent_pid, recent_socket);
-        write_record(dir, 1, stale_pid, stale_socket);
-        let settings = limited(fake_binary(&scratch, MARKING), 2, OnLimit::EvictIdle);
-        let binder = bind_when_finished(&scratch, &runtime);
-        tokio::time::timeout(
-            Duration::from_secs(10),
-            ensure_running(&scratch.0, runtime.clone(), &settings, None),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        let _listener = binder.await.unwrap();
-        stale.await.unwrap();
-        assert_eq!(
-            stale_ops.lock().unwrap().last().map(String::as_str),
-            Some(op::SHUTDOWN)
-        );
-        assert!(!pid_alive(stale_pid));
-        recent.abort();
-        assert!(
-            !recent_ops
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|name| name == op::SHUTDOWN)
-        );
-        assert!(scratch.0.join("spawned").exists());
-    }
-
-    #[tokio::test]
     async fn a_candidate_busy_at_shutdown_stays_and_the_next_idle_daemon_is_evicted() {
         let scratch = Scratch::new();
         let runtime = private_runtime(&scratch);

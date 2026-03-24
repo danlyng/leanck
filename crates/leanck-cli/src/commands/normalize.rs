@@ -627,35 +627,11 @@ mod tests {
     }
 
     #[test]
-    fn omitted_path_uses_stdin_and_default_width() {
-        let args = Cli::try_parse_from(["normalize"]).unwrap().args;
-        assert_eq!(args.path, None);
-        assert_eq!(args.width, NormalizeWidth::Finite(DEFAULT_WIDTH));
-    }
-
-    #[test]
     fn numeric_positionals_are_always_paths() {
         for path in ["80", "0", "184467440737095516160"] {
             let args = Cli::try_parse_from(["normalize", path]).unwrap().args;
             assert_eq!(args.path, Some(PathBuf::from(path)));
             assert_eq!(args.width, NormalizeWidth::Finite(DEFAULT_WIDTH));
-        }
-    }
-
-    #[test]
-    fn width_flags_work_with_stdin_and_paths() {
-        for flag in ["--width", "-w"] {
-            let args = Cli::try_parse_from(["normalize", flag, "72"]).unwrap().args;
-            assert_eq!(args.path, None);
-            assert_eq!(args.width, NormalizeWidth::Finite(72));
-
-            for path in ["Main.lean", "MyProject", "80"] {
-                let args = Cli::try_parse_from(["normalize", path, flag, "72"])
-                    .unwrap()
-                    .args;
-                assert_eq!(args.path, Some(PathBuf::from(path)));
-                assert_eq!(args.width, NormalizeWidth::Finite(72));
-            }
         }
     }
 
@@ -680,18 +656,11 @@ mod tests {
         ] {
             assert!(Cli::try_parse_from(["normalize", "--width", width]).is_err());
         }
-    }
-
-    #[test]
-    fn unlimited_width_flags_work_with_stdin_and_paths() {
         for flag in ["--width", "-w"] {
-            for path in [None, Some("Main.lean")] {
-                let mut argv = vec!["normalize", flag, "unlimited"];
-                argv.extend(path);
-                let args = Cli::try_parse_from(argv).unwrap().args;
-                assert_eq!(args.width, NormalizeWidth::Unlimited);
-                assert_eq!(args.path, path.map(PathBuf::from));
-            }
+            let args = Cli::try_parse_from(["normalize", flag, "unlimited"])
+                .unwrap()
+                .args;
+            assert_eq!(args.width, NormalizeWidth::Unlimited);
         }
     }
 }

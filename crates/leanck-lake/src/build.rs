@@ -374,13 +374,6 @@ error: build failed
     }
 
     #[test]
-    fn outer_warning_severity_wins_over_nested_error_text() {
-        let (errors, warnings) = extract_diagnostics(WRAPPED_WARNING);
-        assert!(errors.is_empty());
-        assert_eq!(warnings, vec![WRAPPED_WARNING.trim_end()]);
-    }
-
-    #[test]
     fn wrapped_warning_only_fails_in_strict_mode() {
         let normal = build_report(
             true,
@@ -393,8 +386,9 @@ error: build failed
             },
         );
         assert!(normal.success);
+        // The outer warning severity wins over the nested error text.
         assert!(normal.errors.is_empty());
-        assert_eq!(normal.warnings.len(), 1);
+        assert_eq!(normal.warnings, vec![WRAPPED_WARNING.trim_end()]);
 
         let failed_lake = build_report(
             false,
@@ -434,13 +428,6 @@ error: build failed
             "strict mode implies warning output"
         );
         assert!(format_human(&strict, true).starts_with("✗ build failed (1 warning)"));
-    }
-
-    #[test]
-    fn locationless_lake_errors_are_not_diagnostics() {
-        let out = "error: no such target\nerror: build failed\n";
-        let (errors, _) = extract_diagnostics(out);
-        assert!(errors.is_empty(), "no located diagnostics");
     }
 
     #[test]
@@ -484,14 +471,6 @@ error: build failed
             extract_locationless_errors(out),
             vec!["error: toolchain not found".to_string()]
         );
-    }
-
-    #[test]
-    fn no_diagnostics_in_clean_output() {
-        let clean = "[1/2] Building A\n[2/2] Building B\ninfo: done\n";
-        let (errors, warnings) = extract_diagnostics(clean);
-        assert!(errors.is_empty());
-        assert!(warnings.is_empty());
     }
 
     #[test]

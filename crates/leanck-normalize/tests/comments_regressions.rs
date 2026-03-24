@@ -308,20 +308,6 @@ fn lone_carriage_returns_settle_in_one_pass() {
 }
 
 #[test]
-fn a_blank_line_before_a_directive_is_kept() {
-    let source = "def a := 1\n\n-- leanck: off\ndef b := 1\n";
-    assert_eq!(
-        run(
-            source,
-            100,
-            without_attributes(),
-            &NormalizeRules::default()
-        ),
-        source
-    );
-}
-
-#[test]
 fn unicode_spaces_are_not_blank_lines() {
     let source = "def a := 1\n\u{a0}\n\n\ndef b := 1\n";
     assert_eq!(default(source, 100), "def a := 1\n\u{a0}\n\ndef b := 1\n");
@@ -368,6 +354,16 @@ fn title_case_leaves_single_letter_variables() {
         run("-- ====\n-- lemmas for x\n-- ====\n", 100, options, &rules),
         "/-! ## Lemmas for x -/\n"
     );
+    // A leading small word is capitalized; later ones stay lowercase.
+    assert_eq!(
+        run(
+            "-- ====\n-- the expectation of the gamma distribution\n-- ====\n",
+            100,
+            options,
+            &rules
+        ),
+        "/-! ## The Expectation of the Gamma Distribution -/\n"
+    );
 }
 
 #[test]
@@ -390,6 +386,16 @@ fn linkify_without_reflow_only_adds_link_syntax() {
             &rules
         ),
         "/--   - See [https://x.test/a_(b)](https://x.test/a_(b))\n    - and *https://y.test* or ![i](https://z.test) -/\n"
+    );
+    // Lines too long for the width are neither wrapped nor joined.
+    assert_eq!(
+        run(
+            "/--\nSee https://example.test\nwithout joining this line. -/\n",
+            10,
+            options,
+            &rules
+        ),
+        "/--\nSee [https://example.test](https://example.test)\nwithout joining this line. -/\n"
     );
 }
 

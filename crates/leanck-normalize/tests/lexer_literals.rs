@@ -66,11 +66,3 @@ fn a_prime_ends_an_identifier_before_a_character_literal() {
         "def f := g x' '\"'\n/-- doc -/\ndef h := \"x\"\n"
     );
 }
-
-#[test]
-fn a_slash_after_a_doc_opener_does_not_close_it() {
-    assert_eq!(
-        normalize("def x := 1\n/--/ doc -/\ndef y := 1\n"),
-        "def x := 1\n/-- / doc -/\ndef y := 1\n"
-    );
-}

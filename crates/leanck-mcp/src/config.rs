@@ -45,23 +45,3 @@ impl Config {
         })
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn workspace_needs_no_registry_configuration() {
-        let workspace = std::env::temp_dir().canonicalize().unwrap();
-        let args = Args {
-            workspace: Some(workspace.clone()),
-        };
-        assert_eq!(
-            Config::from_args(args, leanck_config::ConfigArgs::default())
-                .unwrap()
-                .workspace
-                .as_path(),
-            workspace
-        );
-    }
-}

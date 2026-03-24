@@ -407,20 +407,6 @@ async fn workspace_switch_captures_settings_and_rejects_invalid_configuration_at
     );
 }
 
-#[test]
-fn omitted_and_explicit_false_build_policy_are_distinct() {
-    let omitted: BuildInput = serde_json::from_value(serde_json::json!({})).unwrap();
-    let explicit: BuildInput = serde_json::from_value(
-        serde_json::json!({"strict":false,"warnings":false,"json":false,"targets":[]}),
-    )
-    .unwrap();
-    assert!(omitted.strict.is_none() && omitted.targets.is_none());
-    assert_eq!(explicit.strict, Some(false));
-    assert_eq!(explicit.warnings, Some(false));
-    assert_eq!(explicit.json, Some(false));
-    assert_eq!(explicit.targets, Some(vec![]));
-}
-
 #[tokio::test]
 async fn configuration_includes_nonfatal_warnings_without_starting_a_daemon() {
     let scratch = Scratch::new();

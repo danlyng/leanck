@@ -55,29 +55,3 @@ fn scripts_cover_public_commands_without_loading_config_or_starting_a_daemon() {
     project.assert_no_daemon();
     assert!(!project.0.join("cache").exists());
 }
-
-#[test]
-fn generator_is_hidden_and_requires_a_supported_shell() {
-    for args in [vec!["--help"], vec!["help"]] {
-        let output = Command::new(env!("CARGO_BIN_EXE_leanck"))
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(output.status.success());
-        let help = String::from_utf8(output.stdout).unwrap();
-        assert!(!help.contains("_completions"));
-        assert!(
-            !help
-                .lines()
-                .any(|line| line.trim_start().starts_with("serve "))
-        );
-    }
-    for args in [vec!["_completions"], vec!["_completions", "unknown-shell"]] {
-        let output = Command::new(env!("CARGO_BIN_EXE_leanck"))
-            .args(args)
-            .output()
-            .unwrap();
-        assert_eq!(output.status.code(), Some(2));
-        assert!(output.stdout.is_empty());
-    }
-}

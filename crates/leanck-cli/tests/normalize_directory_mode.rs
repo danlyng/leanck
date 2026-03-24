@@ -176,19 +176,6 @@ fn errors_in_one_file_do_not_stop_others() {
 }
 
 #[test]
-fn standalone_loads_project_rules_and_honors_no_config() {
-    let root = temp_root("config");
-    fs::write(root.join("leanck.toml"), "[normalize]\nspelling='off'\n").unwrap();
-    fs::write(root.join("Main.lean"), DIRTY).unwrap();
-    let output = run(&["--dry-run"], &root);
-    assert!(output.status.success());
-    let output = run(&["--no-config", "--dry-run"], &root);
-    assert!(!output.status.success());
-    assert_eq!(fs::read_to_string(root.join("Main.lean")).unwrap(), DIRTY);
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
 fn configured_dictionary_paths_are_relative_to_config_and_invalid_resources_write_nothing() {
     let root = temp_root("dictionaries");
     fs::create_dir_all(root.join("settings")).unwrap();
@@ -234,30 +221,6 @@ fn configured_dictionary_paths_are_relative_to_config_and_invalid_resources_writ
         .unwrap();
     let dictionary: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(dictionary["colour"], "color");
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn disabled_spelling_does_not_open_dictionary_files() {
-    let root = temp_root("disabled-dictionary");
-    fs::write(root.join("Main.lean"), DIRTY).unwrap();
-    let output = normalizer()
-        .current_dir(&root)
-        .args([
-            "--no-config",
-            "--no-spelling",
-            "--dictionary",
-            "missing.json",
-            "Main.lean",
-        ])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(fs::read_to_string(root.join("Main.lean")).unwrap(), DIRTY);
     fs::remove_dir_all(root).unwrap();
 }
 

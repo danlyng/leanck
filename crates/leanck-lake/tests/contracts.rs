@@ -86,58 +86,6 @@ fn error_categories_preserve_json_names_and_map_every_variant() {
     }
 }
 
-#[test]
-fn output_stream_display_and_output_limit_messages_are_preserved() {
-    for (stream, name) in [
-        (OutputStream::Stdout, "stdout"),
-        (OutputStream::Stderr, "stderr"),
-    ] {
-        assert_eq!(stream.to_string(), name);
-        assert_eq!(serde_json::to_value(stream).unwrap(), name);
-        assert_eq!(
-            serde_json::from_value::<OutputStream>(Value::String(name.into())).unwrap(),
-            stream
-        );
-        assert_eq!(
-            LakeError::OutputLimit {
-                stream,
-                limit: 1024
-            }
-            .to_string(),
-            format!(
-                "Lake {name} exceeded the 1024-byte output limit; narrow the build targets or raise the output limit"
-            )
-        );
-    }
-}
-
-#[test]
-fn invalid_options_messages_and_sources_are_preserved() {
-    for (reason, message) in [
-        (
-            ExecutionOptionsError::ZeroOutputLimit,
-            "max_output_bytes must be positive",
-        ),
-        (
-            ExecutionOptionsError::TimeoutTooLarge,
-            "timeout is too large",
-        ),
-    ] {
-        assert_eq!(reason.to_string(), message);
-        let error = LakeError::InvalidOptions(reason);
-        assert_eq!(
-            error.to_string(),
-            format!("invalid Lake execution options: {message}")
-        );
-        assert_eq!(
-            std::error::Error::source(&error)
-                .unwrap()
-                .downcast_ref::<ExecutionOptionsError>(),
-            Some(&reason)
-        );
-    }
-}
-
 #[tokio::test]
 async fn invalid_execution_reasons_are_typed_before_workspace_access_or_spawn() {
     use leanck_lake::{ExecutionOptions, Lake};

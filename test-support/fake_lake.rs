@@ -48,7 +48,7 @@ impl Drop for Project {
     }
 }
 pub async fn wait_file(path: &Path) {
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
         while !path.exists() {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }

@@ -350,29 +350,6 @@ fn fully_excluded_history_leaves_the_header_absent_with_a_note() {
 }
 
 #[test]
-fn header_mismatch_is_reported_in_dry_run_mode_without_changing_the_file() {
-    let repo = Repo::new();
-    let source = "/- Existing attribution. -/\n\nmodule\n";
-    fs::write(repo.0.join("Basic.lean"), source).unwrap();
-    let output = normalizer()
-        .current_dir(&repo.0)
-        .env("PATH", "/no/git/here")
-        .args(["--no-config", "--dry-run", "Basic.lean"])
-        .output()
-        .unwrap();
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("Basic.lean:1: existing header does not match"),
-        "{stderr}"
-    );
-    assert!(!stderr.contains("Git history"));
-    assert_eq!(
-        fs::read_to_string(repo.0.join("Basic.lean")).unwrap(),
-        source
-    );
-}
-
-#[test]
 fn agent_committers_and_coauthor_trailers_do_not_remove_human_authorship() {
     let repo = Repo::new();
     fs::write(repo.0.join("Basic.lean"), "def x := 1\n").unwrap();
@@ -499,7 +476,10 @@ fn header_policies_with_unavailable_git_warn_ignore_or_retain_as_configured() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         match policy {
             "warn" => {
-                assert!(stderr.contains("existing header does not match"));
+                assert!(
+                    stderr.contains("Basic.lean:1: existing header does not match"),
+                    "{stderr}"
+                );
                 assert!(!stderr.contains("Git history"));
             }
             "ignore" => assert!(stderr.is_empty(), "{stderr}"),

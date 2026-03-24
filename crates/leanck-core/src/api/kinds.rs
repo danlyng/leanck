@@ -94,36 +94,36 @@ impl KindSelector {
             | (Self::Inductive, Lsp(S::Enum))
             | (Self::Axiom | Self::Opaque, Lsp(S::Constant))
             | (Self::Section, Lsp(S::Namespace)) => true,
-            (selector, Lsp(symbol)) => match (selector, symbol) {
+            (selector, Lsp(symbol)) => matches!(
+                (selector, symbol),
                 (Self::File, S::File)
-                | (Self::Module, S::Module)
-                | (Self::Namespace, S::Namespace)
-                | (Self::Package, S::Package)
-                | (Self::Class, S::Class)
-                | (Self::Method, S::Method)
-                | (Self::Property, S::Property)
-                | (Self::Field, S::Field)
-                | (Self::Constructor, S::Constructor)
-                | (Self::Enum, S::Enum)
-                | (Self::Interface, S::Interface)
-                | (Self::Function, S::Function)
-                | (Self::Variable, S::Variable)
-                | (Self::Constant, S::Constant)
-                | (Self::String, S::String)
-                | (Self::Number, S::Number)
-                | (Self::Boolean, S::Boolean)
-                | (Self::Array, S::Array)
-                | (Self::Object, S::Object)
-                | (Self::Key, S::Key)
-                | (Self::Null, S::Null)
-                | (Self::EnumMember, S::EnumMember)
-                | (Self::Struct, S::Struct)
-                | (Self::Event, S::Event)
-                | (Self::Operator, S::Operator)
-                | (Self::TypeParameter, S::TypeParameter)
-                | (Self::Unknown, S::Unknown) => true,
-                _ => false,
-            },
+                    | (Self::Module, S::Module)
+                    | (Self::Namespace, S::Namespace)
+                    | (Self::Package, S::Package)
+                    | (Self::Class, S::Class)
+                    | (Self::Method, S::Method)
+                    | (Self::Property, S::Property)
+                    | (Self::Field, S::Field)
+                    | (Self::Constructor, S::Constructor)
+                    | (Self::Enum, S::Enum)
+                    | (Self::Interface, S::Interface)
+                    | (Self::Function, S::Function)
+                    | (Self::Variable, S::Variable)
+                    | (Self::Constant, S::Constant)
+                    | (Self::String, S::String)
+                    | (Self::Number, S::Number)
+                    | (Self::Boolean, S::Boolean)
+                    | (Self::Array, S::Array)
+                    | (Self::Object, S::Object)
+                    | (Self::Key, S::Key)
+                    | (Self::Null, S::Null)
+                    | (Self::EnumMember, S::EnumMember)
+                    | (Self::Struct, S::Struct)
+                    | (Self::Event, S::Event)
+                    | (Self::Operator, S::Operator)
+                    | (Self::TypeParameter, S::TypeParameter)
+                    | (Self::Unknown, S::Unknown)
+            ),
             _ => false,
         }
     }
@@ -155,23 +155,6 @@ mod tests {
         for typo in ["enumMember", "typeParameter", "THEOREM", "thorem", " def "] {
             assert!(serde_json::from_value::<KindSelector>(serde_json::json!(typo)).is_err());
         }
-    }
-    #[test]
-    fn fallback_does_not_override_lexical_kinds() {
-        use DeclarationKind::{Lean, Lsp};
-        use LeanDeclarationKind as D;
-        use LspSymbolKind as S;
-        assert!(KindSelector::Theorem.matches(Lsp(S::Method)));
-        assert!(!KindSelector::Theorem.matches(Lsp(S::Function)));
-        assert!(!KindSelector::Theorem.matches(Lean(D::Lemma)));
-        assert!(!KindSelector::Method.matches(Lean(D::Theorem)));
-        assert!(KindSelector::Definition.matches(Lean(D::Def)));
-        assert!(KindSelector::Def.matches(Lean(D::Definition)));
-        assert!(KindSelector::Structure.matches(Lsp(S::Class)));
-        assert!(!KindSelector::Structure.matches(Lean(D::Class)));
-        assert!(KindSelector::EnumMember.matches(Lsp(S::EnumMember)));
-        assert!(KindSelector::TypeParameter.matches(Lsp(S::TypeParameter)));
-        assert!(KindSelector::Unknown.matches(Lsp(S::Unknown)));
     }
     #[test]
     fn list_selection_uses_or_and_empty_means_all() {

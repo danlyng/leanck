@@ -123,30 +123,6 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn issue_levels_are_closed_and_preserve_json_and_text() {
-        for (level, name) in [
-            (HealthIssueLevel::Error, "error"),
-            (HealthIssueLevel::Warning, "warning"),
-        ] {
-            assert_eq!(level.to_string(), name);
-            assert_eq!(serde_json::to_value(level).unwrap(), json!(name));
-            let issue: HealthIssue =
-                serde_json::from_value(json!({"level":name,"message":"detail"})).unwrap();
-            assert_eq!(issue.level, level);
-            assert_eq!(
-                serde_json::to_value(issue).unwrap(),
-                json!({"level":name,"message":"detail"})
-            );
-        }
-        for level in [json!("fatal"), json!("Error"), json!(1), json!(null)] {
-            assert!(
-                serde_json::from_value::<HealthIssue>(json!({"level":level,"message":"detail"}))
-                    .is_err()
-            );
-        }
-    }
-
-    #[test]
     fn instances_are_optional_and_omitted_until_attached() {
         let report = HealthReport::from_result(
             Err(crate::ClientError::StartupTimeout),

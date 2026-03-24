@@ -121,30 +121,12 @@ mod tests {
     }
 
     #[test]
-    fn extracts_theorem_and_def() {
-        let decls = extract_decls("theorem foo : True := trivial\ndef bar := 1\n");
-        assert_eq!(
-            decls.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(),
-            vec!["foo", "bar"]
-        );
-        assert_eq!(decls[0].range.start.line, 0);
-        assert_eq!(decls[1].range.start.line, 1);
-    }
-
-    #[test]
     fn every_lexical_keyword_has_a_typed_kind() {
         for kind in LeanDeclarationKind::ALL {
             let declarations = extract_decls(&format!("{} example := 0", kind.as_str()));
             assert_eq!(declarations.len(), 1);
             assert_eq!(declarations[0].kind, *kind);
         }
-    }
-
-    #[test]
-    fn handles_mathlib_lemma() {
-        let decls = extract_decls("lemma my_lemma (n : Nat) : n = n := rfl");
-        assert_eq!(decls.len(), 1);
-        assert_eq!(decls[0].name, "my_lemma");
     }
 
     #[test]

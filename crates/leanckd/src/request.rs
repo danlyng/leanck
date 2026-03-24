@@ -70,16 +70,6 @@ impl RequestContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::sync::Semaphore;
-    #[tokio::test(start_paused = true)]
-    async fn admission_is_inside_the_operation_deadline() {
-        let permits = Semaphore::new(0);
-        let ctx = RequestContext::new(Some(10), CancellationToken::new()).unwrap();
-        let result = ctx
-            .run(async { permits.acquire().await.map_err(|_| Error::Overloaded) })
-            .await;
-        assert!(matches!(result, Err(Error::Timeout)));
-    }
     #[tokio::test(start_paused = true)]
     async fn successive_steps_share_one_budget() {
         let ctx = RequestContext::new(Some(100), CancellationToken::new()).unwrap();

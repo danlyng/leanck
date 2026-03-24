@@ -179,18 +179,6 @@ fn diagnostics_keep_source_excerpts_pagination_and_notes() {
 }
 
 #[test]
-fn fallback_notes_remain_visible_for_empty_reports() {
-    let mut list: ListResult = fixture("list");
-    list.symbols.clear();
-    list.notes = vec!["Lean symbols unavailable; declaration discovery is a text heuristic".into()];
-    assert!(render_list(&list).contains("text heuristic"));
-    let mut directory: SorryResult = fixture("sorry_directory");
-    if let SorryResult::Directory(d) = &mut directory {
-        d.notes = vec!["text-only directory scan".into()];
-    }
-    assert!(render_sorry(&directory).contains("text-only"));
-}
-#[test]
 fn diagnostics_render_the_pinned_source_after_disk_changes() {
     let scratch = crate::tests::Scratch::new();
     let path = scratch.0.join("Basic.lean");

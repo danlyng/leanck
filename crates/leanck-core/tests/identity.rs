@@ -127,6 +127,10 @@ fn file_uris_round_trip_reserved_characters_and_unicode() {
         uri_to_path(&path_to_uri(&missing).unwrap()).unwrap(),
         missing
     );
+    assert_eq!(
+        path_to_uri(Path::new("/a/b.lean")).unwrap(),
+        "file:///a/b.lean"
+    );
     assert!(matches!(
         DocumentPath::from_path(&missing),
         Err(DocumentError::Path { .. })

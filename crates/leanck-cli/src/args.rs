@@ -62,56 +62,16 @@ impl LiveArgs {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::cli::{Cli, Cmd};
     use clap::Parser;
 
     #[test]
-    fn live_commands_share_flags_and_keep_documented_aliases() {
-        for command in ["diagnostics", "d", "goal", "sorry", "list", "restart-file"] {
-            let mut argv = vec!["leanck", command, "Basic.lean"];
-            if command == "goal" {
-                argv.extend(["1", "2"]);
-            }
-            argv.extend(["--workspace", "/some/root", "--timeout", "42", "--json"]);
-            let options = match Cli::try_parse_from(argv).unwrap().command {
-                Cmd::Diagnostics(args) => args.live,
-                Cmd::Goal(args) => args.live,
-                Cmd::Sorry(args) => args.live,
-                Cmd::List(args) => args.live,
-                Cmd::RestartFile(args) => args.live,
-                _ => unreachable!(),
-            };
-            assert_eq!(
-                options.workspace.workspace,
-                Some(PathBuf::from("/some/root"))
-            );
-            assert!(options.output.json);
-            assert_eq!(options.request_options().timeout_ms, Some(42_000));
-        }
-    }
-
-    #[test]
-    fn restart_file_hidden_alias_is_accepted() {
-        let cli = Cli::try_parse_from(["leanck", "restart_file", "Basic.lean"]).unwrap();
-        let Cmd::RestartFile(args) = cli.command else {
-            panic!("expected restart-file command");
-        };
-        assert_eq!(args.file, "Basic.lean");
-
-        for argv in [
-            vec!["leanck", "--help"],
-            vec!["leanck", "restart-file", "--help"],
-        ] {
-            let help = Cli::try_parse_from(argv).unwrap_err();
-            assert_eq!(help.kind(), clap::error::ErrorKind::DisplayHelp);
-            assert!(!help.to_string().contains("restart_file"));
-        }
-    }
-
-    #[test]
     fn request_deadlines_keep_default_and_saturate() {
-        for (timeout, expected) in [(None, None), (Some("18446744073709551615"), Some(u64::MAX))] {
+        for (timeout, expected) in [
+            (None, None),
+            (Some("42"), Some(42_000)),
+            (Some("18446744073709551615"), Some(u64::MAX)),
+        ] {
             let mut argv = vec!["leanck", "list", "Basic.lean"];
             if let Some(timeout) = timeout {
                 argv.extend(["--timeout", timeout]);
@@ -120,22 +80,6 @@ mod tests {
                 unreachable!()
             };
             assert_eq!(args.live.request_options().timeout_ms, expected);
-        }
-    }
-
-    #[test]
-    fn build_and_doctor_share_workspace_and_output_flags() {
-        for command in ["build", "doctor", "health"] {
-            let cli =
-                Cli::try_parse_from(["leanck", command, "--workspace", "/some/root", "--json"])
-                    .unwrap();
-            let (workspace, output) = match cli.command {
-                Cmd::Build(args) => (args.workspace, args.output),
-                Cmd::Doctor(args) => (args.workspace, args.output),
-                _ => unreachable!(),
-            };
-            assert_eq!(workspace.workspace, Some(PathBuf::from("/some/root")));
-            assert!(output.json);
         }
     }
 }

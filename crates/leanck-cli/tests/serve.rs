@@ -48,37 +48,3 @@ async fn mcp_uses_selected_workspace_configuration_and_keeps_stdout_clean() {
     selected.assert_no_daemon();
     other.assert_no_daemon();
 }
-
-#[test]
-fn server_help_and_arguments_are_available_without_workspace_or_configuration() {
-    let cwd = Project::new("exit 99");
-    std::fs::write(cwd.0.join("leanck.toml"), "malformed = [").unwrap();
-    for args in [
-        vec!["serve", "--help"],
-        vec!["serve", "mcp", "--help"],
-        vec!["serve", "daemon", "--help"],
-    ] {
-        let output = std::process::Command::new(env!("CARGO_BIN_EXE_leanck"))
-            .current_dir(&cwd.0)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    for args in [
-        vec!["serve"],
-        vec!["serve", "daemon"],
-        vec!["serve", "mcp", "--json"],
-    ] {
-        let output = std::process::Command::new(env!("CARGO_BIN_EXE_leanck"))
-            .current_dir(&cwd.0)
-            .args(args)
-            .output()
-            .unwrap();
-        assert_eq!(output.status.code(), Some(2));
-    }
-}

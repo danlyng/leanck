@@ -116,24 +116,6 @@ pub struct DocumentSymbol {
 mod tests {
     use super::*;
     #[test]
-    fn document_symbol_kinds_keep_numeric_lean_transport() {
-        for (number, expected) in [
-            (22, lsp_types::SymbolKind::ENUM_MEMBER),
-            (26, lsp_types::SymbolKind::TYPE_PARAMETER),
-        ] {
-            let value = serde_json::json!({"name":"x","kind":number,"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}},"selectionRange":null,"children":null});
-            let symbol: DocumentSymbol = serde_json::from_value(value.clone()).unwrap();
-            assert_eq!(symbol.kind, expected);
-            assert_eq!(serde_json::to_value(symbol).unwrap(), value);
-        }
-        let symbol: DocumentSymbol = serde_json::from_value(serde_json::json!({"name":"future","kind":99,"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}}})).unwrap();
-        assert_eq!(
-            crate::declarations::shared_symbol_kind(symbol.kind),
-            leanck_core::api::LspSymbolKind::Unknown
-        );
-    }
-
-    #[test]
     fn typed_diagnostics_preserve_codes_ranges_nullable_fields_and_extension_data() {
         for code in [
             serde_json::json!({"value":"hasSorry"}),

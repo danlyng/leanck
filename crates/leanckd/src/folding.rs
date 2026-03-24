@@ -79,7 +79,9 @@ mod tests {
 
     #[test]
     fn prefers_exact_start_line() {
-        let folds = vec![fold(0, 30), fold(5, 12)];
+        // The enclosing folds starting at lines 4 and 3 are smaller, so this
+        // fails if size alone decides; check both orders around the exact fold.
+        let folds = vec![fold(0, 30), fold(4, 6), fold(5, 12), fold(3, 7)];
         assert_eq!(find_body_end(&folds, 5), Some(12));
     }
 

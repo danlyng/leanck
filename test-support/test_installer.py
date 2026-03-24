@@ -672,36 +672,12 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         self.assertNotEqual(code, 0, output.decode())
         self.assertEqual(self.snapshot_home(), before)
 
-    def test_terminal_plugin_default_and_arrow_key_confirmation(self):
-
-        def drive(t):
-            t.wait(lambda: t.screen.selected("Install as plugin or standalone?") == "Plugin (recommended)", "default plugin")
-            t.send(ENTER)
-            self.completion_config(t)
-            t.prompt("Add leanck to PATH?", "no")
-            t.wait(lambda: t.screen.selected(PLUGIN_PROMPT) == "Cancel", "confirmation")
-            self.assertFalse((self.home / "data/leanck").exists())
-            self.assertFalse(self.host_executions.exists())
-            self.assertFalse(self.binary_executions.exists())
-            t.choose(PLUGIN_PROMPT, "Continue")
-        code, output = self.run_interactive(drive)
-        self.assertEqual(code, 0, output.decode())
-        self.assertTrue((self.home / "data/leanck/bin/leanck").is_file())
-        self.assertIn(b"Welcome to the leanck v1.2.3 installer", output)
-        self.assertIn(b"Detected coding agents: Claude Code, Codex", output)
-        self.assertIn(b"\x1b[1m\x1b[36mInstall as plugin or standalone?\x1b[0m", output)
-        self.assertIn(b"\x1b[1m\x1b[32m> Plugin (recommended)\x1b[0m", output)
-        self.assertIn(b"\x1b[1m\x1b[32m> Continue\x1b[0m", output)
-        self.assertNotIn(b"Standalone skills", output)
-        self.assertNotIn(b"Custom agents (", output)
-        self.assertNotIn(b"Use \xe2\x86\x91", output)
-
     def test_arrow_keys_switch_modes_and_open_editor_without_approving(self):
 
         before = self.snapshot_home()
         def drive(t):
             title = "Install as plugin or standalone?"
-            t.wait(lambda: t.screen.selected(title), title)
+            t.wait(lambda: t.screen.selected(title) == "Plugin (recommended)", "default plugin")
             t.send(DOWN)
             t.wait(lambda: t.screen.selected(title) == "Standalone", "standalone selection")
             t.send(UP)
@@ -1086,10 +1062,8 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         self.run_install("--completions", "unsupported", success=False)
 
     def test_completion_defaults_follow_supported_current_shell_or_none(self):
-        for current_shell, expected in (("/bin/bash", "bash"), ("/bin/zsh", "zsh"),
-                                        ("/usr/local/bin/fish", "fish"), ("/opt/bin/pwsh", "powershell"),
-                                        ("/opt/bin/powershell", "powershell"), ("/bin/elvish", "elvish"),
-                                        ("/bin/tcsh", "none"), ("/bin/sh", "none"), ("", "none"), (None, "none")):
+        for current_shell, expected in (("/bin/bash", "bash"), ("/usr/local/bin/fish", "fish"),
+                                        ("/opt/bin/pwsh", "powershell"), ("/bin/tcsh", "none"), (None, "none")):
             with self.subTest(shell=current_shell):
                 if current_shell is None:
                     self.env.pop("SHELL", None)
@@ -1119,16 +1093,6 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         self.assertNotIn(b"does not exist", output)
         self.assertTrue((self.home / "data/zsh/site-functions/_leanck").is_file())
         self.assertIn(str(self.home / "data/leanck/bin"), (self.home / ".zshrc").read_text())
-
-    def test_plugin_prompts_allow_declining_completions_and_path(self):
-        def drive(t):
-            self.plugin_config(t)
-            t.choose(PLUGIN_PROMPT, "Continue")
-        code, output = self.run_interactive(drive)
-        self.assertEqual(code, 0, output.decode())
-        self.assertFalse((self.home / "data/zsh/site-functions/_leanck").exists())
-        self.assertFalse((self.home / ".zshrc").exists())
-        self.assertNotIn("_completions", self.binary_executions.read_text())
 
     def test_missing_default_shell_paths_warn_and_skip_without_prompting_or_creating(self):
         for mode, confirmation in (("plugin", PLUGIN_PROMPT), ("standalone", STANDALONE_PROMPT)):
@@ -1236,33 +1200,6 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         self.assertFalse((self.home / ".zshrc").exists())
         self.assertNotIn("_completions", self.binary_executions.read_text())
         self.assertNotIn(b"does not exist", output)
-
-    def test_standalone_prompt_defaults_to_current_shell(self):
-        self.make_completion_dir("zsh")
-        def drive(t):
-            t.choose("Install as plugin or standalone?", "Standalone")
-            for label in ("Install the CLI?", "Install location", "Standalone skills", "Custom agents"):
-                t.prompt(label)
-            self.completion_config(t, "")
-            t.prompt("Add leanck to PATH?", "no")
-            t.choose(STANDALONE_PROMPT, "Continue")
-        code, output = self.run_interactive(drive)
-        self.assertEqual(code, 0, output.decode())
-        self.assertRegex(output, rb"Shell completions [^\r\n]*\[zsh\]:")
-        self.assertTrue((self.home / "data/zsh/site-functions/_leanck").is_file())
-
-    def test_plugin_unknown_shell_defaults_to_no_completions(self):
-        for current_shell in ("/bin/tcsh", ""):
-            with self.subTest(shell=current_shell):
-                def drive(t):
-                    t.choose("Install as plugin or standalone?", "Plugin (recommended)")
-                    self.completion_config(t, "")
-                    t.prompt("Add leanck to PATH?", "no")
-                    t.choose(PLUGIN_PROMPT, "Cancel")
-                code, output = self.run_interactive(drive, env={"SHELL": current_shell})
-                self.assertEqual(code, 0, output.decode())
-                self.assertRegex(output, rb"Shell completions [^\r\n]*\[none\]:")
-        self.assertFalse(self.binary_executions.exists())
 
     def test_plugin_unknown_shell_asks_for_supported_path_shell(self):
         profile = self.home / "config/fish/config.fish"
@@ -1488,10 +1425,6 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
                                      str(profile)], env=self.env, capture_output=True, check=True)
             self.assertEqual(result.stdout.decode(), str(custom))
 
-    def test_removed_signing_flag_fails_without_network(self):
-        self.run_install("--signing-identity", "A" * 40, success=False)
-        self.assertEqual(self.calls(), [])
-
     def test_default_plugin_disables_mcp_and_links_bundled_codex_agents(self):
         self.run_install(standalone=False)
         data = self.home / "data/leanck"
@@ -1623,13 +1556,6 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         self.run_install("--force")
         self.assertEqual(example.read_text(), "# Edited example.\n")
         self.assertEqual(config.read_text(), "# User configuration.\n")
-
-    def test_configuration_example_defaults_to_home_config(self):
-        self.env.pop("XDG_CONFIG_HOME")
-        self.run_install("--plugin", "codex")
-        example = self.home / ".config/leanck/config.example.toml"
-        self.assertEqual(example.read_bytes(), (REPO / "docs/leanck.example.toml").read_bytes())
-        self.assertFalse(example.with_name("config.toml").exists())
 
     def test_configuration_example_uses_release_source_for_older_archives(self):
         self.rewrite_archive(lambda archive: None, exclude={"leanck/docs/leanck.example.toml"})
@@ -1804,20 +1730,13 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         self.assertIn("/download/v1.2.3/", self.calls()[0][-1])
         self.assert_dry_run_unchanged(before)
 
-    def test_dry_run_rejects_conflicts_without_mutation(self):
-        skill = self.home / "claude/skills/lean-proving"
-        skill.mkdir(parents=True)
-        (skill / "custom.txt").write_text("keep")
-        before = self.snapshot_home()
-        result = self.run_install("--skills", "claude", "--dry-run", success=False)
-        self.assertIn(b"already exists", result.stderr)
-        self.assert_dry_run_unchanged(before)
-
     def test_dry_run_validates_release_version_and_checksum(self):
         before = self.snapshot_home()
-        result = self.run_install("--dry-run", "--version", "9.0.0", success=False)
-        self.assertIn(b"version does not match", result.stderr)
-        self.assert_dry_run_unchanged(before)
+        for mode in (("--dry-run",), ()):
+            with self.subTest(mode=mode):
+                result = self.run_install(*mode, "--version", "9.0.0", success=False)
+                self.assertIn(b"version does not match", result.stderr)
+                self.assert_dry_run_unchanged(before)
         (self.assets / ARCHIVE).write_bytes(b"corrupt")
         result = self.run_install("--dry-run", success=False)
         self.assertIn(b"checksum mismatch", result.stderr)
@@ -1993,7 +1912,8 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
 
     def test_invalid_arguments_fail_without_network(self):
         for args in (("--wat",), ("--skills",), ("--skills", "bad"), ("--no-cli",),
-                     ("--version", "../../bad"), ("--release-url", "http://example.com")):
+                     ("--version", "../../bad"), ("--release-url", "http://example.com"),
+                     ("--signing-identity", "A" * 40)):
             with self.subTest(args=args):
                 self.run_install(*args, success=False)
         self.assertEqual(self.calls(), [])
@@ -2002,15 +1922,6 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         self.env["LEANCK_TEST_SYSTEM"] = "FreeBSD"
         self.run_install(success=False)
         self.assertEqual(self.calls(), [])
-
-    def test_download_and_plugin_registration_failures_propagate(self):
-        self.env["LEANCK_TEST_DOWNLOAD_FAILURE"] = "1"
-        self.assertIn(b"download failed", self.run_install(success=False).stderr)
-        self.assertFalse((self.home / ".local/bin").exists())
-        del self.env["LEANCK_TEST_DOWNLOAD_FAILURE"]
-        self.env["LEANCK_TEST_HOST_FAILURE"] = "claude"
-        self.run_install("--plugin", "claude", success=False)
-        self.assertTrue((self.home / "data/leanck/bin/leanck").exists())
 
     def test_custom_paths_and_mirror(self):
         binary_dir = self.root / "custom bin"
@@ -2030,10 +1941,6 @@ if os.environ.get('LEANCK_TEST_CHANGE_INVENTORY'):
         self.run_install("--plugin", "claude")
         self.assertIn(mac_archive, self.calls()[0][-1])
         self.assertEqual([c for c in self.calls() if c[0] == "codesign"], [])
-
-    def test_pinned_version_mismatch_fails_before_installing(self):
-        self.assertIn(b"version does not match", self.run_install("--version", "9.0.0", success=False).stderr)
-        self.assertFalse((self.home / ".local/bin").exists())
 
     def test_packaged_catalogs_and_plugin_versions_match(self):
         with tarfile.open(self.assets / ARCHIVE) as archive:

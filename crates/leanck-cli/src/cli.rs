@@ -100,75 +100,7 @@ mod tests {
     use clap::CommandFactory;
 
     #[test]
-    fn standalone_command_surface() {
-        for removed in [
-            "search",
-            "premise_search",
-            "premise-search",
-            "registry",
-            "agent",
-        ] {
-            assert!(Cli::try_parse_from(["leanck", removed]).is_err());
-        }
-        assert!(matches!(
-            Cli::try_parse_from(["leanck", "normalize"])
-                .unwrap()
-                .command,
-            Cmd::Normalize(_)
-        ));
-        assert!(matches!(
-            Cli::try_parse_from(["leanck", "health"]).unwrap().command,
-            Cmd::Doctor(_)
-        ));
-    }
-
-    #[test]
-    fn daemons_lists_by_default_and_stop_needs_exactly_one_target() {
-        use crate::commands::daemons::Action;
-        let Cmd::Daemons(args) = Cli::try_parse_from(["leanck", "daemons"]).unwrap().command else {
-            unreachable!()
-        };
-        assert!(args.action.is_none() && !args.json && !args.verbose);
-        for argv in [
-            vec!["leanck", "daemons", "list", "--verbose", "--json"],
-            vec!["leanck", "daemons", "-v"],
-        ] {
-            let Cmd::Daemons(args) = Cli::try_parse_from(argv).unwrap().command else {
-                unreachable!()
-            };
-            assert!(args.verbose);
-        }
-        let Cmd::Daemons(args) = Cli::try_parse_from(["leanck", "daemons", "list", "--json"])
-            .unwrap()
-            .command
-        else {
-            unreachable!()
-        };
-        assert!(matches!(args.action, Some(Action::List)) && args.json);
-        let Cmd::Daemons(args) =
-            Cli::try_parse_from(["leanck", "daemons", "stop", "--idle", "--json"])
-                .unwrap()
-                .command
-        else {
-            unreachable!()
-        };
-        let Some(Action::Stop(stop)) = args.action else {
-            unreachable!()
-        };
-        assert!(args.json && stop.idle && !stop.all && stop.worktree.is_none());
-        assert_eq!(stop.wait, 15);
-        let Cmd::Daemons(args) =
-            Cli::try_parse_from(["leanck", "daemons", "stop", "/wt", "--wait", "3"])
-                .unwrap()
-                .command
-        else {
-            unreachable!()
-        };
-        let Some(Action::Stop(stop)) = args.action else {
-            unreachable!()
-        };
-        assert_eq!(stop.worktree.as_deref(), Some(std::path::Path::new("/wt")));
-        assert_eq!(stop.wait, 3);
+    fn daemons_stop_needs_exactly_one_target() {
         for argv in [
             vec!["leanck", "daemons", "stop"],
             vec!["leanck", "daemons", "stop", "--idle", "--all"],
