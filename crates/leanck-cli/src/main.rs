@@ -46,6 +46,14 @@ where
 }
 
 fn main() {
+    // The installer owns its argument errors, exit codes, and JSON outcome.
+    let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if argv.get(1).is_some_and(|arg| arg == "_install") {
+        std::process::exit(leanck_update::installer::main(
+            argv[2..].to_vec(),
+            env!("CARGO_PKG_VERSION"),
+        ));
+    }
     let mut json = std::env::args_os().any(|arg| arg == "--json");
     if let Err(error) = run(&mut json) {
         let instance_limit = matches!(
@@ -135,7 +143,11 @@ fn run(json: &mut bool) -> anyhow::Result<()> {
             commands::build::run(args)
         }),
         Cmd::Normalize(args) => commands::normalize::run(args, &loaded.settings.normalize),
-        Cmd::Config(_) | Cmd::Serve(_) | Cmd::Completions(_) | Cmd::UpdateInternal(_) => {
+        Cmd::Config(_)
+        | Cmd::Serve(_)
+        | Cmd::Completions(_)
+        | Cmd::UpdateInternal(_)
+        | Cmd::Install(_) => {
             unreachable!()
         }
 

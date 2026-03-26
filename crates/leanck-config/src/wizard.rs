@@ -1,7 +1,10 @@
 //! Terminal setup for common settings. Drafts are written only after review.
 use crate::{ConfigArgs, NormalizeWidth, Settings, load_files, user_config_path};
 use anyhow::{Context, Result, ensure};
+#[cfg(test)]
+mod screens;
 mod ui;
+use ratatui::backend::Backend;
 use std::{
     collections::BTreeMap,
     io::{IsTerminal, Write},
@@ -11,11 +14,18 @@ use toml_edit::{DocumentMut, Item, Table, TableLike, Value};
 use ui::{Navigation, Ui, examples};
 
 pub fn interactive(json: bool, disabled: bool) -> bool {
-    !json
-        && !disabled
-        && std::io::stdin().is_terminal()
-        && std::io::stderr().is_terminal()
-        && std::env::var("TERM").as_deref() != Ok("dumb")
+    prompts_allowed(
+        json,
+        disabled,
+        std::io::stdin().is_terminal() && std::io::stderr().is_terminal(),
+        std::env::var("TERM").ok().as_deref(),
+    )
+}
+
+/// Guided setup needs a terminal and is skipped by `--json`,
+/// `--no-interactive`, and `TERM=dumb`.
+fn prompts_allowed(json: bool, disabled: bool, terminal: bool, term: Option<&str>) -> bool {
+    !json && !disabled && terminal && term != Some("dumb")
 }
 
 pub fn run(
@@ -24,22 +34,45 @@ pub fn run(
     workspace: Option<&Path>,
     args: &ConfigArgs,
 ) -> Result<()> {
-    match setup(path, user, workspace, args) {
+    let user_path = user_config_path();
+    let result = Ui::new().and_then(|mut ui| {
+        let result = setup(&mut ui, path, user, workspace, user_path.as_deref(), args);
+        // Restore the terminal before reporting.
+        drop(ui);
+        result
+    });
+    match result {
+        Ok(Some(report)) => {
+            println!("{report}");
+            Ok(())
+        }
+        Ok(None) => {
+            eprintln!("Setup canceled; no configuration was written.");
+            Ok(())
+        }
         Err(error) if error.is::<ui::Canceled>() => {
             eprintln!("Setup canceled; no configuration was written.");
             Ok(())
         }
-        result => result,
+        Err(error) => Err(error),
     }
 }
 
-fn setup(
+/// Run the prompts on `ui` and save the reviewed draft. Returns the line to
+/// print on stdout, or `None` when setup was cancelled at review; Ctrl-C
+/// and a confirmed Escape return a [`ui::Canceled`] error. `user_path` is
+/// the user configuration file.
+fn setup<B: Backend>(
+    ui: &mut Ui<B>,
     path: Option<&Path>,
     mut user: bool,
     workspace: Option<&Path>,
+    user_path: Option<&Path>,
     args: &ConfigArgs,
-) -> Result<()> {
-    let mut ui = Ui::new()?;
+) -> Result<Option<String>>
+where
+    B::Error: Send + Sync + 'static,
+{
     let choose_scope = path.is_none() && !user;
     let mut drafts = BTreeMap::<PathBuf, (Draft, Vec<usize>)>::new();
     loop {
@@ -54,12 +87,21 @@ fn setup(
                 None,
             )? == 1;
         }
-        let path = crate::loader::init_path(path, user, workspace)?;
+        let path = if user {
+            user_path
+                .context("cannot locate user configuration; set HOME or XDG_CONFIG_HOME")?
+                .to_owned()
+        } else {
+            crate::loader::init_path(path, false, workspace)?
+        };
         // An explicit path to the user file has the same scope as --user.
-        user |= user_config_path().is_some_and(|p| same_path(&p, &path));
+        user |= user_path.is_some_and(|p| same_path(p, &path));
         let (mut draft, mut selected_topics) = match drafts.remove(&path) {
             Some(draft) => draft,
-            None => (Draft::load(path.clone(), user, args)?, vec![0, 1]),
+            None => (
+                Draft::load(path.clone(), user, user_path, args)?,
+                vec![0, 1],
+            ),
         };
         ui.context = format!(
             "{} {}\nEnter keeps the current value. Only changed settings are saved.",
@@ -109,7 +151,7 @@ fn setup(
                 }
                 Screen::Setting(index) => {
                     ui.navigation = Navigation::Setting;
-                    match steps[index](&mut draft, &mut ui) {
+                    match steps[index](&mut draft, &mut *ui) {
                         Ok(()) => {
                             screen = if index + 1 == steps.len() {
                                 Screen::Review
@@ -163,29 +205,25 @@ fn setup(
                     };
                     match action {
                         0 => {
-                            drop(ui);
                             if draft.original.is_some() && draft.edits.is_empty() {
-                                println!("configuration unchanged ({})", draft.path.display());
-                            } else {
-                                draft.save()?;
-                                println!(
-                                    "{} {}",
-                                    if draft.original.is_some() {
-                                        "updated"
-                                    } else {
-                                        "created"
-                                    },
+                                return Ok(Some(format!(
+                                    "configuration unchanged ({})",
                                     draft.path.display()
-                                );
+                                )));
                             }
-                            return Ok(());
+                            draft.save()?;
+                            return Ok(Some(format!(
+                                "{} {}",
+                                if draft.original.is_some() {
+                                    "updated"
+                                } else {
+                                    "created"
+                                },
+                                draft.path.display()
+                            )));
                         }
                         1 => screen = Screen::Topics,
-                        _ => {
-                            drop(ui);
-                            eprintln!("Setup canceled; no configuration was written.");
-                            return Ok(());
-                        }
+                        _ => return Ok(None),
                     }
                 }
             }
@@ -199,7 +237,73 @@ enum Screen {
     Review,
 }
 
-type Step = fn(&mut Draft, &mut Ui) -> Result<()>;
+type Step = fn(&mut Draft, &mut dyn Prompts) -> Result<()>;
+
+/// The prompts setting steps use; [`Ui`] implements them for any backend.
+trait Prompts {
+    fn select(
+        &mut self,
+        label: &str,
+        options: &[&str],
+        default: usize,
+        help: &str,
+        example: Option<&str>,
+    ) -> Result<usize>;
+    fn multi(
+        &mut self,
+        label: &str,
+        options: &[&str],
+        defaults: &[usize],
+        help: &str,
+        example: Option<&str>,
+    ) -> Result<Vec<usize>>;
+    fn text(
+        &mut self,
+        label: &str,
+        initial: &str,
+        default: Option<&str>,
+        help: &str,
+        example: Option<&str>,
+        validate: &dyn Fn(&str) -> Result<()>,
+    ) -> Result<String>;
+}
+
+impl<B: Backend> Prompts for Ui<B>
+where
+    B::Error: Send + Sync + 'static,
+{
+    fn select(
+        &mut self,
+        label: &str,
+        options: &[&str],
+        default: usize,
+        help: &str,
+        example: Option<&str>,
+    ) -> Result<usize> {
+        Ui::select(self, label, options, default, help, example)
+    }
+    fn multi(
+        &mut self,
+        label: &str,
+        options: &[&str],
+        defaults: &[usize],
+        help: &str,
+        example: Option<&str>,
+    ) -> Result<Vec<usize>> {
+        Ui::multi(self, label, options, defaults, help, example)
+    }
+    fn text(
+        &mut self,
+        label: &str,
+        initial: &str,
+        default: Option<&str>,
+        help: &str,
+        example: Option<&str>,
+        validate: &dyn Fn(&str) -> Result<()>,
+    ) -> Result<String> {
+        Ui::text(self, label, initial, default, help, example, validate)
+    }
+}
 
 fn same_path(a: &Path, b: &Path) -> bool {
     match (a.canonicalize(), b.canonicalize()) {
@@ -219,7 +323,13 @@ struct Draft {
 }
 
 impl Draft {
-    fn load(path: PathBuf, user: bool, args: &ConfigArgs) -> Result<Self> {
+    /// Load the draft for `path`; project drafts inherit `user_path`.
+    fn load(
+        path: PathBuf,
+        user: bool,
+        user_path: Option<&Path>,
+        args: &ConfigArgs,
+    ) -> Result<Self> {
         let original = match std::fs::read_to_string(&path) {
             Ok(text) => {
                 ensure!(
@@ -237,9 +347,9 @@ impl Draft {
         let mut layers = Vec::new();
         if !user
             && !args.no_config
-            && let Some(user) = user_config_path()
+            && let Some(user) = user_path
         {
-            layers.push((user, false));
+            layers.push((user.to_owned(), false));
         }
         // Read only the destination and its inherited user defaults. A project must
         // never seed user defaults, and an unrelated nearby project is not the target.
@@ -377,7 +487,13 @@ fn assign(table: &mut dyn TableLike, parts: &[&str], mut value: Value) -> Result
     Ok(())
 }
 
-fn boolean(draft: &mut Draft, ui: &mut Ui, key: &str, label: &str, help: &str) -> Result<()> {
+fn boolean(
+    draft: &mut Draft,
+    ui: &mut dyn Prompts,
+    key: &str,
+    label: &str,
+    help: &str,
+) -> Result<()> {
     let default = if draft.get(key).as_bool().unwrap() {
         0
     } else {
@@ -389,7 +505,7 @@ fn boolean(draft: &mut Draft, ui: &mut Ui, key: &str, label: &str, help: &str) -
 
 fn number(
     draft: &mut Draft,
-    ui: &mut Ui,
+    ui: &mut dyn Prompts,
     key: &str,
     label: &str,
     help: &str,
@@ -397,7 +513,7 @@ fn number(
     max: u64,
 ) -> Result<()> {
     let default = draft.get(key).as_integer().unwrap().to_string();
-    let answer = ui.text(label, "", Some(&default), help, examples(key), |text| {
+    let answer = ui.text(label, "", Some(&default), help, examples(key), &|text| {
         let value = text.parse::<u64>().context("Enter a whole number.")?;
         ensure!(
             (min..=max).contains(&value),
@@ -408,7 +524,7 @@ fn number(
     draft.set(key, toml::Value::Integer(answer.parse::<i64>()?))
 }
 
-fn normalization_width(draft: &mut Draft, ui: &mut Ui) -> Result<()> {
+fn normalization_width(draft: &mut Draft, ui: &mut dyn Prompts) -> Result<()> {
     let key = "normalize.width";
     let width: NormalizeWidth = draft.get(key).try_into()?;
     let answer = ui.text(
@@ -417,7 +533,7 @@ fn normalization_width(draft: &mut Draft, ui: &mut Ui) -> Result<()> {
         Some(&width.to_string()),
         "Enter a positive column count or unlimited to join prose without wrapping.",
         examples(key),
-        |text| {
+        &|text| {
             let width = text.parse::<NormalizeWidth>().map_err(anyhow::Error::msg)?;
             toml::Value::try_from(width)?;
             Ok(())
@@ -431,14 +547,14 @@ fn normalization_width(draft: &mut Draft, ui: &mut Ui) -> Result<()> {
 
 fn duration(
     draft: &mut Draft,
-    ui: &mut Ui,
+    ui: &mut dyn Prompts,
     key: &str,
     label: &str,
     help: &str,
     allow_zero: bool,
 ) -> Result<()> {
     let default = (draft.get(key).as_integer().unwrap() as f64 / 60_000.0).to_string();
-    let answer = ui.text(label, "", Some(&default), help, examples(key), |text| {
+    let answer = ui.text(label, "", Some(&default), help, examples(key), &|text| {
         let value = text
             .parse::<f64>()
             .context("Enter a number of minutes (fractions are allowed).")?;
@@ -466,7 +582,7 @@ fn duration(
 
 fn choice(
     draft: &mut Draft,
-    ui: &mut Ui,
+    ui: &mut dyn Prompts,
     key: &str,
     label: &str,
     options: &[(&str, &str)],
@@ -486,10 +602,16 @@ fn choice(
     draft.set(key, options[selected].1.into())
 }
 
-fn escaped_text(draft: &mut Draft, ui: &mut Ui, key: &str, label: &str, help: &str) -> Result<()> {
+fn escaped_text(
+    draft: &mut Draft,
+    ui: &mut dyn Prompts,
+    key: &str,
+    label: &str,
+    help: &str,
+) -> Result<()> {
     let current = draft.get(key);
     let initial = escape_lines(current.as_str().unwrap());
-    let value = ui.text(label, &initial, None, help, examples(key), |text| {
+    let value = ui.text(label, &initial, None, help, examples(key), &|text| {
         let mut candidate = draft.clone();
         candidate.set(key, unescape_lines(text)?.into())?;
         candidate.validate()
@@ -732,7 +854,7 @@ fn topic_steps(topic: usize) -> Vec<Step> {
     }
 }
 
-fn diagnostic_severities(draft: &mut Draft, ui: &mut Ui) -> Result<()> {
+fn diagnostic_severities(draft: &mut Draft, ui: &mut dyn Prompts) -> Result<()> {
     let current = draft.get("diagnostics.severity");
     let options = ["error", "warning", "information", "hint"];
     let defaults: Vec<usize> = options
@@ -761,7 +883,7 @@ fn diagnostic_severities(draft: &mut Draft, ui: &mut Ui) -> Result<()> {
     Ok(())
 }
 
-fn search_endpoints(draft: &mut Draft, ui: &mut Ui) -> Result<()> {
+fn search_endpoints(draft: &mut Draft, ui: &mut dyn Prompts) -> Result<()> {
     let current = draft.get("loogle.endpoints");
     let initial = current
         .as_array()
@@ -776,7 +898,7 @@ fn search_endpoints(draft: &mut Draft, ui: &mut Ui) -> Result<()> {
         None,
         "Tried in order. Use local-only URLs to keep queries local; clear to disable search.",
         examples("loogle.endpoints"),
-        |text| {
+        &|text| {
             let mut settings = Settings::default();
             settings.loogle.endpoints = endpoints(text);
             settings.validate()
@@ -802,6 +924,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn automation_flags_and_dumb_term_skip_the_wizard() {
+        assert!(prompts_allowed(false, false, true, Some("xterm-256color")));
+        assert!(prompts_allowed(false, false, true, None));
+        for (json, disabled, terminal, term) in [
+            (true, false, true, Some("xterm-256color")),
+            (false, true, true, Some("xterm-256color")),
+            (false, false, true, Some("dumb")),
+            (false, false, false, Some("xterm-256color")),
+        ] {
+            assert!(
+                !prompts_allowed(json, disabled, terminal, term),
+                "{json} {disabled} {terminal} {term:?}"
+            );
+        }
+    }
+
+    #[test]
     fn multiline_fields_preserve_line_breaks_and_literal_backslashes() {
         for text in [
             "",
@@ -819,6 +958,7 @@ mod tests {
         Draft::load(
             path.to_owned(),
             false,
+            None,
             &ConfigArgs {
                 no_config: true,
                 ..Default::default()
@@ -918,6 +1058,7 @@ mod tests {
         let reopened = Draft::load(
             path,
             false,
+            None,
             &ConfigArgs {
                 no_config: true,
                 ..Default::default()

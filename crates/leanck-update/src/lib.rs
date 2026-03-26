@@ -2,6 +2,8 @@
 mod check;
 pub mod gate;
 pub mod install;
+pub mod installer;
+pub mod paths;
 pub mod receipt;
 #[cfg(test)]
 mod test_support;
@@ -16,13 +18,44 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// `$XDG_STATE_HOME/leanck`, defaulting to `~/.local/state/leanck`.
+///
+/// A relative `XDG_STATE_HOME` resolves against the working directory, as the
+/// installer resolves it, so both agree on the installer state directory.
 pub fn state_directory() -> Result<PathBuf> {
-    let base = std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".local/state")))
-        .context("set HOME or an absolute XDG_STATE_HOME for update state")?;
+    let home = std::env::var("HOME")
+        .ok()
+        .filter(|home| !home.is_empty())
+        .map(PathBuf::from);
+    let base = match std::env::var("XDG_STATE_HOME")
+        .ok()
+        .filter(|value| !value.is_empty())
+    {
+        Some(value) => paths::absolute(
+            &value,
+            home.as_deref().unwrap_or(Path::new("/")),
+            &std::env::current_dir()?,
+        )?,
+        None => home
+            .context("set HOME or XDG_STATE_HOME for update state")?
+            .join(".local/state"),
+    };
     Ok(base.join("leanck"))
+}
+
+/// Parse the first token of a `.sha256` sidecar as a SHA-256 digest, in any case.
+pub fn parse_sha256(sidecar: &str) -> Result<String> {
+    let digest = sidecar.split_whitespace().next().unwrap_or_default();
+    ensure!(
+        digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit()),
+        "invalid SHA-256 checksum"
+    );
+    Ok(digest.to_ascii_lowercase())
+}
+
+/// Hex digests compare case-insensitively: sidecars may use upper case.
+pub fn checksum_matches(expected: &str, actual: &str) -> bool {
+    expected.len() == actual.len() && expected.eq_ignore_ascii_case(actual)
 }
 
 pub(crate) fn safe_path(path: &Path) -> Result<()> {

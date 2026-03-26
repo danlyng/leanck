@@ -87,6 +87,12 @@ pub(crate) enum Cmd {
 
     #[command(name = "_update", hide = true)]
     UpdateInternal(crate::commands::update::InternalArgs),
+    /// Install leanck from an unpacked release; install.sh runs this.
+    ///
+    /// `main` dispatches `_install` before this parser runs, so installer
+    /// errors keep their own messages and JSON output.
+    #[command(name = "_install", hide = true)]
+    Install(leanck_update::installer::InstallArgs),
     #[command(name = "_completions", hide = true)]
     Completions(crate::commands::completions::Args),
     /// Run the MCP server or a workspace daemon.
@@ -109,6 +115,18 @@ mod tests {
         ] {
             assert!(Cli::try_parse_from(argv).is_err());
         }
+    }
+
+    #[test]
+    fn installer_subcommand_is_hidden_and_keeps_its_version_flag() {
+        let command = Cli::command();
+        let install = command.find_subcommand("_install").unwrap();
+        assert!(install.is_hide_set());
+        assert!(
+            install
+                .get_arguments()
+                .any(|arg| arg.get_long() == Some("version") && arg.get_value_names().is_some())
+        );
     }
 
     #[test]

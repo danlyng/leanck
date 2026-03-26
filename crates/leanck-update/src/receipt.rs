@@ -382,14 +382,20 @@ impl Receipt {
                 marker.state_dir == self.state_dir,
                 "installation marker points at different state"
             );
-            return Ok(()); // Preserve installer fingerprints, including JSON whitespace.
+            // Preserve recorded fingerprints, including older pretty markers.
+            return Ok(());
         }
-        atomic_json(
-            path,
-            &Marker {
-                state_dir: self.state_dir.clone(),
-            },
-        )
+        crate::atomic_bytes(path, &Self::marker_bytes(&self.state_dir)?)
+    }
+
+    /// The one discovery-marker format: compact `{"state_dir":"…"}` and a newline.
+    /// The uninstall inventory records the digest of exactly these bytes.
+    pub fn marker_bytes(state: &Path) -> Result<Vec<u8>> {
+        let mut bytes = serde_json::to_vec(&Marker {
+            state_dir: state.to_owned(),
+        })?;
+        bytes.push(b'\n');
+        Ok(bytes)
     }
 }
 
@@ -407,29 +413,47 @@ pub fn digest_file(path: &Path) -> Result<String> {
     Ok(hex::encode(hash.finalize()))
 }
 
+/// Regular files under `root`, in C byte order of their full relative paths.
+///
+/// This is `LC_ALL=C sort` order, which the shell uninstaller also uses. It
+/// differs from component-wise `PathBuf` order when a sibling name extends
+/// another with a byte below `/`, such as `leanck-x` next to `leanck/`.
+/// Links and special files are errors: managed trees contain neither.
 pub(crate) fn files(root: &Path) -> Result<Vec<PathBuf>> {
-    let mut paths = vec![];
-    for entry in fs::read_dir(root)? {
-        let entry = entry?;
-        let ty = entry.file_type()?;
-        ensure!(
-            !ty.is_symlink(),
-            "unexpected link in managed tree: {}",
-            entry.path().display()
-        );
-        if ty.is_dir() {
-            paths.extend(files(&entry.path())?);
-        } else {
-            ensure!(ty.is_file(), "special file in managed tree");
-            paths.push(entry.path());
+    fn walk(dir: &Path, paths: &mut Vec<PathBuf>) -> Result<()> {
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let ty = entry.file_type()?;
+            ensure!(
+                !ty.is_symlink(),
+                "unexpected link in managed tree: {}",
+                entry.path().display()
+            );
+            if ty.is_dir() {
+                walk(&entry.path(), paths)?;
+            } else {
+                ensure!(
+                    ty.is_file(),
+                    "special file in managed tree: {}",
+                    entry.path().display()
+                );
+                paths.push(entry.path());
+            }
         }
+        Ok(())
     }
-    paths.sort();
+    use std::os::unix::ffi::OsStrExt;
+    let mut paths = vec![];
+    walk(root, &mut paths)?;
+    paths.sort_by(|a, b| a.as_os_str().as_bytes().cmp(b.as_os_str().as_bytes()));
     Ok(paths)
 }
 
+/// SHA-256 over `<sha256> ./relative/path` lines for every regular file,
+/// excluding the stored digest itself and discovery markers at any depth.
 pub fn tree_digest(path: &Path) -> Result<String> {
-    let mut records = String::new();
+    use std::os::unix::ffi::OsStrExt;
+    let mut records = Vec::new();
     for file in files(path)? {
         let relative = file.strip_prefix(path)?;
         if relative == Path::new(".leanck-content-sha256")
@@ -439,11 +463,10 @@ pub fn tree_digest(path: &Path) -> Result<String> {
         {
             continue;
         }
-        records.push_str(&format!(
-            "{} ./{}\n",
-            digest_file(&file)?,
-            relative.to_string_lossy()
-        ));
+        records.extend_from_slice(digest_file(&file)?.as_bytes());
+        records.extend_from_slice(b" ./");
+        records.extend_from_slice(relative.as_os_str().as_bytes());
+        records.push(b'\n');
     }
     Ok(hex::encode(Sha256::digest(records)))
 }
@@ -455,5 +478,98 @@ pub(crate) fn fingerprint(component: &Component) -> Result<String> {
             .to_string_lossy()
             .into_owned()),
         _ => digest_file(&component.destination),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::scratch;
+
+    #[test]
+    fn tree_digest_uses_c_byte_order_of_full_relative_paths() {
+        let (_dir, root) = scratch();
+        for (path, content) in [
+            ("leanck/SKILL.md", "a"),
+            ("leanck-x/SKILL.md", "b"),
+            ("leanck.md", "c"),
+            (".leanck-content-sha256", "ignored"),
+            ("bin/.leanck-installation.json", "ignored"),
+        ] {
+            let path = root.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, content).unwrap();
+        }
+        // `LC_ALL=C sort` puts `-` and `.` (below `/`) before the directory's files.
+        let digest = |s: &str| hex::encode(Sha256::digest(s));
+        let records = format!(
+            "{} ./leanck-x/SKILL.md\n{} ./leanck.md\n{} ./leanck/SKILL.md\n",
+            digest("b"),
+            digest("c"),
+            digest("a")
+        );
+        assert_eq!(tree_digest(&root).unwrap(), digest(&records));
+    }
+
+    #[test]
+    fn trees_with_links_or_special_files_have_no_digest() {
+        let (_dir, root) = scratch();
+        fs::write(root.join("file"), "x").unwrap();
+        std::os::unix::fs::symlink("file", root.join("link")).unwrap();
+        assert!(tree_digest(&root).is_err());
+        fs::remove_file(root.join("link")).unwrap();
+        let fifo = std::ffi::CString::new(root.join("fifo").to_str().unwrap()).unwrap();
+        // SAFETY: mkfifo reads a valid NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        assert!(tree_digest(&root).is_err());
+    }
+
+    #[test]
+    fn discovery_markers_are_compact_with_a_trailing_newline() {
+        assert_eq!(
+            Receipt::marker_bytes(Path::new("/home/u/state \"q\"")).unwrap(),
+            b"{\"state_dir\":\"/home/u/state \\\"q\\\"\"}\n"
+        );
+    }
+
+    #[test]
+    fn written_markers_are_compact_and_existing_ones_are_preserved() {
+        let (_dir, root) = scratch();
+        let state = root.join("state");
+        let binary = root.join("bin/leanck");
+        fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        fs::write(&binary, "binary").unwrap();
+        let receipt = Receipt {
+            schema: 1,
+            generation: 1,
+            version: "1.0.0".into(),
+            provenance: "release".into(),
+            target: "x86_64-unknown-linux-musl".into(),
+            mode: "standalone".into(),
+            binary: binary.clone(),
+            state_dir: state.clone(),
+            bundle: None,
+            source: ReleaseSource::default(),
+            pin: None,
+            hosts: vec![],
+            components: vec![Component {
+                kind: "file".into(),
+                destination: binary.clone(),
+                source: "plugin/bin/leanck".into(),
+                fingerprint: digest_file(&binary).unwrap(),
+            }],
+            selected_skills: None,
+            registration_pending: false,
+        };
+        receipt.write().unwrap();
+        let marker = Receipt::marker(&binary);
+        assert_eq!(
+            fs::read(&marker).unwrap(),
+            Receipt::marker_bytes(&state).unwrap()
+        );
+        let pretty = serde_json::to_vec_pretty(&serde_json::json!({"state_dir": state})).unwrap();
+        fs::write(&marker, &pretty).unwrap();
+        receipt.write().unwrap();
+        assert_eq!(fs::read(&marker).unwrap(), pretty);
     }
 }

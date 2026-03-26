@@ -11,7 +11,7 @@ use crossterm::{
 };
 use ratatui::{
     Frame, Terminal,
-    backend::CrosstermBackend,
+    backend::{Backend, CrosstermBackend},
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span, Text},
@@ -194,9 +194,13 @@ impl Drop for Restore {
     }
 }
 
-pub(super) struct Ui {
-    terminal: Terminal<CrosstermBackend<Stderr>>,
-    _restore: Restore,
+/// Supplies terminal events; tests script them and inspect the backend.
+pub(super) type Events<B> = Box<dyn FnMut(&mut B) -> Result<Event>>;
+
+pub(super) struct Ui<B: Backend = CrosstermBackend<Stderr>> {
+    terminal: Terminal<B>,
+    events: Events<B>,
+    _restore: Option<Restore>,
     pub context: String,
     color: bool,
     confirming_cancel: bool,
@@ -210,11 +214,28 @@ impl Ui {
         let restore = Restore;
         terminal::enable_raw_mode()?;
         execute!(stderr(), EnterAlternateScreen, EnableBracketedPaste)?;
+        let mut ui = Self::with_backend(
+            CrosstermBackend::new(stderr()),
+            Box::new(|_| Ok(event::read()?)),
+            std::env::var_os("NO_COLOR").is_none_or(|s| s.is_empty()),
+        )?;
+        ui._restore = Some(restore);
+        Ok(ui)
+    }
+}
+
+impl<B: Backend> Ui<B>
+where
+    B::Error: Send + Sync + 'static,
+{
+    /// A UI drawing to `backend` and reading from `events`.
+    pub fn with_backend(backend: B, events: Events<B>, color: bool) -> Result<Self> {
         Ok(Self {
-            terminal: Terminal::new(CrosstermBackend::new(stderr()))?,
-            _restore: restore,
+            terminal: Terminal::new(backend)?,
+            events,
+            _restore: None,
             context: "Choose project settings or user defaults for all projects.".into(),
-            color: std::env::var_os("NO_COLOR").is_none_or(|s| s.is_empty()),
+            color,
             confirming_cancel: false,
             navigation: Navigation::Forward,
             menus: BTreeMap::new(),
@@ -387,8 +408,24 @@ impl Ui {
         answer
     }
 
+    /// The next event, without key releases; Ctrl-C cancels setup.
+    fn next_event(&mut self) -> Result<Event> {
+        loop {
+            let event = (self.events)(self.terminal.backend_mut())?;
+            if let Event::Key(key) = &event {
+                if key.kind == KeyEventKind::Release {
+                    continue;
+                }
+                if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    return Err(Canceled.into());
+                }
+            }
+            return Ok(event);
+        }
+    }
+
     fn read_event(&mut self) -> Result<Event> {
-        let event = next_event()?;
+        let event = self.next_event()?;
         if matches!(&event, Event::Key(key) if key.code == KeyCode::Esc) && !self.confirming_cancel
         {
             self.confirming_cancel = true;
@@ -507,21 +544,6 @@ impl Ui {
                 field.handle(&event);
             }
         }
-    }
-}
-
-fn next_event() -> Result<Event> {
-    loop {
-        let event = event::read()?;
-        if let Event::Key(key) = &event {
-            if key.kind == KeyEventKind::Release {
-                continue;
-            }
-            if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-                return Err(Canceled.into());
-            }
-        }
-        return Ok(event);
     }
 }
 

@@ -73,7 +73,11 @@ pub(crate) fn apply(command: &mut Cmd, s: &Settings, matches: &ArgMatches) {
                 a.width = s.normalize.width;
             }
         }
-        Cmd::Config(_) | Cmd::Serve(_) | Cmd::Completions(_) | Cmd::UpdateInternal(_) => {}
+        Cmd::Config(_)
+        | Cmd::Serve(_)
+        | Cmd::Completions(_)
+        | Cmd::UpdateInternal(_)
+        | Cmd::Install(_) => {}
     }
 }
 

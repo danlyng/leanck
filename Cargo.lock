@@ -1506,11 +1506,14 @@ name = "leanck-update"
 version = "0.39.0"
 dependencies = [
  "anyhow",
+ "clap",
+ "crossterm",
  "flate2",
  "hex",
  "leanck-config",
  "leanck-core",
  "libc",
+ "ratatui",
  "reqwest",
  "self_update",
  "semver",
@@ -1520,6 +1523,7 @@ dependencies = [
  "tar",
  "tempfile",
  "tokio",
+ "tui-input",
 ]
 
 [[package]]

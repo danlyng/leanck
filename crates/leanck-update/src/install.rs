@@ -272,7 +272,7 @@ pub async fn prepare(receipt: Receipt, requested: Option<&str>) -> Result<Prepar
     };
     download(&url, &archive, MAX_ARCHIVE).await?;
     ensure!(
-        digest_file(&archive)?.eq_ignore_ascii_case(&expected),
+        crate::checksum_matches(&expected, &digest_file(&archive)?),
         "SHA-256 checksum mismatch; nothing installed"
     );
     let root = download_dir.path().join("extracted");
@@ -1012,12 +1012,27 @@ mod tests {
         let inventory = fs::read_to_string(updated.state_dir.join("uninstall.tsv")).unwrap();
         assert!(inventory.contains("profile\t-\t"));
         assert!(!inventory.contains("completion\t"));
-        assert!(fs::read_dir(&updated.state_dir).unwrap().any(|e| {
-            e.unwrap()
-                .file_name()
-                .to_string_lossy()
-                .starts_with("update-backups-")
-        }));
+        // Backups live under the state directory with a manifest, never in
+        // host directories, where hosts would load them as skills or agents.
+        let backups: Vec<_> = fs::read_dir(updated.state_dir.join("backups"))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        assert_eq!(backups.len(), 1);
+        let manifest = fs::read_to_string(backups[0].join("manifest.tsv")).unwrap();
+        for c in &updated.components {
+            assert!(manifest.contains(&format!("{}\t", c.destination.display())));
+            let siblings: Vec<_> = fs::read_dir(c.destination.parent().unwrap())
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            assert!(
+                siblings
+                    .iter()
+                    .all(|n| !n.starts_with(".leanck-backup") && !n.starts_with(".leanck-update")),
+                "{siblings:?}"
+            );
+        }
     }
 
     #[test]

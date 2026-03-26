@@ -6,11 +6,14 @@ version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+clap.workspace = true
+crossterm = "0.29.0"
 flate2 = "1.1.10"
 hex.workspace = true
 leanck-config = { version = "0.1.0", path = "../leanck-config" }
 leanck-core = { version = "0.10.0", path = "../leanck-core" }
 libc.workspace = true
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
 reqwest.workspace = true
 self_update = { version = "1.3.1", default-features = false, features = ["reqwest", "rustls", "github", "async", "checksums"] }
 semver = "1.0.28"
@@ -20,6 +23,7 @@ sha2 = "0.11.1"
 tar = "0.4.46"
 tempfile = "3.27.0"
 tokio.workspace = true
+tui-input = { version = "0.15.5", default-features = false, features = ["crossterm"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
