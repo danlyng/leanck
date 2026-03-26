@@ -1,0 +1,4 @@
+description = "Lightweight Lean style reviewer and fixer for one assigned file. Use in parallel style passes; it preserves semantics, avoids verification during concurrent edits, and reports possible declaration renames without applying them."
+model = "gpt-6-luna"
+model_reasoning_effort = "medium"
+sandbox_mode = "workspace-write"

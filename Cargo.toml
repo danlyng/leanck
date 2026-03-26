@@ -11,6 +11,7 @@ members = [
     "crates/leanck-normalize",
     "crates/leanckd",
     "crates/leanck-update",
+    "xtask",
 ]
 
 [workspace.package]

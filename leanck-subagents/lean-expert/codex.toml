@@ -1,0 +1,3 @@
+description = "Lean 4 and Mathlib formalization specialist for hard proofs requiring mathematical judgment, library fluency, or intricate elaboration work. Edits proofs in place and verifies them with the leanck CLI."
+model = "gpt-6-astra"
+model_reasoning_effort = "high"

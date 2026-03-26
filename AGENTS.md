@@ -8,6 +8,7 @@ leanck provides standalone Lean 4 tooling through a CLI and an MCP server. Read 
 
 - `just build` stages the unified `leanck` executable into `plugin/bin/` and installs it on PATH.
 - `just package-plugin` builds locked release binaries and assembles the Claude Code and Codex plugin into the ignored, generated `leanck-plugin/`; `just validate-plugin` runs `claude plugin validate --strict` on it. `just install-cli` installs `leanck`, which the Codex plugin launches from PATH with `serve mcp`.
+- `cargo xtask package-plugin`, `package-release`, and `package-local` run the Rust packager in `xtask/` (aliased in `.cargo/config.toml`). `just package-plugin`, the release workflow, and `install.sh --from-repo` call it; `cargo test -p xtask --locked` covers source validation and archive layout.
 - `cargo build --release --workspace --locked` builds every binary.
 - `cargo test --workspace --locked` runs the Rust suite.
 - `just build-plugin-bin` stages the unified binary. On macOS, copies must be re-signed ad hoc; the recipes already do this.
@@ -26,9 +27,10 @@ leanck provides standalone Lean 4 tooling through a CLI and an MCP server. Read 
 - `leanck-loogle`: shared structured search client with a reusable HTTP pool, endpoint fallback, limits, empty-query/multiple-term policy, and endpoint provenance. `loogle.endpoints` configures the local/main fallback list. Coverage is not inferred from URLs.
 - `leanck-normalize`: pure `normalize` API with options, output, statistics, and explicit copyright year. The crate has no binary or Clap interface; the CLI owns traversal and output. Its optional `history` feature enables bounded Git attribution discovery.
 - `markdown-reflow`: Git dependency from `https://github.com/danlyng/markdown-reflow`, pinned by revision in `leanck-normalize/Cargo.toml`. Update it with `cargo add -p leanck-normalize markdown-reflow --git https://github.com/danlyng/markdown-reflow.git --rev <COMMIT>` and rerun the normalizer tests.
-- `packaging/plugin/`: plugin manifests, Claude/Codex MCP configs, and the plugin README, copied verbatim into the package. `packaging/package_plugin.py` adds `leanck-skills/`, `leanck-subagents/` (`*.md` for Claude Code, `*.codex.toml` for Codex under `codex/agents/`), `leanck-hooks/`, and staged binaries, validating frontmatter, TOML, and JSON first. `plugin/` is a legacy copy kept for reference; do not edit it.
+- `packaging/plugin/`: plugin manifests, Claude/Codex MCP configs, and the plugin README, copied verbatim into the package. `plugin/` is a legacy copy kept for reference; do not edit it.
+- `xtask/`: the packager. Its library assembles the plugin from `packaging/plugin/`, `leanck-skills/`, `leanck-subagents/`, `leanck-hooks/`, and staged binaries, validating frontmatter, TOML, and JSON first; wraps it in the release/local distribution (manifest versions, marketplace catalogs, `.leanck-update-protocol`, install scripts); and writes release archives with a single `leanck/` root and a `.sha256` sidecar. Tests can call it in-process to build fixture packages.
 - `leanck-hooks/`: plugin hooks shared by Claude Code and Codex.
-- `leanck-skills/`, `leanck-subagents/`: CLI-oriented workflow definitions.
+- `leanck-skills/`, `leanck-subagents/`: CLI-oriented workflow definitions. Each agent is a directory: `instructions.md` holds the body shared by both hosts, and `claude.yaml` (Claude Code frontmatter) and `codex.toml` (Codex keys) select the hosts it targets. The packager injects `name` from the directory and Codex's `developer_instructions` from the body, so neither header may set them; outputs are `agents/<name>.md` and `codex/agents/<name>.toml`.
 - `test-support/contracts/v4.json`: authoritative version 4 contract fixtures, consumed directly rather than patching version 1 fixtures.
 
 ## Runtime

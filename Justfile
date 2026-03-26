@@ -13,10 +13,6 @@ build: build-plugin-bin install-cli
 test:
     cargo test --workspace --locked
 
-# Verify release packaging and curl-style installs without network or user config changes (Python 3.11+).
-test-installer python="python3":
-    {{python}} -m unittest discover -s test-support -p test_installer.py -v
-
 # Compile and stage the CLI, MCP server, and daemon as one executable.
 build-plugin-bin:
     cargo build --release -p leanck-cli --locked
@@ -55,7 +51,7 @@ package-plugin destination=plugin_package:
     staging_dir=$(mktemp -d "${TMPDIR:-/tmp}/leanck-plugin-bin.XXXXXX")
     trap 'rm -rf "$staging_dir"' EXIT
     just stage "$staging_dir"
-    python3 packaging/package_plugin.py --bin-dir "$staging_dir" --output "{{destination}}"
+    cargo xtask package-plugin --bin-dir "$staging_dir" --output "{{destination}}"
 
 # Validate a packaged plugin with the Claude Code validator.
 validate-plugin destination=plugin_package:

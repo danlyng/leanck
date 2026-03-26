@@ -1,0 +1,8 @@
+description: Lightweight style reviewer and fixer. Use when running a style pass over many documents.
+model: sonnet
+effort: medium
+background: true
+tools: Read, Edit, Write, Grep, Glob
+disallowedTools: "Bash(git*)"
+color: "green"
+permissionMode: acceptEdits

@@ -134,6 +134,7 @@ See [`packaging/plugin/README.md`](packaging/plugin/README.md) for manual plugin
 | `crates/leanck-update/` | Release checks and self-updater (`leanck update`). |
 | `crates/leanck-config/` | TOML configuration loader and validator. |
 | `packaging/plugin/` | Plugin manifests and MCP configs for Claude Code and Codex. |
+| `xtask/` | Plugin and release packaging (`cargo xtask`). |
 | `leanck-skills/`, `leanck-subagents/`, `leanck-hooks/` | Skills, subagents, and hooks bundled into the plugin. |
 
 [^0]: Relax, we use `XDG_CONFIG_HOME` if it's set.

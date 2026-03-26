@@ -10,7 +10,7 @@ out/
 *.tsbuildinfo
 *.vsix
 
-# Python packaging/test scripts
+# Python test scripts and hooks
 __pycache__/
 
 # Generated release archives

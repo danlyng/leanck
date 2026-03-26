@@ -412,7 +412,7 @@ commit() {
 # Format only human-readable command output; captured stdout stays untouched.
 command_output() {
     case "$1" in
-        python3|leanck) source_label='' ;;
+        leanck) source_label='' ;;
         *) source_label=" ($1)" ;;
     esac
     LC_ALL=C awk -v source="$source_label" -v default_level="${2:-INFO}" -v quiet="$quiet" \
@@ -651,16 +651,13 @@ prepare_repo_source() {
         valid_text "${skill##*/}"
         mkdir "$plugin/skills/${skill##*/}"
     done
-    for agent in "$from_repo"/leanck-subagents/*.md; do
-        [ -f "$agent" ] || continue
-        valid_text "${agent##*/}"
-        : > "$plugin/agents/${agent##*/}"
-    done
-    for agent in "$from_repo"/leanck-subagents/*.codex.toml; do
-        [ -f "$agent" ] || continue
-        name=${agent##*/}; name=${name%.codex.toml}
+    # Each agent directory targets Claude Code with claude.yaml and Codex with codex.toml.
+    for agent in "$from_repo"/leanck-subagents/*; do
+        [ -d "$agent" ] || continue
+        name=${agent##*/}
         valid_text "$name"
-        : > "$plugin/codex/agents/$name.toml"
+        [ ! -f "$agent/claude.yaml" ] || : > "$plugin/agents/$name.md"
+        [ ! -f "$agent/codex.toml" ] || : > "$plugin/codex/agents/$name.toml"
     done
     source_version=$(awk -F '"' '/^version = "/ {print $2; exit}' "$from_repo/crates/leanck-cli/Cargo.toml")
     case "$source_version" in ''|*[!0-9A-Za-z.+-]*) die 'cannot read the local CLI version from Cargo.toml' ;; esac
@@ -681,12 +678,11 @@ repo_command() {
     exec "$@"
 }
 build_repo_source() {
-    run_logged "$timeout" python3 python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' ||
-        die 'local source installation requires Python 3.11 or newer on PATH'
+    # Packaging runs the repository's xtask, so even --no-cli needs Cargo.
+    for command in cargo rustc; do
+        command -v "$command" >/dev/null 2>&1 || die "local builds require $command on PATH"
+    done
     if [ "$cli" = 1 ]; then
-        for command in cargo rustc; do
-            command -v "$command" >/dev/null 2>&1 || die "local builds require $command on PATH"
-        done
         run_bounded "$timeout" rustc repo_command rustc -vV > "$work/rustc-version" || die 'could not determine the native Rust target'
         native_target=$(awk '/^host: / {print $2; exit}' "$work/rustc-version")
         case "$native_target" in ''|*[!0-9A-Za-z_-]*) die 'could not determine the native Rust target' ;; esac
@@ -698,11 +694,13 @@ build_repo_source() {
     fi
     say 'Packaging local skills, agents, and plugin configuration'
     if [ "$cli" = 1 ]; then
-        run_logged "$timeout" python3 python3 "$from_repo/packaging/package_local.py" \
+        run_logged "$timeout" cargo repo_command cargo run --release --locked \
+            --manifest-path "$from_repo/Cargo.toml" --target-dir "$from_repo/target" --package xtask -- package-local \
             --bin-dir "$local_bin_dir" --output "$work/local-install" --version "$source_version" --inventory "$release" >&2 ||
             die 'could not package local source; no installation files were changed'
     else
-        run_logged "$timeout" python3 python3 "$from_repo/packaging/package_local.py" \
+        run_logged "$timeout" cargo repo_command cargo run --release --locked \
+            --manifest-path "$from_repo/Cargo.toml" --target-dir "$from_repo/target" --package xtask -- package-local \
             --output "$work/local-install" --version "$source_version" --inventory "$release" >&2 ||
             die 'could not package local source; no installation files were changed'
     fi
@@ -1762,9 +1760,6 @@ prepare_plan() {
         if [ "$plugin_codex" = 1 ]; then
             command -v codex >/dev/null 2>&1 || die '--plugin codex requires Codex on PATH'
         fi
-        if [ -n "$from_repo" ]; then
-            command -v python3 >/dev/null 2>&1 || die 'local packaging requires python3'
-        fi
     fi
     plugin_release=$release
     if [ "$mode" = plugin ]; then
@@ -1985,7 +1980,7 @@ main() {
             [ -d "$from_repo/leanck-skills" ] && [ -d "$from_repo/leanck-subagents" ] ||
             die "not a leanck source checkout: $from_repo; pass --from-repo /path/to/leanck"
         if [ "$dry_run" = 0 ]; then
-            for source_file in Cargo.toml Cargo.lock packaging/package_local.py packaging/package_release.py packaging/package_plugin.py; do
+            for source_file in Cargo.toml Cargo.lock .cargo/config.toml xtask/Cargo.toml xtask/src/main.rs xtask/src/lib.rs; do
                 [ -f "$from_repo/$source_file" ] || die "local installation needs $from_repo/$source_file; use a complete, current source checkout"
             done
         fi
