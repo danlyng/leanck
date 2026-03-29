@@ -77,7 +77,8 @@ pub(crate) fn apply(command: &mut Cmd, s: &Settings, matches: &ArgMatches) {
         | Cmd::Serve(_)
         | Cmd::Completions(_)
         | Cmd::UpdateInternal(_)
-        | Cmd::Install(_) => {}
+        | Cmd::Install(_)
+        | Cmd::Uninstall(_) => {}
     }
 }
 

@@ -93,6 +93,11 @@ pub(crate) enum Cmd {
     /// errors keep their own messages and JSON output.
     #[command(name = "_install", hide = true)]
     Install(leanck_update::installer::InstallArgs),
+    /// Remove what the installer recorded; uninstall.sh runs this.
+    ///
+    /// `main` dispatches `_uninstall` before this parser runs.
+    #[command(name = "_uninstall", hide = true)]
+    Uninstall(leanck_update::installer::UninstallArgs),
     #[command(name = "_completions", hide = true)]
     Completions(crate::commands::completions::Args),
     /// Run the MCP server or a workspace daemon.

@@ -245,16 +245,28 @@ pub fn plan_observed(
     inventory: &ReleaseInventory,
     answers: &Answers,
 ) -> Result<Plan, PlanFailure> {
-    for _ in 0..16 {
+    // An unobserved marker reads as a conflict, which stops planning at that
+    // path, so a reinstall needs about one round per managed destination.
+    // Every round observes new paths, so this terminates.
+    loop {
         match plan_settings(settings, env, saved, inventory, answers) {
             Err(PlanFailure {
                 error: PlanError::Unobserved(probes),
                 ..
-            }) => env.files.observe(&probes)?,
+            }) => {
+                let known = |probe: &Probe| match probe {
+                    Probe::Node(path) => env.files.node(path).is_some(),
+                    Probe::Tree(path) => env.files.tree(path).is_some(),
+                    Probe::Profile(path) => env.files.profile(path).is_some(),
+                };
+                if probes.iter().all(known) {
+                    return Err(anyhow::anyhow!("planning did not converge").into());
+                }
+                env.files.observe(&probes)?
+            }
             result => return result,
         }
     }
-    Err(anyhow::anyhow!("planning did not converge").into())
 }
 
 type Checked = Result<(), PlanError>;

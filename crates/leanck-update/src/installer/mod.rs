@@ -6,11 +6,17 @@
 //!    an [`Environment`] snapshot, [`SavedState`], and a [`ReleaseInventory`]
 //!    produce a [`Plan`]: the exact preview lines, warnings, and the
 //!    structured [`Step`]s and [`Registration`]s that apply performs.
-//! 2. **Apply**: commits a plan through the installation journal (not yet implemented).
+//! 2. **Apply** ([`apply`]): commits a plan through the installation journal,
+//!    with host CLIs behind [`HostCli`] and daemon maintenance behind [`Daemons`].
+//!    [`uninstall`] removes what the inventory records.
 //! 3. **UI** ([`ui`]): interactive configuration, conflict prompts, the
 //!    confirmation menu, and the advanced-config editor.
+mod apply;
+#[cfg(test)]
+mod apply_tests;
 mod console;
 mod environment;
+mod hosts;
 mod options;
 mod plan;
 mod release;
@@ -21,11 +27,16 @@ mod state;
 #[cfg(test)]
 mod tests;
 pub mod ui;
+pub mod uninstall;
 
+pub use apply::{Applied, Runtime, apply, recover_interrupted};
 pub use console::{Console, Style};
 pub use environment::{
     Environment, FileSnapshot, Node, PATH_BLOCK_END, PATH_BLOCK_START, Probe, balanced_markers,
     observe_node,
+};
+pub use hosts::{
+    Captured, DaemonCheck, Daemons, Failure, HostCall, HostCli, Ran, SystemDaemons, SystemHosts,
 };
 pub use options::{InstallArgs, Mode, parse_error_message};
 pub use plan::{
@@ -40,3 +51,4 @@ pub use settings::{
     ensure_path_shell, valid_skill_name,
 };
 pub use state::{InventoryRecord, Recorded, SELECTION_KEYS, SavedState, UninstallInventory};
+pub use uninstall::{Approval, UninstallArgs, UninstallOptions, Uninstalled, uninstall};

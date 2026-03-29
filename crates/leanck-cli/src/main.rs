@@ -54,6 +54,12 @@ fn main() {
             env!("CARGO_PKG_VERSION"),
         ));
     }
+    // Uninstalling takes the maintenance lock itself, never a usage lease.
+    if argv.get(1).is_some_and(|arg| arg == "_uninstall") {
+        std::process::exit(leanck_update::installer::uninstall::main(
+            argv[2..].to_vec(),
+        ));
+    }
     let mut json = std::env::args_os().any(|arg| arg == "--json");
     if let Err(error) = run(&mut json) {
         let instance_limit = matches!(
@@ -147,7 +153,8 @@ fn run(json: &mut bool) -> anyhow::Result<()> {
         | Cmd::Serve(_)
         | Cmd::Completions(_)
         | Cmd::UpdateInternal(_)
-        | Cmd::Install(_) => {
+        | Cmd::Install(_)
+        | Cmd::Uninstall(_) => {
             unreachable!()
         }
 

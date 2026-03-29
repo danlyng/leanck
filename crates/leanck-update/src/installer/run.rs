@@ -1,7 +1,8 @@
 //! The `leanck _install` driver: parse, resolve, plan, and report.
 use super::{
-    Answers, Console, Environment, InstallArgs, Plan, ReleaseInventory, SavedState, Settings,
-    Status, Style, config_summary, parse_error_message, plan_observed, render::Outcome, ui,
+    Answers, Console, Environment, InstallArgs, Plan, ReleaseInventory, Runtime, SavedState,
+    Settings, Status, Style, SystemDaemons, SystemHosts, apply, config_summary,
+    parse_error_message, plan_observed, recover_interrupted, render::Outcome, ui,
 };
 use crate::paths::absolute;
 use anyhow::{Context, Result, bail};
@@ -9,9 +10,6 @@ use std::{
     ffi::OsString,
     io::{IsTerminal, Write},
 };
-
-/// Applying a plan arrives with the apply layer.
-const APPLY_PENDING: &str = "installing with leanck _install is not yet implemented; rerun with --dry-run to preview, or use the install.sh attached to this release";
 
 struct Run {
     console: Console<std::io::Stderr>,
@@ -51,7 +49,10 @@ pub fn main(argv: Vec<OsString>, version: &str) -> i32 {
         Err(error) => {
             let message = format!("{error:#}");
             run.console.error(&message);
-            run.status = Status::Failed;
+            // A partial registration keeps its own status.
+            if run.status != Status::Partial {
+                run.status = Status::Failed;
+            }
             (1, message)
         }
     };
@@ -78,7 +79,7 @@ fn drive(argv: &[OsString], installer: &str, run: &mut Run) -> Result<i32> {
     }
     let mut env = Environment::capture()?;
     let state_dir = Settings::state_dir(&args, &env)?;
-    let saved = SavedState::load(&state_dir)?;
+    let mut saved = SavedState::load(&state_dir)?;
     let mut settings = Settings::resolve(&args, &env, &saved)?;
     run.version = settings.version.clone();
 
@@ -92,6 +93,11 @@ fn drive(argv: &[OsString], installer: &str, run: &mut Run) -> Result<i32> {
                 .is_ok(),
     );
     args.require_approval(interactive)?;
+    // Plan against restored files, never against an interrupted update.
+    if !args.dry_run && recover_interrupted(&state_dir)? {
+        saved = SavedState::load(&state_dir)?;
+        settings = Settings::resolve(&args, &env, &saved)?;
+    }
     if !interactive {
         settings.validate_noninteractive()?;
     }
@@ -171,8 +177,30 @@ fn drive(argv: &[OsString], installer: &str, run: &mut Run) -> Result<i32> {
         );
         return Ok(0);
     }
-    // The apply layer installs the confirmed plan.
-    bail!(APPLY_PENDING)
+    let timeout = std::time::Duration::from_secs(plan.settings.timeout);
+    let hosts = SystemHosts::new(timeout);
+    let daemons = SystemDaemons { timeout };
+    let style = run.style;
+    // Non-interactive installs require --yes, which approves stopping
+    // daemons; a terminal asks, and a closed terminal declines.
+    let mut confirm = |_| {
+        !interactive
+            || matches!(
+                ui::line::terminal_yes_no(style, "Stop incompatible leanck daemons now?", true),
+                Ok(Some(true))
+            )
+    };
+    let runtime = Runtime {
+        hosts: &hosts,
+        daemons: &daemons,
+        confirm_daemon_stop: &mut confirm,
+    };
+    let applied = apply(&plan, &inventory, &env, runtime, &mut run.console)?;
+    run.status = applied.status;
+    if applied.status == Status::Partial {
+        bail!(applied.message());
+    }
+    Ok(0)
 }
 
 fn show(run: &mut Run, plan: &Plan, quiet: bool) {
