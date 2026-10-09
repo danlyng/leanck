@@ -413,7 +413,7 @@ fn release_archive_has_a_single_root_and_keeps_modes() {
         assert_eq!(entry(name).2 & 0o777, 0o755, "{name}");
     }
     assert_eq!(entry("leanck/plugin/README.md").2 & 0o777, 0o644);
-    assert_eq!(entry("leanck/.leanck-update-protocol").3, b"2\n");
+    assert_eq!(entry("leanck/.leanck-update-protocol").3, b"3\n");
     assert_eq!(entry("leanck/.leanck-release").3, b"v1.2.3\n");
     assert_eq!(entry("leanck/docs/leanck.example.toml").3, b"# example\n");
     assert_eq!(
@@ -493,8 +493,14 @@ fn local_packages_must_match_the_approved_inventory() {
     put(&inventory.join("plugin/agents/both.md"), "");
     put(&inventory.join("plugin/agents/claude-only.md"), "");
     put(&inventory.join("plugin/codex/agents/both.toml"), "");
-    let packaged =
-        package_local(&repo, None, &temp.path().join("local"), "1.0.0", &inventory).unwrap();
+    let packaged = package_local(
+        &repo,
+        None,
+        &temp.path().join("local"),
+        "1.0.0",
+        Some(&inventory),
+    )
+    .unwrap();
     assert!(!temp.path().join("local/plugin/bin").exists());
     assert_eq!(packaged.codex_agents, ["both"]);
     fs::remove_file(inventory.join("plugin/agents/claude-only.md")).unwrap();
@@ -504,9 +510,16 @@ fn local_packages_must_match_the_approved_inventory() {
             None,
             &temp.path().join("local2"),
             "1.0.0",
-            &inventory
+            Some(&inventory)
         )),
         "local component names changed after configuration; rerun the installer"
+    );
+    // Without an inventory, as install.sh --from-repo packages, nothing is compared.
+    let packaged = package_local(&repo, None, &temp.path().join("local3"), "1.0.0", None).unwrap();
+    assert_eq!(packaged.claude_agents, ["both", "claude-only"]);
+    assert_eq!(
+        fs::read_to_string(temp.path().join("local3/.leanck-update-protocol")).unwrap(),
+        "3\n"
     );
 }
 

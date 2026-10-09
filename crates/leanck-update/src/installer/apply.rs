@@ -24,7 +24,7 @@ use super::{
 use crate::{
     gate::{Lease, Maintenance, ensure_no_legacy_users},
     receipt::{Receipt, digest_file, tree_digest},
-    safe_path,
+    safe_dir,
     transaction::Transaction,
 };
 use anyhow::{Context, Result, anyhow, bail, ensure};
@@ -790,7 +790,7 @@ pub(crate) fn unchanged_managed_agent(path: &Path) -> bool {
 
 /// Create the state directory privately; parents get the usual 0755.
 fn create_state_dir(state: &Path) -> Result<()> {
-    safe_path(state)?;
+    safe_dir(state)?;
     if let Some(parent) = state.parent() {
         create_dirs(parent)?;
     }
@@ -825,7 +825,7 @@ fn stage_beside(destination: &Path) -> Result<tempfile::TempDir> {
     let parent = destination
         .parent()
         .context("destination has no parent directory")?;
-    safe_path(parent)?;
+    safe_dir(parent)?;
     create_dirs(parent)?;
     Ok(tempfile::Builder::new()
         .prefix(".leanck-install.")
@@ -840,7 +840,7 @@ pub(crate) fn set_mode(path: &Path, mode: u32) -> Result<()> {
 pub(crate) fn write_file(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
     let mut file = fs::File::create(path)?;
     file.write_all(bytes)?;
-    file.sync_all()?;
+    crate::durability::sync_file(&file)?;
     set_mode(path, mode)
 }
 

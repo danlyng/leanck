@@ -63,7 +63,7 @@
 //! | 110 | test_uninstall_preserves_modified_components_and_can_resume                        | uninstall_preserves_modified_components_and_can_resume |
 //! | 111 | test_uninstall_tracks_old_and_extra_destinations                                   | uninstall_tracks_old_and_extra_destinations |
 //! | 112 | test_uninstall_host_failure_preserves_files_and_retry_receipts                     | uninstall_host_failure_preserves_files_and_retry_receipts |
-//! | 113 | test_uninstall_rejects_symlink_parents_and_tree_links                              | uninstall_rejects_symlink_parents_and_tree_links |
+//! | 113 | test_uninstall_rejects_symlink_parents_and_tree_links                              | uninstall_follows_owned_symlink_parents_and_preserves_tree_links (user-owned parent links are now followed) |
 //! | 114 | test_uninstall_legacy_state_and_custom_state_directory                             | uninstall_legacy_state_and_custom_state_directory |
 //! | 115 | test_uninstall_invalid_arguments_do_not_change_files                               | uninstall_invalid_arguments_do_not_change_files |
 //! | 116 | test_uninstall_cancellation_and_confirmation_use_terminal_not_script_stdin         | uninstall_cancellation_and_confirmation_use_terminal_not_script_stdin (approval only; the terminal is 3d's) |
@@ -314,6 +314,8 @@ impl Run {
 
 impl Case {
     fn new() -> Self {
+        // Throwaway directories need no fsync; see `durability`.
+        crate::durability::relax_for_this_thread();
         let (dir, root) = crate::test_support::scratch();
         let home = root.join("home");
         fs::create_dir(&home).unwrap();
@@ -1395,12 +1397,12 @@ fn host_commands_time_out_and_report_partial_installation() {
     let case = Case::new();
     let bin = case.root.join("host bin");
     executable(&bin.join("claude"), "#!/bin/sh\nsleep 30\n");
-    let (plan, inventory, env) = case
-        .plan_settings(&["--plugin", "claude", "--timeout", "1"], |_| {})
-        .unwrap();
+    let (plan, inventory, env) = case.plan_settings(&["--plugin", "claude"], |_| {}).unwrap();
+    // Only the host CLI gets the short limit: a loaded machine may take more
+    // than a second to run the staged executable's version check.
     let hosts = SystemHosts {
         path: format!("{}:/usr/bin:/bin", bin.display()).into(),
-        timeout: Duration::from_secs(plan.settings.timeout),
+        timeout: Duration::from_secs(1),
     };
     let mut console = Console::new(vec![], Style::PLAIN, false);
     let mut confirm = |_| true;
@@ -2153,25 +2155,83 @@ fn uninstall_host_failure_preserves_files_and_retry_receipts() {
 }
 
 #[test]
-fn uninstall_rejects_symlink_parents_and_tree_links() {
+fn uninstall_follows_owned_symlink_parents_and_preserves_tree_links() {
     let case = Case::new();
     case.install(&["--skills", "claude", "--agents", "codex"])
         .ok();
+    // The user's own link above a destination, as dotfile managers make,
+    // is followed: the agents are removed where the link points.
     let directory = case.home("codex/agents/leanck");
     let moved = case.home("moved agents");
     fs::rename(&directory, &moved).unwrap();
     std::os::unix::fs::symlink(&moved, &directory).unwrap();
+    // A link inside a managed tree is a local change: the tree is preserved.
     let skill = case.home("claude/skills/lean-proving");
     std::os::unix::fs::symlink(case.home("outside"), skill.join("user-link")).unwrap();
-    let (result, _) = case.uninstall_with(&[], Approval::Approved);
-    assert_eq!(result.unwrap(), Uninstalled::Incomplete);
-    assert!(moved.join("lean-expert.toml").exists());
+    let (result, output) = case.uninstall_with(&[], Approval::Approved);
+    assert_eq!(result.unwrap(), Uninstalled::Incomplete, "{output}");
+    assert!(!moved.join("lean-expert.toml").exists(), "{output}");
+    assert!(!moved.join("lean-expert.toml.leanck-installed").exists());
+    assert!(
+        fs::symlink_metadata(&directory)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert!(output.contains(&format!(
+        "Preserved changed or unsafe path: {}",
+        skill.display()
+    )));
     assert!(
         fs::symlink_metadata(skill.join("user-link"))
             .unwrap()
             .file_type()
             .is_symlink()
     );
+}
+
+#[test]
+fn dotfile_links_above_destinations_install_update_and_uninstall() {
+    let case = Case::new();
+    // ~/.claude (here CLAUDE_CONFIG_DIR) and the state's parent are the user's links.
+    let dotfiles = case.root.join("dotfiles");
+    fs::create_dir_all(dotfiles.join("claude")).unwrap();
+    fs::create_dir_all(dotfiles.join("state")).unwrap();
+    std::os::unix::fs::symlink(dotfiles.join("claude"), case.home("claude")).unwrap();
+    std::os::unix::fs::symlink(dotfiles.join("state"), case.home("state")).unwrap();
+    case.install(&["--skills", "claude", "--agents", "claude"])
+        .ok();
+    assert!(dotfiles.join("claude/skills/leanck/SKILL.md").is_file());
+    assert!(dotfiles.join("claude/agents/lean-expert.md").is_file());
+    assert!(
+        dotfiles
+            .join("state/leanck/installer/uninstall.tsv")
+            .is_file()
+    );
+    // Reinstalling replaces through the links and keeps them.
+    case.install(&["--skills", "claude", "--agents", "claude", "--force"])
+        .ok();
+    for link in ["claude", "state"] {
+        assert!(
+            fs::symlink_metadata(case.home(link))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+    case.uninstall(&[]);
+    assert!(!dotfiles.join("claude/skills/leanck").exists());
+    assert!(!dotfiles.join("claude/agents/lean-expert.md").exists());
+    assert!(dotfiles.join("claude/skills").is_dir());
+    // A link at a destination itself is never followed: it is a conflict.
+    let elsewhere = dotfiles.join("elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, case.home("claude/skills/leanck")).unwrap();
+    let (error, _) = case
+        .install(&["--skills", "claude", "--skill", "leanck"])
+        .err();
+    assert!(error.contains("already exists"), "{error}");
+    assert!(elsewhere.read_dir().unwrap().next().is_none());
 }
 
 #[test]

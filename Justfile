@@ -7,7 +7,7 @@ default:
     @just --list
 
 # Stage the unified executable for the plugin and install it on PATH.
-build: build-plugin-bin install-cli
+install: build-plugin-bin install-cli
 
 # Run the whole test suite (Rust workspace).
 test:
@@ -20,7 +20,7 @@ build-plugin-bin:
     cp target/release/leanck "{{plugin_bin}}"/leanck
     if [ "$(uname)" = "Darwin" ]; then codesign --force -s - "{{plugin_bin}}"/leanck; fi
 
-# Install `leanck` onto PATH, including its MCP and daemon modes.
+# Install `leanck` via Cargo. For production use, prefer `install.sh`.
 install-cli:
     cargo install --path crates/leanck-cli --locked
 

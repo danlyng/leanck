@@ -38,3 +38,4 @@ libc.workspace = true
 tar = "0.4.46"
 tempfile = "3.27.0"
 tokio = { workspace = true, features = ["test-util"] }
+xtask = { path = "../../xtask" }

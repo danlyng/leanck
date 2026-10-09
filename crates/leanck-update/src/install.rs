@@ -2,7 +2,7 @@ use crate::{
     ReleaseSource,
     gate::Maintenance,
     receipt::{Component, Receipt, UNMANAGED_EXECUTABLE, digest_file, fingerprint, tree_digest},
-    safe_path,
+    safe_dir, safe_path,
     transaction::Transaction,
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -470,10 +470,10 @@ fn sync_tree(root: &Path) -> Result<()> {
         if entry.file_type()?.is_dir() {
             sync_tree(&entry.path())?;
         } else if entry.file_type()?.is_file() {
-            File::open(entry.path())?.sync_all()?;
+            crate::durability::sync_path(&entry.path())?;
         }
     }
-    File::open(root)?.sync_all()?;
+    crate::durability::sync_path(root)?;
     Ok(())
 }
 
@@ -550,7 +550,7 @@ impl Prepared {
         let mut next = vec![];
         let original_components = self.components.clone();
         for mut component in self.components {
-            safe_path(
+            safe_dir(
                 component
                     .destination
                     .parent()
@@ -1186,6 +1186,45 @@ mod tests {
   "keywords": []
 }
 "#
+        );
+    }
+
+    #[tokio::test]
+    async fn updates_follow_owned_parent_links_but_never_a_linked_destination() {
+        crate::durability::relax_for_this_thread();
+        // A dotfiles link above a managed skill is followed.
+        let (_dir, prepared) = fixture();
+        let skill = prepared.receipt.components[1].destination.clone();
+        let skills = skill.parent().unwrap().to_owned();
+        let dotfiles = skills.with_file_name("dotfiles-skills");
+        fs::rename(&skills, &dotfiles).unwrap();
+        std::os::unix::fs::symlink(&dotfiles, &skills).unwrap();
+        let result = prepared.apply().await.unwrap();
+        assert_eq!(result.status, "updated");
+        assert_eq!(
+            fs::read_to_string(dotfiles.join("prove/SKILL.md")).unwrap(),
+            "new skill"
+        );
+        assert!(
+            fs::symlink_metadata(&skills)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+
+        // A link at the managed path itself is refused before any change.
+        let (_dir, prepared) = fixture();
+        let skill = prepared.receipt.components[1].destination.clone();
+        let moved = skill.with_file_name("moved");
+        fs::rename(&skill, &moved).unwrap();
+        std::os::unix::fs::symlink(&moved, &skill).unwrap();
+        let binary = prepared.receipt.binary.clone();
+        let error = format!("{:#}", prepared.apply().await.unwrap_err());
+        assert!(error.contains("refusing symlink"), "{error}");
+        assert_eq!(fs::read_to_string(&binary).unwrap(), "old binary");
+        assert_eq!(
+            fs::read_to_string(moved.join("SKILL.md")).unwrap(),
+            "old skill"
         );
     }
 

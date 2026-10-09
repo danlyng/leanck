@@ -69,12 +69,16 @@ struct Cache {
     error: Option<String>,
 }
 
+/// How long one release query may take before the check reports a failure.
+const QUERY_LIMIT: Duration = Duration::from_secs(2);
+
 #[derive(Clone)]
 pub struct Checker {
     version: String,
     state: PathBuf,
     source: ReleaseSource,
     receipt: Option<Receipt>,
+    limit: Duration,
 }
 impl Checker {
     pub fn new(version: impl Into<String>, state: PathBuf, source: ReleaseSource) -> Self {
@@ -83,6 +87,7 @@ impl Checker {
             state,
             source,
             receipt: None,
+            limit: QUERY_LIMIT,
         }
     }
     pub fn for_current(version: &str) -> Result<Self> {
@@ -100,7 +105,14 @@ impl Checker {
             state: crate::state_directory()?.join("updates"),
             source,
             receipt,
+            limit: QUERY_LIMIT,
         })
+    }
+    /// Replace the 2-second query limit. Tests use a generous one: a loaded
+    /// machine may need seconds to set up TLS before reaching a local server.
+    pub fn with_limit(mut self, limit: Duration) -> Self {
+        self.limit = limit;
+        self
     }
     pub fn with_receipt(mut self, receipt: Receipt) -> Self {
         self.source = receipt.source.clone();
@@ -160,7 +172,7 @@ impl Checker {
                     .bin_name("leanck")
                     .api_base_url(self.source.api.trim_end_matches('/'))
                     .current_version(&self.version)
-                    .timeout(Duration::from_secs(2))
+                    .timeout(self.limit)
                     .no_confirm(true)
                     .show_output(false)
                     .build_async()?;
@@ -170,14 +182,19 @@ impl Checker {
                 ensure!(version.pre.is_empty(), "latest release is a prerelease");
                 Ok::<_, anyhow::Error>(version.to_string())
             };
-            match tokio::time::timeout(Duration::from_secs(2), query).await {
+            match tokio::time::timeout(self.limit, query).await {
                 Ok(Ok(version)) => {
                     cache.latest = Some(version);
                     cache.last_success_at = Some(now());
                     cache.error = None;
                 }
                 Ok(Err(e)) => cache.error = Some(format!("{e:#}").chars().take(512).collect()),
-                Err(_) => cache.error = Some("release check timed out after 2 seconds".into()),
+                Err(_) => {
+                    cache.error = Some(format!(
+                        "release check timed out after {} seconds",
+                        self.limit.as_secs()
+                    ))
+                }
             }
             atomic_json(&directory.join("check.json"), &cache)?;
             Ok(())
@@ -290,6 +307,12 @@ mod tests {
     use crate::test_support::{Server, scratch};
     use std::sync::atomic::Ordering;
 
+    /// A checker whose query limit tolerates a loaded machine: these tests
+    /// assert outcomes against a local server, not how fast TLS starts.
+    fn limited(version: &str, state: PathBuf, source: ReleaseSource) -> Checker {
+        Checker::new(version, state, source).with_limit(Duration::from_secs(60))
+    }
+
     #[tokio::test]
     async fn persistent_notices_disabled_checks_failures_and_clock_skew() {
         let (_dir, root) = scratch();
@@ -300,7 +323,7 @@ mod tests {
             api: server.url.clone(),
             releases: server.url.clone(),
         };
-        let checker = Checker::new("1.0.0", root.join("state"), source);
+        let checker = limited("1.0.0", root.join("state"), source);
         let policy = Updates::default();
         let first = checker.check(&policy, false).await;
         assert_eq!(first.state, "available", "{first:?}");
@@ -346,7 +369,7 @@ mod tests {
         let server =
             Server::new(br#"{"tag_name":"v2.0.0","created_at":"2026-01-01","assets":[]}"#.to_vec())
                 .await;
-        let checker = Checker::new(
+        let checker = limited(
             "1.0.0",
             root.clone(),
             ReleaseSource {
@@ -357,7 +380,7 @@ mod tests {
         let policy = Updates::default();
         tokio::join!(checker.check(&policy, false), checker.check(&policy, false));
         assert_eq!(server.calls.load(Ordering::SeqCst), 1);
-        let other = Checker::new(
+        let other = limited(
             "1.0.0",
             root,
             ReleaseSource {
@@ -373,7 +396,7 @@ mod tests {
     #[tokio::test]
     async fn corrupt_metadata_does_not_look_current_or_bypass_recent_attempt() {
         let (_dir, root) = scratch();
-        let checker = Checker::new("1.0.0", root, ReleaseSource::default());
+        let checker = limited("1.0.0", root, ReleaseSource::default());
         fs::create_dir_all(checker.directory()).unwrap();
         fs::write(checker.directory().join("check.json"), "broken").unwrap();
         UpdateCheckGuard::new(
@@ -395,7 +418,7 @@ mod tests {
             br#"{"tag_name":"v9.0.0-beta.1","created_at":"2026-01-01","assets":[]}"#.to_vec(),
         )
         .await;
-        let checker = Checker::new(
+        let checker = limited(
             "1.0.0",
             root,
             ReleaseSource {

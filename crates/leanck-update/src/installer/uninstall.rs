@@ -19,7 +19,7 @@ use crate::{
     gate::{Maintenance, ensure_no_legacy_users},
     paths::absolute,
     receipt::{digest_file, tree_digest},
-    safe_path,
+    safe_dir, safe_path,
     transaction::Transaction,
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -726,7 +726,7 @@ fn unchanged(record: &Record, state: &Path) -> bool {
     let Some(parent) = path.parent() else {
         return false;
     };
-    if safe_path(parent).is_err() {
+    if safe_dir(parent).is_err() {
         return false;
     }
     let meta = fs::symlink_metadata(path);

@@ -21,24 +21,23 @@ Install prebuilt `leanck` (macOS or Linux, ARM64 or x86-64):
 curl -fsSL https://lean4.party/leanck-install.sh | sh
 ```
 
-The interactive installer walks through installing the CLI, shell completions, and the Claude Code / Codex plugin (with skills, subagents, hooks, and optional MCP server). Pass flags after `sh -s --` for non-interactive or custom setups (see `--help` for all options):
+The installer needs only `sh`, `curl`, `tar`, and `sha256sum` or `shasum`; it does not use Python. [`install.sh`](install.sh) downloads the release archive for your platform, verifies its SHA-256 checksum, and runs the installer bundled in that release (`leanck _install`). The interactive installer walks through installing the CLI, shell completions, and the Claude Code / Codex plugin (with skills, subagents, hooks, and optional MCP server). Pass flags after `sh -s --` for non-interactive or custom setups: `--yes` approves without prompts (required without a terminal), `--dry-run` previews, `--json` reports one JSON object, and `--version vX.Y.Z` pins a release. `--help` lists these bootstrap options; every other option (plugin or `--standalone` mode, hosts, skills, agents, completions, directories) goes to the release's installer, and `leanck _install --help` lists them all.
 
 ```bash
 curl -fsSL https://lean4.party/leanck-install.sh | sh -s -- --help
 ```
 
-Or build from source (requires Rust 1.89+):
+To install from a source checkout (requires Rust 1.89+ and Cargo), run the same installer with `--from-repo`. It first asks whether to build, because building runs the repository's build scripts (`--yes` answers for you); then it runs `cargo build --release --locked -p leanck-cli`, packages the checkout with `cargo xtask package-local`, and installs the result through the same flow:
 
 ```bash
 git clone https://github.com/danlyng/leanck.git
 cd leanck
-cargo build  # Build leanck
-# Alternatively, build and prepare the plugin for installation (requires [just](https://github.com/casey/just))
-# just build
-# just package-plugin   # optional: assemble ./leanck-plugin
+sh install.sh --from-repo .
 ```
 
-Update an installer-managed installation with `leanck update`, or remove it with [`uninstall.sh`](uninstall.sh).
+For development, `cargo build` builds `leanck`; with [just](https://github.com/casey/just), `just install` stages the plugin executable and installs `leanck` on PATH, and `just package-plugin` assembles `./leanck-plugin`.
+
+Update an installer-managed installation with `leanck update`, or remove it with [`uninstall.sh`](uninstall.sh) (`--dry-run` to preview, `--yes` to approve without a prompt). It runs `leanck _uninstall` from the installed executable or, if that is missing, from the plugin bundle, the release archive holding the script, or PATH.
 
 ## Usage
 
@@ -131,7 +130,7 @@ See [`packaging/plugin/README.md`](packaging/plugin/README.md) for manual plugin
 | `crates/leanck-lake/` | Bounded `lake build` runner, output parser, and Mathlib cache coordination. |
 | `crates/leanck-loogle/` | Structured Loogle client with endpoint fallback. |
 | `crates/leanck-normalize/` | Lean source and comment normalizer. |
-| `crates/leanck-update/` | Release checks and self-updater (`leanck update`). |
+| `crates/leanck-update/` | Release checks, the installer behind `install.sh` and `uninstall.sh`, and the self-updater (`leanck update`). |
 | `crates/leanck-config/` | TOML configuration loader and validator. |
 | `packaging/plugin/` | Plugin manifests and MCP configs for Claude Code and Codex. |
 | `xtask/` | Plugin and release packaging (`cargo xtask`). |

@@ -1,4 +1,4 @@
-use crate::{ReleaseSource, atomic_json, safe_path};
+use crate::{ReleaseSource, atomic_json, safe_dir, safe_path, safe_path_within};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -78,7 +78,7 @@ impl Receipt {
                 serde_json::from_slice::<Marker>(&fs::read(marker)?)?.state_dir
             }
         };
-        safe_path(&state)?;
+        safe_dir(&state)?;
         let path = state.join("receipt.json");
         safe_path(&path)?;
         let receipt: Self = serde_json::from_slice(&fs::read(&path).with_context(|| {
@@ -125,14 +125,14 @@ impl Receipt {
         );
         semver::Version::parse(&self.version)?;
         self.source.validate()?;
-        safe_path(&self.state_dir)?;
+        safe_dir(&self.state_dir)?;
         safe_path(&self.binary)?;
         for host in &self.hosts {
             ensure!(
                 matches!(host.name.as_str(), "claude" | "codex"),
                 "invalid installation host"
             );
-            safe_path(&host.home)?;
+            safe_dir(&host.home)?;
         }
         for component in &self.components {
             ensure!(
@@ -161,7 +161,7 @@ impl Receipt {
                 );
             }
             // Leaf symlinks are allowed only for explicitly recorded agent links.
-            safe_path(
+            safe_dir(
                 component
                     .destination
                     .parent()
@@ -180,7 +180,7 @@ impl Receipt {
         Ok(())
     }
     pub fn from_installer(state: &Path, binary: &Path) -> Result<Self> {
-        safe_path(state)?;
+        safe_dir(state)?;
         let selections = fs::read_to_string(state.join("selections.tsv"))?;
         let values: BTreeMap<_, _> = selections
             .lines()
@@ -275,7 +275,7 @@ impl Receipt {
     }
 
     fn verified_installer_receipt(state: &Path, binary: &Path) -> Result<Self> {
-        safe_path(state)?;
+        safe_dir(state)?;
         safe_path(&state.join("selections.tsv"))?;
         safe_path(&state.join("sources.tsv"))?;
         let selections = fs::read_to_string(state.join("selections.tsv"))?;
@@ -368,14 +368,19 @@ impl Receipt {
     pub fn write(&self) -> Result<()> {
         self.validate()?;
         atomic_json(&self.path(), self)?;
-        self.write_marker(&Self::marker(&self.binary))?;
+        let marker = Self::marker(&self.binary);
+        safe_path(&marker)?;
+        self.write_marker(&marker)?;
         if let Some(bundle) = &self.bundle {
-            self.write_marker(&Self::marker(&bundle.join("plugin/bin/leanck")))?;
+            // The bundle is a managed tree: no link may redirect its marker.
+            let marker = Self::marker(&bundle.join("plugin/bin/leanck"));
+            safe_path_within(&marker, bundle)?;
+            self.write_marker(&marker)?;
         }
         Ok(())
     }
+    /// Write a discovery marker at `path`, already checked by the caller.
     fn write_marker(&self, path: &Path) -> Result<()> {
-        safe_path(path)?;
         if path.try_exists()? {
             let marker: Marker = serde_json::from_slice(&fs::read(path)?)?;
             ensure!(

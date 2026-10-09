@@ -35,7 +35,7 @@ enum Task {
         #[arg(long)]
         version: String,
     },
-    /// Assemble local source for install.sh after the user approves installation.
+    /// Assemble local source for `install.sh --from-repo` after the user approves building it.
     PackageLocal {
         /// Omit for standalone skills and agents only.
         #[arg(long)]
@@ -44,8 +44,9 @@ enum Task {
         output: PathBuf,
         #[arg(long)]
         version: String,
+        /// An approved inventory whose component names the package must match.
         #[arg(long)]
-        inventory: PathBuf,
+        inventory: Option<PathBuf>,
     },
 }
 
@@ -106,7 +107,7 @@ fn main() -> ExitCode {
                 bin_dir.as_deref().map(resolve).as_deref(),
                 &resolve(&output),
                 &version,
-                &resolve(&inventory),
+                inventory.as_deref().map(resolve).as_deref(),
             )
             .map(|packaged| print!("{}", packaged.summary())),
         ),

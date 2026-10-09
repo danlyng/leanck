@@ -5,11 +5,11 @@
 //! directory records `destination<TAB>backup`. Backups never land beside
 //! destinations, where hosts would load them as skills or agents, and they are
 //! kept after both commit and rollback.
-use crate::{atomic_json, safe_path};
+use crate::{atomic_json, safe_dir, safe_path};
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, OpenOptions},
     io::Write,
     path::{Component, Path, PathBuf},
 };
@@ -93,7 +93,7 @@ impl Transaction {
             .parent()
             .context("destination parent missing")?
             .to_owned();
-        safe_path(&parent)?;
+        safe_dir(&parent)?;
         fs::create_dir_all(&parent)?;
         let existed = fs::symlink_metadata(&destination).is_ok();
         let backup = if existed {
@@ -135,8 +135,8 @@ impl Transaction {
             manifest.write_all(
                 format!("{}\t{}\n", destination.display(), backup.display()).as_bytes(),
             )?;
-            manifest.sync_all()?;
-            File::open(root)?.sync_all()?;
+            crate::durability::sync_file(&manifest)?;
+            crate::durability::sync_path(root)?;
         }
         if let Some(staged) = staged {
             // Directories cannot be renamed over; files and links can, atomically.
@@ -150,7 +150,7 @@ impl Transaction {
         } else if existed {
             remove(&destination)?;
         }
-        File::open(&parent)?.sync_all()?;
+        crate::durability::sync_path(&parent)?;
         Ok(())
     }
     pub fn commit(&mut self) -> Result<()> {
@@ -161,7 +161,7 @@ impl Transaction {
     fn cleanup(&mut self) -> Result<()> {
         // Backups and their manifest stay under STATE/backups for repair.
         fs::remove_file(&self.path)?;
-        File::open(&self.state)?.sync_all()?;
+        crate::durability::sync_path(&self.state)?;
         Ok(())
     }
     pub fn rollback(&mut self) -> Result<()> {
@@ -170,7 +170,7 @@ impl Transaction {
                 .destination
                 .parent()
                 .context("journal parent missing")?;
-            safe_path(parent)?;
+            safe_dir(parent)?;
             match &entry.backup {
                 Some(backup) if fs::symlink_metadata(backup).is_ok() => {
                     if self.legacy_backup(entry, backup)? {
@@ -191,10 +191,10 @@ impl Transaction {
                 None if !entry.existed => remove(&entry.destination)?,
                 None => bail!("invalid backup path in recovery journal"),
             }
-            File::open(parent)?.sync_all()?;
+            crate::durability::sync_path(parent)?;
         }
         fs::remove_file(&self.path)?;
-        File::open(&self.state)?.sync_all()?;
+        crate::durability::sync_path(&self.state)?;
         Ok(())
     }
 
@@ -206,7 +206,7 @@ impl Transaction {
                 .file_name()
                 .is_some_and(|n| n.to_string_lossy().starts_with(".leanck-backup-"))
         {
-            safe_path(backup.parent().context("backup parent missing")?)?;
+            safe_dir(backup.parent().context("backup parent missing")?)?;
             return Ok(true);
         }
         ensure!(
@@ -217,7 +217,7 @@ impl Transaction {
             "invalid backup path in recovery journal"
         );
         // The backup itself may be a link copied from a link destination.
-        safe_path(backup.parent().context("backup parent missing")?)?;
+        safe_dir(backup.parent().context("backup parent missing")?)?;
         Ok(false)
     }
 
@@ -226,7 +226,7 @@ impl Transaction {
             return Ok(root.clone());
         }
         let parent = self.state.join("backups");
-        safe_path(&parent)?;
+        safe_dir(&parent)?;
         fs::create_dir_all(&parent)?;
         let name = format!("{}-{}", timestamp(), std::process::id());
         let mut attempt = 0;
@@ -244,7 +244,7 @@ impl Transaction {
                 Err(e) => return Err(e.into()),
             }
         };
-        File::open(&parent)?.sync_all()?;
+        crate::durability::sync_path(&parent)?;
         self.journal.backups = Some(root.clone());
         atomic_json(&self.path, &self.journal)?;
         Ok(root)
@@ -301,9 +301,9 @@ fn sync_tree(path: &Path) -> Result<()> {
         for entry in fs::read_dir(path)? {
             sync_tree(&entry?.path())?;
         }
-        File::open(path)?.sync_all()?;
+        crate::durability::sync_path(path)?;
     } else if meta.is_file() {
-        File::open(path)?.sync_all()?;
+        crate::durability::sync_path(path)?;
     }
     Ok(())
 }

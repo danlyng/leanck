@@ -30,8 +30,10 @@ pub use archive::write_release_archive;
 
 pub const BINARIES: &[&str] = &["leanck"];
 pub const MARKER: &str = ".leanck-package.json";
-/// Protocol 2: the bundled binary supports `leanck _update configure-plugin`.
-pub const UPDATE_PROTOCOL: u32 = 2;
+/// Protocol 3: the bundled binary supports `leanck _install` and `leanck _uninstall`,
+/// which `install.sh` and `uninstall.sh` run. (Protocol 2 added
+/// `leanck _update configure-plugin`.) `install.sh` refuses lower protocols.
+pub const UPDATE_PROTOCOL: u32 = 3;
 pub const TARGETS: &[&str] = &[
     "aarch64-apple-darwin",
     "x86_64-apple-darwin",
@@ -552,16 +554,20 @@ pub fn package_release(
     Ok((packaged, archive))
 }
 
-/// Assemble local source for install.sh after the user approves installation,
-/// confirming that component names still match the approved `inventory`.
+/// Assemble local source for `install.sh --from-repo` after the user approves
+/// building it. With `inventory`, confirm that component names still match an
+/// approved inventory.
 pub fn package_local(
     repo: &Path,
     bin_dir: Option<&Path>,
     output: &Path,
     version: &str,
-    inventory: &Path,
+    inventory: Option<&Path>,
 ) -> Result<Packaged> {
     let packaged = assemble_distribution(repo, bin_dir, output, version, false)?;
+    let Some(inventory) = inventory else {
+        return Ok(packaged);
+    };
     let names = |dir: &str, suffix: Option<&str>| -> Result<Vec<String>> {
         let mut names = Vec::new();
         for path in sorted_entries(&inventory.join(dir))? {

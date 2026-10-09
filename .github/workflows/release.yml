@@ -25,15 +25,22 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      - name: Install Linux build tools
+      - name: Install Linux build and test tools
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools shellcheck
       - name: Install Rust target
         run: rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
       - name: Build
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: cargo +stable build --release -p leanck-cli --locked --target ${{ matrix.target }}
+      # The installer ships in every archive: test it natively, end to end through
+      # install.sh and uninstall.sh (shellcheck runs where installed), before packaging.
+      - name: Test the installer
+        run: |
+          cargo +stable test --locked -p leanck-update --lib
+          cargo +stable test --locked -p xtask
+          cargo +stable test --locked -p leanck-cli --test bootstrap --test install
       - name: Package release
         shell: bash
         env:

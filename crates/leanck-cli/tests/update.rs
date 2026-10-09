@@ -96,7 +96,7 @@ impl Fixture {
             format!("v{}\n", env!("CARGO_PKG_VERSION")),
         )
         .unwrap();
-        fs::write(package.join(".leanck-update-protocol"), "2\n").unwrap();
+        fs::write(package.join(".leanck-update-protocol"), "3\n").unwrap();
         let archive = root.join("release.tar.gz");
         let encoder = flate2::write::GzEncoder::new(
             fs::File::create(&archive).unwrap(),
@@ -637,7 +637,9 @@ async fn cli_and_mcp_doctor_always_show_cached_notices_and_disable_them() {
         fixture.root.join("state/leanck/updates"),
         receipt.source.clone(),
     )
-    .with_receipt(receipt);
+    .with_receipt(receipt)
+    // Assert the cached notice, not how fast TLS starts on a loaded machine.
+    .with_limit(std::time::Duration::from_secs(60));
     let checked = checker
         .check(&leanck_config::Updates::default(), false)
         .await;
@@ -778,99 +780,6 @@ fn installer_configures_packaged_plugin_definitions() {
         assert_eq!(manifest.get("mcpServers").is_none(), disable);
         assert_eq!(manifest["name"], "leanck");
     }
-}
-
-#[tokio::test]
-async fn bootstrap_installer_emits_native_receipt_and_uninstall_removes_it() {
-    use std::os::unix::fs::PermissionsExt;
-    let fixture = Fixture::new().await;
-    let commands = fixture.root.join("commands");
-    fs::create_dir(&commands).unwrap();
-    let script = format!(
-        r#"#!/bin/sh
-while [ "$#" -gt 0 ]; do
-    case "$1" in --output) output=$2; shift 2 ;; *) url=$1; shift ;; esac
-done
-case "$url" in *.sha256) cp '{root}/release.tar.gz.sha256' "$output" ;; *) cp '{root}/release.tar.gz' "$output" ;; esac
-printf 200
-"#,
-        root = fixture.root.display()
-    );
-    fs::write(commands.join("curl"), script).unwrap();
-    fs::set_permissions(commands.join("curl"), fs::Permissions::from_mode(0o755)).unwrap();
-    let binary = fixture.root.join("bootstrap-bin/leanck");
-    let state = fixture.root.join("bootstrap-state");
-    let mut command = tokio::process::Command::new("sh");
-    command
-        .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../install.sh"))
-        .args([
-            "--yes",
-            "--standalone",
-            "--skills",
-            "codex",
-            "--skill",
-            "prove",
-            "--completions",
-            "none",
-            "--no-add-to-path",
-            "--release-url",
-            "https://example.test/releases",
-            "--bin-dir",
-        ])
-        .arg(binary.parent().unwrap())
-        .arg("--state-dir")
-        .arg(&state)
-        .env("HOME", &fixture.root)
-        .env("XDG_STATE_HOME", fixture.root.join("state"))
-        .env("XDG_CONFIG_HOME", fixture.root.join("config"))
-        .env(
-            "PATH",
-            format!("{}:{}", commands.display(), std::env::var("PATH").unwrap()),
-        )
-        .env("SHELL", "/bin/sh");
-    let result = command.output().await.unwrap();
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    let receipt = Receipt::discover(&binary, None).unwrap().unwrap();
-    assert_eq!(receipt.mode, "standalone");
-    assert_eq!(receipt.version, env!("CARGO_PKG_VERSION"));
-    assert_eq!(receipt.selected_skills, Some(vec!["prove".into()]));
-    assert_eq!(receipt.components.len(), 2);
-    assert_eq!(receipt.components[0].source, "plugin/bin/leanck");
-    assert!(fixture.root.join(".agents/skills/prove/SKILL.md").is_file());
-    assert!(!fixture.root.join(".agents/skills/reference").exists());
-    assert!(
-        Maintenance::acquire(&state).is_ok(),
-        "bootstrap shell must release its lock"
-    );
-    let result = tokio::process::Command::new("sh")
-        .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../uninstall.sh"))
-        .args(["--yes", "--state-dir"])
-        .arg(&state)
-        .env("HOME", &fixture.root)
-        .env("XDG_STATE_HOME", fixture.root.join("state"))
-        .env("XDG_RUNTIME_DIR", fixture.root.join("runtime"))
-        .env("XDG_CACHE_HOME", fixture.root.join("cache"))
-        .env("TMPDIR", &fixture.root)
-        .output()
-        .await
-        .unwrap();
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    assert!(!binary.exists());
-    assert!(!fixture.root.join(".agents/skills/prove").exists());
-    assert!(!Receipt::marker(&binary).exists());
-    assert!(!state.join("receipt.json").exists());
-    assert!(
-        !fixture.root.join("state/leanck/updates").exists(),
-        "uninstall must not perform release checks"
-    );
 }
 
 #[tokio::test]
