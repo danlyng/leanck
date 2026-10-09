@@ -58,7 +58,7 @@ pub struct Session<'a> {
     pub style: Style,
     /// `--verbose`: show the plan after advanced edits.
     pub verbose: bool,
-    /// The welcome banner, shown above the prompts.
+    /// The plain-text welcome banner, shown above the prompts.
     pub banner: String,
 }
 

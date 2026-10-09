@@ -784,6 +784,28 @@ fn ctrl_c_at_the_first_prompt_restores_the_terminal_and_exits_130() {
     assert!(wait(child).success());
     assert!(!world.path("xdg/data").exists() && !world.path("xdg/state").exists());
     world.assert_tmp_is_empty();
+
+    // Inspect the UI after it takes over, excluding the banner printed to
+    // stderr beforehand. Strip terminal commands to check visible text.
+    let output = String::from_utf8_lossy(&pty.seen);
+    let (_, screen) = output.split_once("\x1b[?1049h").unwrap();
+    let mut chars = screen.chars();
+    let mut visible = String::new();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' && chars.next() == Some('[') {
+            for c in chars.by_ref() {
+                if ('@'..='~').contains(&c) {
+                    break;
+                }
+            }
+        } else {
+            visible.push(c);
+        }
+    }
+    assert!(
+        visible.starts_with(&format!("Welcome to the leanck v{VERSION} installer")),
+        "unexpected welcome banner: {visible:?}"
+    );
 }
 
 #[test]
