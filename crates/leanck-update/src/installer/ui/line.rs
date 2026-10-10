@@ -1,6 +1,5 @@
-//! The line-by-line fallback for `TERM=dumb` and terminals the full UI
-//! cannot draw on. Each question becomes one prompt line on the output;
-//! replies are read one line at a time. Menus accept their value words.
+//! The line-by-line installer dialog. Questions are printed without redrawing;
+//! replies are read one line at a time. Menus accept numbers or value words.
 use super::flow::{Effect, Flow, Output, Question};
 use crate::installer::{Answers, Plan, PlanFailure, Settings, Style};
 use std::io::{self, BufRead, Write};
@@ -58,15 +57,19 @@ pub fn run(
                 options,
                 default,
             } => {
-                let values: Vec<&str> = options.iter().map(|o| o.value).collect();
-                write_prompt(
-                    out,
-                    style,
-                    &format!("{title} ({})", values.join(" / ")),
-                    options[default].value,
-                )?;
+                writeln!(out, "{}{}{title}{}", style.bold, style.cyan, style.reset)?;
+                for (index, option) in options.iter().enumerate() {
+                    writeln!(out, "  {}) {}", index + 1, option.label)?;
+                }
+                write!(out, "Choice [{}]: ", default + 1)?;
+                out.flush()?;
                 match read_reply(input)? {
-                    Some(reply) => flow.answer(&reply),
+                    Some(reply) => match reply.parse::<usize>() {
+                        Ok(number) if (1..=options.len()).contains(&number) => {
+                            flow.choose(number - 1)
+                        }
+                        _ => flow.answer(&reply),
+                    },
                     None => flow.interrupt(),
                 }
             }

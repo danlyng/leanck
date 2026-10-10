@@ -3,7 +3,7 @@
 //! editor.
 //!
 //! - [`Flow`] is the dialog as a pure question-and-answer state machine.
-//! - [`Installer`] is the terminal UI over it: `update(key) -> Effect` and
+//! - [`Installer`] draws inline widgets over it: `update(key) -> Effect` and
 //!   `render(frame)`, with the advanced-config [`Form`].
 //! - [`line`] runs the same flow one prompt line at a time for `TERM=dumb`
 //!   and terminals that cannot be drawn on, with the plain editor.
@@ -58,11 +58,9 @@ pub struct Session<'a> {
     pub style: Style,
     /// `--verbose`: show the plan after advanced edits.
     pub verbose: bool,
-    /// The plain-text welcome banner, shown above the prompts.
-    pub banner: String,
 }
 
-/// Run the interactive dialog on the controlling terminal: the full UI,
+/// Run the interactive dialog on the controlling terminal: inline widgets,
 /// or line prompts under `TERM=dumb` or when the terminal cannot be drawn on.
 pub fn run(session: Session<'_>) -> anyhow::Result<Outcome> {
     let Session {
@@ -72,7 +70,6 @@ pub fn run(session: Session<'_>) -> anyhow::Result<Outcome> {
         inventory,
         style,
         verbose,
-        banner,
     } = session;
     let dumb = std::env::var_os("TERM").is_some_and(|term| term == "dumb");
     let cwd = env.cwd.clone();
@@ -87,11 +84,9 @@ pub fn run(session: Session<'_>) -> anyhow::Result<Outcome> {
     let effect = match terminal {
         Some(mut terminal) => {
             let flow = Flow::new(settings, inventory, cwd, false, verbose);
-            let mut installer = Installer::new(flow, &banner, style != Style::PLAIN);
+            let mut installer = Installer::new(flow, style != Style::PLAIN);
             let effect = terminal.run(&mut installer, &mut planner);
             drop(terminal);
-            // Keep the dialog in the scrollback once the screen is restored.
-            eprint!("{}", installer.transcript(style));
             effect?
         }
         None => {

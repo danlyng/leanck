@@ -44,10 +44,10 @@
 use super::*;
 use crate::installer::{
     Answers, Environment, FileSnapshot, HostName, InstallArgs, Mode, Node, Plan, PlanFailure,
-    ReleaseInventory, SavedState, Settings, SkillSelection, Step, Style, banner, plan_settings,
+    ReleaseInventory, SavedState, Settings, SkillSelection, Step, Style, plan_settings,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::{Terminal, backend::TestBackend, style::Color};
+use ratatui::{Terminal, TerminalOptions, Viewport, backend::TestBackend, style::Color};
 use std::{
     collections::BTreeMap,
     ffi::OsString,
@@ -155,20 +155,11 @@ impl Fixture {
     fn plan(&self, settings: &Settings, answers: &Answers) -> Result<Plan, PlanFailure> {
         plan_settings(settings, &self.env(), &self.saved, &self.inventory, answers)
     }
-    fn banner(&self, settings: &Settings) -> String {
-        let version = match &settings.from_repo {
-            Some(_) => format!("{} (local source)", self.inventory.tag),
-            None => self.inventory.tag.clone(),
-        };
-        banner(&version, self.env().detected_agents(), Style::PLAIN)
-    }
-
     fn ui(&self, argv: &[&str]) -> Harness<'_> {
         self.ui_colored(argv, false)
     }
     fn ui_colored(&self, argv: &[&str], color: bool) -> Harness<'_> {
         let (settings, verbose) = self.settings(argv);
-        let banner = self.banner(&settings);
         let flow = Flow::new(
             settings,
             &self.inventory,
@@ -178,7 +169,8 @@ impl Fixture {
         );
         Harness {
             fixture: self,
-            ui: Installer::new(flow, &banner, color),
+            ui: Installer::new(flow, color),
+            transcript: String::new(),
             effects: vec![],
             plans: 0,
         }
@@ -216,6 +208,8 @@ fn ctrl(c: char) -> Input {
 struct Harness<'a> {
     fixture: &'a Fixture,
     ui: Installer,
+    /// Output printed incrementally between widgets.
+    transcript: String,
     /// Every effect other than `None` and `Plan`, in order.
     effects: Vec<Effect>,
     /// How many plans were requested.
@@ -225,10 +219,14 @@ struct Harness<'a> {
 impl Harness<'_> {
     fn send(&mut self, input: Input) -> Effect {
         let mut effect = self.ui.update(input);
+        self.transcript
+            .push_str(&self.ui.take_transcript(Style::PLAIN));
         while effect == Effect::Plan {
             self.plans += 1;
             let result = self.fixture.plan(self.ui.settings(), self.ui.answers());
             effect = self.ui.planned(result);
+            self.transcript
+                .push_str(&self.ui.take_transcript(Style::PLAIN));
         }
         if effect != Effect::None {
             self.effects.push(effect.clone());
@@ -254,7 +252,13 @@ impl Harness<'_> {
         self.ui.form().expect("the advanced form is open")
     }
     fn screen_sized(&self, width: u16, height: u16) -> String {
-        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        let mut terminal = Terminal::with_options(
+            TestBackend::new(width, height),
+            TerminalOptions {
+                viewport: Viewport::Inline(self.ui.height(width).min(height.saturating_sub(1))),
+            },
+        )
+        .unwrap();
         terminal.draw(|frame| self.ui.render(frame)).unwrap();
         let buffer = terminal.backend().buffer().clone();
         (0..height)
@@ -271,9 +275,9 @@ impl Harness<'_> {
     fn screen(&self) -> String {
         self.screen_sized(100, 40)
     }
-    /// The transcript, as printed after the terminal is restored.
+    /// The transcript printed so far, outside the active widget.
     fn transcript(&self) -> String {
-        self.ui.transcript(Style::PLAIN)
+        self.transcript.clone()
     }
     fn count(&self, needle: &str) -> usize {
         self.transcript().matches(needle).count()
@@ -447,7 +451,8 @@ fn local_repo_build_waits_for_confirmation_and_cancel_never_executes_source() {
 fn offline_terminal_plugin_preview_can_open_editor_without_changes() {
     let f = Fixture::new().checkout();
     let mut t = f.ui(&["--from-repo", "/src", "--dry-run"]);
-    assert!(t.screen().contains("Welcome to the leanck v9.8.7"));
+    assert!(t.transcript().is_empty());
+    assert!(t.screen().starts_with("Install as plugin or standalone?"));
     t.open_plugin_config();
     assert!(t.screen().contains("[bundled with plugin]"));
     let plans = t.plans;
@@ -528,7 +533,13 @@ fn terminal_configuration_and_explicit_approval_before_writes() {
     let f = Fixture::new();
     let mut t = f.ui_colored(&[], true);
     // Prompts are styled when color is on.
-    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    let mut terminal = Terminal::with_options(
+        TestBackend::new(100, 30),
+        TerminalOptions {
+            viewport: Viewport::Inline(t.ui.height(100).min(29)),
+        },
+    )
+    .unwrap();
     terminal.draw(|frame| t.ui.render(frame)).unwrap();
     assert!(
         terminal
@@ -635,7 +646,13 @@ fn terminal_color_controls_and_piped_stdout() {
     // Without color, no cell carries a color or modifier.
     let mut t = f.ui(&[]);
     t.plugin_config("", "");
-    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    let mut terminal = Terminal::with_options(
+        TestBackend::new(100, 30),
+        TerminalOptions {
+            viewport: Viewport::Inline(t.ui.height(100).min(29)),
+        },
+    )
+    .unwrap();
     terminal.draw(|frame| t.ui.render(frame)).unwrap();
     assert!(terminal.backend().buffer().content().iter().all(|cell| {
         cell.fg == Color::Reset && cell.bg == Color::Reset && cell.modifier.is_empty()
@@ -650,8 +667,12 @@ fn terminal_color_controls_and_piped_stdout() {
     );
     assert_eq!(effect, Effect::Cancelled);
     assert!(!out.contains('\x1b'), "{out}");
-    assert!(out.contains("Install as plugin or standalone? (plugin / standalone) [plugin]: "));
-    assert!(out.contains("Edit advanced config (data / binary"));
+    assert!(out.contains(
+        "Install as plugin or standalone?\n  1) Plugin (recommended)\n  2) Standalone\nChoice [1]: "
+    ));
+    assert!(
+        out.contains("Edit advanced config\n  1) Plugin data directory\n  2) Executable directory")
+    );
 
     // Styled line prompts, as on a terminal whose stdout is piped.
     let (effect, out) = f.plain(
@@ -869,7 +890,7 @@ fn advanced_form_scrolls_and_preserves_selection_on_small_terminals() {
                 .any(|l| l.starts_with(&format!("> {}", label.trim_end()))),
             "{label:?} is visible in\n{screen}"
         );
-        assert_eq!(screen.lines().count(), 12);
+        assert_eq!(screen.lines().count(), 11, "one terminal row stays free");
     };
     t.set_enum("Register plugins", "codex");
     visible(&t);
@@ -1244,14 +1265,7 @@ fn no_path_warning_refreshes_after_advanced_config_edit() {
 fn terminal_selects_skills_with_descriptions_and_edits_individual_choices() {
     let f = Fixture::new();
     let mut t = f.ui(&[]);
-    let screen = t.screen();
-    assert!(
-        screen
-            .contains("Plugin: bundles the CLI, all skills, agents, and hooks, with optional MCP.")
-    );
-    assert!(
-        screen.contains("Standalone (a la carte): choose the CLI, individual skills, and agents")
-    );
+    assert!(t.screen().contains("> Plugin (recommended)"));
     t.standalone_config(
         "",
         "both",
@@ -1433,7 +1447,7 @@ fn invalid_text_reprompts_instead_of_aborting() {
     assert_eq!(out.matches("Install location [").count(), 2);
     let (effect, out) = f.plain(&[], &["sideways", "plugin"], Style::PLAIN);
     assert_eq!(effect, Effect::Interrupted, "input ends after the dialog");
-    assert!(out.contains("[WARN] Choose plugin or standalone."));
+    assert!(out.contains("[WARN] Enter 1-2 or plugin or standalone."));
 }
 
 #[test]
@@ -1542,4 +1556,69 @@ fn a_cancelled_conflict_prompt_interrupts() {
         t.prompt("Keep it, back up and replace", "cancel"),
         Effect::Interrupted
     );
+}
+
+#[test]
+fn numeric_menu_reply_selects_an_option_and_invalid_numbers_reprompt() {
+    let f = Fixture::new();
+    let (effect, out) = f.plain(&[], &["9", "1", "none", "no", "2"], Style::PLAIN);
+    let Effect::Confirmed(plan) = effect else {
+        panic!("{effect:?}\n{out}");
+    };
+    assert_eq!(plan.settings.mode, Mode::Plugin);
+    let menu = "Install as plugin or standalone?\n  1) Plugin (recommended)\n  2) Standalone\nChoice [1]: ";
+    assert_eq!(out.matches(menu).count(), 2);
+    assert!(out.contains("[WARN] Enter 1-2 or plugin or standalone."));
+    let (effect, out) = f.plain(&[], &["2", "", "", "", "", "none", "no", "2"], Style::PLAIN);
+    let Effect::Confirmed(plan) = effect else {
+        panic!("{effect:?}\n{out}");
+    };
+    assert_eq!(plan.settings.mode, Mode::Standalone);
+}
+
+#[test]
+fn inline_widgets_leave_answered_questions_in_the_incremental_transcript() {
+    let f = Fixture::new();
+    let mut t = f.ui(&[]);
+    assert_eq!(t.ui.height(100), 3);
+    assert!(t.transcript().is_empty());
+    t.choose("Install as plugin or standalone?", "Plugin (recommended)");
+    assert_eq!(t.ui.height(100), 1);
+    assert_eq!(
+        t.transcript(),
+        "Install as plugin or standalone? Plugin (recommended)\n"
+    );
+    assert!(!t.screen().contains("Install as plugin or standalone?"));
+    assert!(t.ui.height(20) > 1, "long labels wrap in narrow viewports");
+    t.prompt("Shell completions (", "none");
+    assert!(t.transcript().contains("[zsh]: none\n"));
+    assert!(!t.screen().contains("Shell completions"));
+    assert!(
+        t.ui.take_transcript(Style::PLAIN).is_empty(),
+        "already printed entries are drained"
+    );
+    t.prompt("Add leanck to PATH?", "no");
+    t.choose(PLUGIN_PROMPT, "Edit advanced config...");
+    assert_eq!(t.ui.height(100), t.form().fields().len() as u16 + 4);
+    let height = t.ui.height(100);
+    t.set_enum("Register plugins", "none");
+    assert!(
+        t.ui.height(100) < height,
+        "form height follows visible fields"
+    );
+    let transcript = t.transcript();
+    t.action("Save changes");
+    let warnings: String = t
+        .plan()
+        .warnings
+        .iter()
+        .map(|w| format!("[WARN] {w}\n"))
+        .collect();
+    assert_eq!(
+        &t.transcript()[transcript.len()..],
+        warnings,
+        "saving the form prints only the resulting flow output"
+    );
+    t.choose(PLUGIN_PROMPT, "Cancel");
+    assert_eq!(t.ui.height(100), 0);
 }

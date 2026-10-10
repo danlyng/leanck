@@ -629,6 +629,7 @@ struct Pty {
     follower: OwnedFd,
     output: mpsc::Receiver<Vec<u8>>,
     seen: Vec<u8>,
+    cursor_reports: usize,
 }
 
 impl Pty {
@@ -673,6 +674,7 @@ impl Pty {
             follower,
             output,
             seen: vec![],
+            cursor_reports: 0,
         }
     }
 
@@ -709,7 +711,16 @@ impl Pty {
         while !String::from_utf8_lossy(&self.seen).contains(text) {
             let left = deadline.saturating_duration_since(Instant::now());
             match self.output.recv_timeout(left) {
-                Ok(bytes) => self.seen.extend(bytes),
+                Ok(bytes) => {
+                    self.seen.extend(bytes);
+                    // Inline viewports query the cursor. A PTY has no emulator
+                    // to reply, so model a cursor at the bottom of its 40 rows.
+                    let queries = self.seen.windows(4).filter(|s| *s == b"\x1b[6n").count();
+                    while self.cursor_reports < queries {
+                        self.send(b"\x1b[40;1R");
+                        self.cursor_reports += 1;
+                    }
+                }
                 Err(_) => panic!(
                     "{text:?} never appeared; the terminal showed:\n{}",
                     String::from_utf8_lossy(&self.seen)
@@ -747,7 +758,7 @@ fn flags(termios: &libc::termios) -> (libc::tcflag_t, libc::tcflag_t, libc::tcfl
 }
 
 #[test]
-fn ctrl_c_at_the_first_prompt_restores_the_terminal_and_exits_130() {
+fn ctrl_c_at_the_first_menu_exits_130_and_restores_the_terminal() {
     let world = World::new();
     let mirror = world.mirror();
     let mut pty = Pty::open();
@@ -772,7 +783,6 @@ fn ctrl_c_at_the_first_prompt_restores_the_terminal_and_exits_130() {
     leader.current_dir(&world.root);
     let child = pty.spawn(leader);
     pty.expect("Install as plugin or standalone?");
-    // Raw mode is on while the menu shows, so Ctrl-C arrives as a key.
     pty.send(b"\x03");
     pty.expect("exited with 130");
     assert_eq!(
@@ -785,26 +795,59 @@ fn ctrl_c_at_the_first_prompt_restores_the_terminal_and_exits_130() {
     assert!(!world.path("xdg/data").exists() && !world.path("xdg/state").exists());
     world.assert_tmp_is_empty();
 
-    // Inspect the UI after it takes over, excluding the banner printed to
-    // stderr beforehand. Strip terminal commands to check visible text.
     let output = String::from_utf8_lossy(&pty.seen);
-    let (_, screen) = output.split_once("\x1b[?1049h").unwrap();
-    let mut chars = screen.chars();
-    let mut visible = String::new();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' && chars.next() == Some('[') {
-            for c in chars.by_ref() {
-                if ('@'..='~').contains(&c) {
-                    break;
-                }
-            }
-        } else {
-            visible.push(c);
-        }
-    }
+    assert!(!output.contains("\x1b[?1049h"));
+    assert!(!output.contains("\x1b[?1049l"));
+    let banner = output
+        .find(&format!("Welcome to the leanck v{VERSION} installer"))
+        .expect("welcome banner");
+    let prompt = output
+        .find("Install as plugin or standalone?")
+        .expect("first prompt");
     assert!(
-        visible.starts_with(&format!("Welcome to the leanck v{VERSION} installer")),
-        "unexpected welcome banner: {visible:?}"
+        banner < prompt,
+        "welcome banner must precede the first prompt"
+    );
+}
+
+#[test]
+fn redirected_stdout_still_draws_inline_menus_and_stays_empty() {
+    let world = World::new();
+    let mirror = world.mirror();
+    let stdout = world.root.join("stdout");
+    let mut pty = Pty::open();
+    let mut command = world.command("install.sh");
+    command
+        .args(["--release-url", &mirror])
+        .env("TERM", "xterm-256color");
+    let script = command.get_args().next().unwrap().to_owned();
+    // Inline drawing queries the cursor; that query must reach the terminal,
+    // never the redirected stdout.
+    let mut leader = Command::new("sh");
+    leader
+        .arg("-c")
+        .arg(r#"out=$1; shift; sh "$@" > "$out"; printf '\nexited with %s\n' "$?"; read -r _"#)
+        .arg("leader")
+        .arg(&stdout)
+        .arg(script)
+        .args(["--release-url", &mirror]);
+    leader
+        .env_clear()
+        .envs(command.get_envs().filter_map(|(k, v)| Some((k, v?))));
+    leader.current_dir(&world.root);
+    let child = pty.spawn(leader);
+    pty.expect("> Plugin (recommended)");
+    assert!(!String::from_utf8_lossy(&pty.seen).contains("Choice ["));
+    pty.send(b"\x03");
+    pty.expect("exited with 130");
+    pty.send(b"\n");
+    assert!(wait(child).success());
+    world.assert_tmp_is_empty();
+    let written = fs::read(&stdout).unwrap();
+    assert!(
+        written.is_empty(),
+        "{:?}",
+        String::from_utf8_lossy(&written)
     );
 }
 

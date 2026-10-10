@@ -131,8 +131,6 @@ fn drive(argv: &[OsString], installer: &str, run: &mut Run) -> Result<i32> {
         run.console.raw(&banner);
     }
     let plan = if interactive {
-        // Ratatui applies its own styling; embedded ANSI is rendered literally.
-        let banner = super::banner(&run.version, env.detected_agents(), Style::PLAIN);
         let session = ui::Session {
             settings,
             env: &mut env,
@@ -140,7 +138,6 @@ fn drive(argv: &[OsString], installer: &str, run: &mut Run) -> Result<i32> {
             inventory: &inventory,
             style: run.style,
             verbose: args.verbose > 0,
-            banner,
         };
         match ui::run(session)? {
             ui::Outcome::Confirmed(plan) => *plan,

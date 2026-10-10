@@ -1,9 +1,8 @@
 //! The terminal UI: [`Installer::update`] maps keys to the [`Flow`] and the
 //! advanced-config [`Form`]; [`Installer::render`] draws the current state.
 //!
-//! The screen shows the welcome banner, a transcript of answered prompts and
-//! messages, and the current menu or prompt, scrolled so the prompt stays
-//! visible. The form replaces the screen while it is open.
+//! Only the active menu, prompt, or form is drawn. Answered questions and
+//! flow messages are drained as transcript text for the driver to print above it.
 use super::{
     Input,
     flow::{Effect, Flow, Output, Question},
@@ -23,7 +22,6 @@ use tui_input::Input as Buffer;
 #[derive(Clone, Debug)]
 pub struct Installer {
     flow: Flow,
-    header: Vec<String>,
     log: Vec<Output>,
     color: bool,
     serial: u64,
@@ -33,15 +31,10 @@ pub struct Installer {
 }
 
 impl Installer {
-    /// `banner` is shown above the transcript; `color` enables styling.
-    pub fn new(flow: Flow, banner: &str, color: bool) -> Self {
+    /// `color` enables widget styling.
+    pub fn new(flow: Flow, color: bool) -> Self {
         let mut installer = Self {
             flow,
-            header: banner
-                .trim_matches('\n')
-                .lines()
-                .map(str::to_owned)
-                .collect(),
             log: vec![],
             color,
             serial: u64::MAX,
@@ -51,6 +44,10 @@ impl Installer {
         };
         installer.sync();
         installer
+    }
+
+    pub fn color(&self) -> bool {
+        self.color
     }
 
     pub fn flow(&self) -> &Flow {
@@ -177,7 +174,14 @@ impl Installer {
         };
     }
 
-    /// The transcript as text, for printing after the terminal is restored.
+    /// Drain newly produced transcript text, for printing above the widget.
+    pub fn take_transcript(&mut self, style: Style) -> String {
+        let text = self.transcript(style);
+        self.log.clear();
+        text
+    }
+
+    /// Pending transcript entries as text.
     pub fn transcript(&self, style: Style) -> String {
         let mut out = String::new();
         for entry in &self.log {
@@ -199,65 +203,25 @@ impl Installer {
         out
     }
 
-    /// Draw the current state into the whole frame.
-    pub fn render(&self, frame: &mut Frame) {
-        let area = frame.area();
+    /// The rows needed by the current widget at `width` columns.
+    pub fn height(&self, width: u16) -> u16 {
+        if width == 0 {
+            return 0;
+        }
         if let Some(form) = &self.form {
-            form.render(frame, area, self.color);
-            return;
+            return form.height();
         }
-        let width = area.width as usize;
-        let height = area.height as usize;
-        if width == 0 || height == 0 {
-            return;
-        }
+        u16::try_from(self.widget(width as usize).0.len()).unwrap_or(u16::MAX)
+    }
+
+    /// Build the current menu or prompt, without any transcript or header.
+    fn widget(&self, width: usize) -> (Vec<Line<'static>>, Option<(usize, usize)>) {
         let styles = Styles::new(self.color);
-        let bold = if self.color {
-            TextStyle::default().add_modifier(ratatui::style::Modifier::BOLD)
-        } else {
-            TextStyle::default()
-        };
-        let mut lines: Vec<Line> = vec![];
-        for (i, text) in self.header.iter().enumerate() {
-            let style = if i == 0 { bold } else { TextStyle::default() };
-            lines.extend(wrap(&[(text.as_str(), style)], width));
-        }
-        lines.push(Line::raw(""));
-        for entry in &self.log {
-            match entry {
-                Output::Answer { prompt, reply } => lines.extend(wrap(
-                    &[
-                        (prompt, styles.prompt),
-                        (&format!(" {reply}"), TextStyle::default()),
-                    ],
-                    width,
-                )),
-                Output::Warn(message) => lines.extend(wrap(
-                    &[
-                        ("[WARN]", styles.warn),
-                        (&format!(" {message}"), TextStyle::default()),
-                    ],
-                    width,
-                )),
-                Output::Error(message) => lines.extend(wrap(
-                    &[
-                        (" [ERR]:", styles.error),
-                        (&format!(" {message}"), TextStyle::default()),
-                    ],
-                    width,
-                )),
-                Output::Text(text) => {
-                    for line in text.trim_end_matches('\n').split('\n') {
-                        lines.extend(wrap(&[(line, TextStyle::default())], width));
-                    }
-                }
-            }
-        }
+        let mut lines = vec![];
         let mut cursor = None;
         match self.flow.question() {
             Question::Menu { title, options, .. } => {
-                lines.push(Line::raw(""));
-                lines.extend(wrap(&[(&title, styles.prompt)], width));
+                lines.push(Line::styled(title, styles.prompt));
                 for (i, option) in options.iter().enumerate() {
                     lines.push(if i == self.cursor {
                         Line::styled(format!("> {}", option.label), styles.selected)
@@ -297,10 +261,23 @@ impl Installer {
                 lines.extend(prompt);
                 cursor = Some((column, lines.len() - 1));
             }
-            Question::Planning => lines.push(Line::raw("Checking the installation plan...")),
-            Question::Form | Question::Done => {}
+            Question::Planning | Question::Form | Question::Done => {}
         }
-        let skip = lines.len().saturating_sub(height);
+        (lines, cursor)
+    }
+
+    /// Draw only the active widget into the inline frame.
+    pub fn render(&self, frame: &mut Frame) {
+        let area = frame.area();
+        if area.is_empty() {
+            return;
+        }
+        if let Some(form) = &self.form {
+            form.render(frame, area, self.color);
+            return;
+        }
+        let (lines, cursor) = self.widget(area.width as usize);
+        let skip = lines.len().saturating_sub(area.height as usize);
         let lines: Vec<Line> = lines.into_iter().skip(skip).collect();
         frame.render_widget(Paragraph::new(lines), area);
         if let Some((x, y)) = cursor {

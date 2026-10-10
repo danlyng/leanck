@@ -637,6 +637,15 @@ impl Form {
         FormEffect::Close(Some(Box::new(self.draft.clone())))
     }
 
+    /// Rows needed for all fields, the title, context, spacing, and hint.
+    pub fn height(&self) -> u16 {
+        if self.discard.is_some() {
+            5
+        } else {
+            u16::try_from(self.fields.len().saturating_add(4)).unwrap_or(u16::MAX)
+        }
+    }
+
     /// Draw the form into `area`.
     pub fn render(&self, frame: &mut Frame, area: Rect, color: bool) {
         let width = area.width as usize;
@@ -759,7 +768,6 @@ impl Form {
 pub(super) struct Styles {
     pub prompt: Style,
     pub selected: Style,
-    pub warn: Style,
     pub error: Style,
 }
 impl Styles {
@@ -772,14 +780,12 @@ impl Styles {
                 selected: Style::default()
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
-                warn: Style::default().fg(Color::Yellow),
                 error: Style::default().fg(Color::Red),
             }
         } else {
             Styles {
                 prompt: Style::default(),
                 selected: Style::default(),
-                warn: Style::default(),
                 error: Style::default(),
             }
         }

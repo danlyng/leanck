@@ -416,7 +416,7 @@ impl Flow {
                     Some(index) => self.select(&title, &options, index),
                     None => {
                         let values: Vec<&str> = options.iter().map(|o| o.value).collect();
-                        self.warn(format!("Choose {}.", or_list(&values)));
+                        self.warn(format!("Enter 1-{} or {}.", values.len(), or_list(&values)));
                         Effect::None
                     }
                 }
