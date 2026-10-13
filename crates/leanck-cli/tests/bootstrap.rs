@@ -811,7 +811,7 @@ fn ctrl_c_at_the_first_menu_exits_130_and_restores_the_terminal() {
 }
 
 #[test]
-fn redirected_stdout_still_draws_inline_menus_and_stays_empty() {
+fn inline_menus_stay_at_the_cursor_and_keep_redirected_stdout_empty() {
     let world = World::new();
     let mirror = world.mirror();
     let stdout = world.root.join("stdout");
@@ -838,6 +838,13 @@ fn redirected_stdout_still_draws_inline_menus_and_stays_empty() {
     let child = pty.spawn(leader);
     pty.expect("> Plugin (recommended)");
     assert!(!String::from_utf8_lossy(&pty.seen).contains("Choice ["));
+    // The pty reports the cursor on its last row, so answering the menu must
+    // clear only the widget there and never jump to the top of the screen.
+    pty.send(b"\r");
+    pty.expect("Shell completions");
+    let output = String::from_utf8_lossy(&pty.seen);
+    assert!(!output.contains("\x1b[1;1H"), "{output:?}");
+    assert!(output.contains("Install as plugin or standalone?\x1b[0m Plugin (recommended)"));
     pty.send(b"\x03");
     pty.expect("exited with 130");
     pty.send(b"\n");

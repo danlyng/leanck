@@ -250,9 +250,11 @@ impl Session {
             self.terminal = Some(terminal);
         }
         if let Some(terminal) = &mut self.terminal {
-            let frame = terminal.draw(|frame| installer.render(frame))?;
+            terminal.draw(|frame| installer.render(frame))?;
+            // The completed frame reports the whole terminal; the viewport
+            // can move when a resize makes ratatui re-anchor it.
             self.origin
-                .store(u32::from(frame.area.y), Ordering::Relaxed);
+                .store(u32::from(terminal.get_frame().area().y), Ordering::Relaxed);
         }
         Ok(())
     }
