@@ -56,8 +56,6 @@ pub struct Session<'a> {
     pub inventory: &'a ReleaseInventory,
     /// Message styling for stderr.
     pub style: Style,
-    /// `--verbose`: show the plan after advanced edits.
-    pub verbose: bool,
 }
 
 /// Run the interactive dialog on the controlling terminal: inline widgets,
@@ -69,7 +67,6 @@ pub fn run(session: Session<'_>) -> anyhow::Result<Outcome> {
         saved,
         inventory,
         style,
-        verbose,
     } = session;
     let dumb = std::env::var_os("TERM").is_some_and(|term| term == "dumb");
     let cwd = env.cwd.clone();
@@ -83,14 +80,14 @@ pub fn run(session: Session<'_>) -> anyhow::Result<Outcome> {
     };
     let effect = match terminal {
         Some(mut terminal) => {
-            let flow = Flow::new(settings, inventory, cwd, false, verbose);
+            let flow = Flow::new(settings, inventory, cwd, false);
             let mut installer = Installer::new(flow, style != Style::PLAIN);
             let effect = terminal.run(&mut installer, &mut planner);
             drop(terminal);
             effect?
         }
         None => {
-            let mut flow = Flow::new(settings, inventory, cwd, true, verbose);
+            let mut flow = Flow::new(settings, inventory, cwd, true);
             let tty = std::fs::File::open("/dev/tty")?;
             line::run(
                 &mut flow,

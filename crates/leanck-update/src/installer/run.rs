@@ -137,7 +137,6 @@ fn drive(argv: &[OsString], installer: &str, run: &mut Run) -> Result<i32> {
             saved: &saved,
             inventory: &inventory,
             style: run.style,
-            verbose: args.verbose > 0,
         };
         match ui::run(session)? {
             ui::Outcome::Confirmed(plan) => *plan,

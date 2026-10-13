@@ -174,7 +174,6 @@ pub struct Flow {
     cwd: PathBuf,
     /// Line mode: "Edit advanced config..." opens the plain editor, not the form.
     plain: bool,
-    verbose: bool,
     answers: Answers,
     plan: Option<Plan>,
     ask: Ask,
@@ -186,8 +185,6 @@ pub struct Flow {
     editor_initial: Option<Settings>,
     /// Settings before the advanced edit that the pending plan checks.
     before_edit: Option<Settings>,
-    /// Show the plan once the pending plan succeeds (`--verbose`).
-    show_plan: bool,
     output: Vec<Output>,
     serial: u64,
 }
@@ -223,14 +220,12 @@ impl Flow {
         inventory: &ReleaseInventory,
         cwd: PathBuf,
         plain: bool,
-        verbose: bool,
     ) -> Self {
         Self {
             settings,
             skills: inventory.skills.clone(),
             cwd,
             plain,
-            verbose,
             answers: Answers::new(),
             plan: None,
             ask: Ask::Mode,
@@ -239,7 +234,6 @@ impl Flow {
             skill_choices: vec![],
             editor_initial: None,
             before_edit: None,
-            show_plan: false,
             output: vec![],
             serial: 0,
         }
@@ -465,9 +459,8 @@ impl Flow {
         match result {
             Ok(plan) => {
                 self.before_edit = None;
-                if std::mem::take(&mut self.show_plan) {
-                    self.output.push(Output::Text(plan.review(Style::PLAIN)));
-                }
+                // Show what Continue approves; an unchanged plan stays above.
+                self.output.push(Output::Text(plan.review(Style::PLAIN)));
                 self.plan = Some(plan);
                 self.enter_confirm()
             }
@@ -488,7 +481,6 @@ impl Flow {
                     // An edit made the plan fail: keep the last good configuration.
                     Some(previous) if self.plan.is_some() => {
                         self.settings = previous;
-                        self.show_plan = false;
                         self.error(format!(
                             "{message}; the advanced config changes were not applied"
                         ));
@@ -520,16 +512,10 @@ impl Flow {
     }
 
     fn replan_after_edit(&mut self) -> Effect {
-        self.show_plan = self.verbose;
         self.request_plan()
     }
 
     fn return_to_confirm(&mut self) -> Effect {
-        if self.verbose
-            && let Some(plan) = &self.plan
-        {
-            self.output.push(Output::Text(plan.review(Style::PLAIN)));
-        }
         self.enter_confirm()
     }
 

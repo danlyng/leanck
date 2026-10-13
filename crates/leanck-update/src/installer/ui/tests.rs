@@ -147,10 +147,9 @@ impl Fixture {
         env.files = self.files.clone();
         env
     }
-    fn settings(&self, argv: &[&str]) -> (Settings, bool) {
+    fn settings(&self, argv: &[&str]) -> Settings {
         let args = InstallArgs::parse_from(argv).unwrap();
-        let settings = Settings::resolve(&args, &self.env(), &self.saved).unwrap();
-        (settings, args.verbose > 0)
+        Settings::resolve(&args, &self.env(), &self.saved).unwrap()
     }
     fn plan(&self, settings: &Settings, answers: &Answers) -> Result<Plan, PlanFailure> {
         plan_settings(settings, &self.env(), &self.saved, &self.inventory, answers)
@@ -159,13 +158,11 @@ impl Fixture {
         self.ui_colored(argv, false)
     }
     fn ui_colored(&self, argv: &[&str], color: bool) -> Harness<'_> {
-        let (settings, verbose) = self.settings(argv);
         let flow = Flow::new(
-            settings,
+            self.settings(argv),
             &self.inventory,
             PathBuf::from("/work"),
             false,
-            verbose,
         );
         Harness {
             fixture: self,
@@ -179,13 +176,11 @@ impl Fixture {
     /// Run the line-mode flow over `replies`; returns the final effect and
     /// everything written.
     fn plain(&self, argv: &[&str], replies: &[&str], style: Style) -> (Effect, String) {
-        let (settings, verbose) = self.settings(argv);
         let mut flow = Flow::new(
-            settings,
+            self.settings(argv),
             &self.inventory,
             PathBuf::from("/work"),
             true,
-            verbose,
         );
         let mut input = Cursor::new(replies.iter().map(|r| format!("{r}\n")).collect::<String>());
         let mut out = vec![];
@@ -1616,9 +1611,35 @@ fn inline_widgets_leave_answered_questions_in_the_incremental_transcript() {
         .collect();
     assert_eq!(
         &t.transcript()[transcript.len()..],
-        warnings,
-        "saving the form prints only the resulting flow output"
+        format!("{}{warnings}", t.plan().review(Style::PLAIN)),
+        "saving the form prints only the new plan and its warnings"
     );
     t.choose(PLUGIN_PROMPT, "Cancel");
     assert_eq!(t.ui.height(100), 0);
+}
+
+#[test]
+fn the_plan_is_shown_before_confirmation_and_after_changed_edits_only() {
+    let f = Fixture::new();
+    let mut t = f.ui(&[]);
+    t.plugin_config("none", "no");
+    assert_eq!(t.count("Ready to install leanck v1.2.3"), 1);
+    assert!(
+        t.transcript()
+            .contains("Would install /home/user/data/leanck/bundle")
+    );
+    // Closing the form unchanged keeps the plan already shown above.
+    t.choose(PLUGIN_PROMPT, "Edit advanced config...");
+    t.action("Cancel");
+    assert_eq!(t.count("Ready to install leanck v1.2.3"), 1);
+    t.choose(PLUGIN_PROMPT, "Edit advanced config...");
+    t.set_enum("Enable MCP", "yes");
+    t.action("Save changes");
+    assert_eq!(t.count("Ready to install leanck v1.2.3"), 2);
+    t.choose(PLUGIN_PROMPT, "Cancel");
+
+    let (effect, out) = f.plain(&[], &["", "none", "no", "cancel"], Style::PLAIN);
+    assert_eq!(effect, Effect::Cancelled);
+    let review = out.find("Ready to install leanck v1.2.3").expect("plan");
+    assert!(review < out.find(PLUGIN_PROMPT).unwrap());
 }
