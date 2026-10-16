@@ -4,6 +4,7 @@ use std::io::Write;
 /// ANSI styles, all empty when color is off.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Style {
+    pub dim: &'static str,
     pub bold: &'static str,
     pub cyan: &'static str,
     pub green: &'static str,
@@ -13,6 +14,7 @@ pub struct Style {
 }
 impl Style {
     pub const PLAIN: Style = Style {
+        dim: "",
         bold: "",
         cyan: "",
         green: "",
@@ -21,6 +23,7 @@ impl Style {
         reset: "",
     };
     pub const COLOR: Style = Style {
+        dim: "\x1b[2m",
         bold: "\x1b[1m",
         cyan: "\x1b[36m",
         green: "\x1b[32m",

@@ -24,6 +24,7 @@ fn write_output(out: &mut impl Write, style: Style, output: Vec<Output>) -> io::
             Output::Error(message) => {
                 writeln!(out, "{} [ERR]:{} {message}", style.red, style.reset)?
             }
+            Output::Plan(plan) => write!(out, "{}", plan.review(style))?,
             Output::Text(text) => write!(out, "{text}")?,
         }
     }

@@ -162,6 +162,22 @@ pub struct InstallArgs {
         help_heading = "Directories & paths"
     )]
     pub codex_dir: Option<String>,
+    /// Claude standalone skills dir (default: CLAUDE_DIR/skills).
+    #[arg(
+        long,
+        value_name = "DIR",
+        allow_hyphen_values = true,
+        help_heading = "Directories & paths"
+    )]
+    pub claude_skills_dir: Option<String>,
+    /// Claude agent definitions dir (default: CLAUDE_DIR/agents).
+    #[arg(
+        long,
+        value_name = "DIR",
+        allow_hyphen_values = true,
+        help_heading = "Directories & paths"
+    )]
+    pub claude_agents_dir: Option<String>,
     /// Codex standalone skills dir (default: ~/.agents/skills).
     #[arg(
         long,
@@ -349,6 +365,8 @@ impl InstallArgs {
             ("--state-dir", &self.state_dir),
             ("--claude-dir", &self.claude_dir),
             ("--codex-dir", &self.codex_dir),
+            ("--claude-skills-dir", &self.claude_skills_dir),
+            ("--claude-agents-dir", &self.claude_agents_dir),
             ("--codex-skills-dir", &self.codex_skills_dir),
             ("--codex-agents-dir", &self.codex_agents_dir),
             ("--completions-dir", &self.completions_dir),

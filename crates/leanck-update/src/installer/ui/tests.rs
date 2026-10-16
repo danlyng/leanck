@@ -348,14 +348,17 @@ impl Harness<'_> {
             }
         }
         self.prompt("Custom agents", agents);
-        if matches!(skills, "claude" | "both") || matches!(agents, "claude" | "both") {
-            self.prompt("Claude configuration directory", "");
+        if matches!(skills, "claude" | "both") {
+            self.prompt("Claude skills directory", "");
         }
         if matches!(skills, "codex" | "both") {
             self.prompt("Codex skills directory", "");
         }
+        if matches!(agents, "claude" | "both") {
+            self.prompt("Claude agents directory", "");
+        }
         if matches!(agents, "codex" | "both") {
-            self.prompt("Codex configuration directory", "");
+            self.prompt("Codex agents directory", "");
         }
         self.prompt("Shell completions (", completions);
         self.prompt("Add leanck to PATH?", path);
@@ -410,7 +413,7 @@ impl Harness<'_> {
 }
 
 fn has(plan: &Plan, needle: &str) -> bool {
-    plan.actions.iter().any(|a| a.contains(needle))
+    plan.actions().iter().any(|a| a.contains(needle))
 }
 
 #[test]
@@ -421,7 +424,10 @@ fn local_repo_build_waits_for_confirmation_and_cancel_never_executes_source() {
     assert_eq!(t.ui.menu_selection(), Some("Cancel"));
     // Nothing is built, packaged, or installed before approval.
     assert!(t.effects.is_empty());
-    assert_eq!(t.plan().actions[0], "Local source: /src");
+    assert_eq!(
+        t.plan().settings.from_repo.as_deref(),
+        Some(Path::new("/src"))
+    );
     assert_eq!(t.choose(PLUGIN_PROMPT, "Cancel"), Effect::Cancelled);
 
     let mut t = f.ui(&["--from-repo", "/src"]);
@@ -475,10 +481,10 @@ fn offline_terminal_preview_can_handle_conflicts_without_changes() {
     t.prompt("Keep it, back up and replace", "replace");
     t.choose(STANDALONE_PROMPT, "Edit advanced config...");
     t.action("Save changes");
-    assert!(t.transcript().contains(&format!(
-        "Back up and replace conflict: {}",
-        skill.display()
-    )));
+    assert!(
+        t.transcript()
+            .contains(&format!("Replace {} (backed up first)", skill.display()))
+    );
     t.choose(STANDALONE_PROMPT, "Continue");
     assert!(t.confirmed().replaced.contains(&skill));
 }
@@ -549,7 +555,7 @@ fn terminal_configuration_and_explicit_approval_before_writes() {
     assert!(t.effects.is_empty(), "nothing runs before Continue");
     assert!(has(
         t.plan(),
-        "Would install /custom/chosen bin/leanck (v1.2.3)"
+        "Install executable: /custom/chosen bin/leanck"
     ));
     t.choose(STANDALONE_PROMPT, "Continue");
     assert_eq!(
@@ -705,7 +711,10 @@ fn advanced_plugin_edits_apply_only_after_confirmation_and_recheck_conflicts() {
     assert_eq!(s.data_dir, Path::new("/root/edited plugin data"));
     assert_eq!(s.bin_dir, Path::new("/root/edited executable directory"));
     assert!(s.mcp_enabled);
-    assert!(plan.actions.contains(&format!("Preserve {foreign}")));
+    assert!(
+        plan.actions()
+            .contains(&format!("Keep {foreign} unchanged"))
+    );
     assert!(plan.steps.contains(&Step::Bundle {
         destination: PathBuf::from("/root/edited plugin data/bundle"),
         binary: PathBuf::from("/root/edited executable directory/leanck"),
@@ -737,7 +746,7 @@ fn advanced_data_directory_edit_moves_default_binary_without_writing_on_cancel()
     t.action("Save changes");
     assert!(
         t.transcript()
-            .contains("Would install /root/preview edited data/bin/leanck (v1.2.3)")
+            .contains("Executable: /root/preview edited data/bin/leanck")
     );
     t.choose(PLUGIN_PROMPT, "Edit advanced config...");
     let plans = t.plans;
@@ -904,7 +913,7 @@ fn advanced_form_scrolls_and_preserves_selection_on_small_terminals() {
     assert!(matches!(t.question(), Question::Menu { .. }));
     assert!(
         t.transcript()
-            .contains(&format!("Would install {custom}/leanck"))
+            .contains(&format!("Install executable: {custom}/leanck"))
     );
     assert_eq!(t.choose(PLUGIN_PROMPT, "Cancel"), Effect::Cancelled);
 }
@@ -950,13 +959,13 @@ fn advanced_plugin_additional_locations_and_completion_destination() {
         [PathBuf::from("/root/extra Codex agents")]
     );
     for action in [
-        "Would install /root/extra skills/lean-proving",
-        "Would install /root/extra Claude agents/lean-expert.md",
-        "Would install /root/extra Codex agents/lean-expert.toml",
-        "Would install bash completions: /root/custom completions/leanck",
-        "Would update shell profile: /root/custom profile",
+        "Install skills into /root/extra skills",
+        "Install Claude Code agents into /root/extra Claude agents",
+        "Install Codex agents into /root/extra Codex agents",
+        "Install bash completions: /root/custom completions/leanck",
+        "Add leanck to PATH in /root/custom profile",
     ] {
-        assert!(plan.actions.contains(&action.to_owned()), "{action}");
+        assert!(plan.actions().contains(&action.to_owned()), "{action}");
     }
 }
 
@@ -991,11 +1000,11 @@ fn plain_advanced_config_can_change_completion_and_profile_paths() {
     assert!(out.contains("Shell profile to update ["));
     assert!(has(
         &plan,
-        "Would install fish completions: /root/existing completions/leanck.fish"
+        "Install fish completions: /root/existing completions/leanck.fish"
     ));
     assert!(
-        plan.actions
-            .contains(&"Would update shell profile: /root/existing profile".to_owned())
+        plan.actions()
+            .contains(&"Add leanck to PATH in /root/existing profile".to_owned())
     );
     assert!(has(&plan, "  fish_add_path -- "));
     assert!(!has(&plan, "zsh"));
@@ -1047,7 +1056,9 @@ fn advanced_standalone_component_enums_install_selected_hosts() {
         home("codex/agents/leanck/lean-expert.toml"),
     ] {
         assert!(
-            has(&plan, &format!("Would install {}", path.display())),
+            plan.steps.iter().any(
+                |step| matches!(step, Step::Executable { destination } | Step::Tree { destination, .. } | Step::Agent { destination, .. } if destination == &path)
+            ),
             "{}",
             path.display()
         );
@@ -1082,13 +1093,13 @@ fn plugin_prompts_default_to_current_shell_and_adding_to_path() {
     assert!(!transcript.contains("Shell profile to update"));
     assert!(!transcript.contains("does not exist"));
     let plan = t.confirmed();
-    assert!(plan.actions.contains(&format!(
-        "Would install zsh completions: {}",
+    assert!(plan.actions().contains(&format!(
+        "Install zsh completions: {}",
         home("data/zsh/site-functions/_leanck").display()
     )));
     assert!(has(
         &plan,
-        &format!("Would update shell profile: {}", home(".zshrc").display())
+        &format!("Add leanck to PATH in {}", home(".zshrc").display())
     ));
     assert!(has(&plan, &home("data/leanck/bin").display().to_string()));
 }
@@ -1210,18 +1221,16 @@ fn terminal_can_preserve_a_conflicting_skill() {
     t.choose(STANDALONE_PROMPT, "Continue");
     let plan = t.confirmed();
     assert!(
-        plan.actions
-            .contains(&format!("Preserve {}", skill.display()))
+        plan.actions()
+            .contains(&format!("Keep {} unchanged", skill.display()))
     );
     assert!(
         !plan
-            .actions
-            .contains(&format!("Would install {}", skill.display()))
+            .steps
+            .iter()
+            .any(|step| matches!(step, Step::Tree { destination, .. } if destination == &skill))
     );
-    assert!(plan.actions.contains(&format!(
-        "Would install {}",
-        home("claude/skills/lean-style").display()
-    )));
+    assert!(plan.steps.iter().any(|step| matches!(step, Step::Tree { destination, .. } if destination == &home("claude/skills/lean-style"))));
 }
 
 #[test]
@@ -1239,7 +1248,7 @@ fn plain_advanced_config_can_enable_mcp() {
     assert!(out.contains("- MCP: enabled"));
     assert!(out.contains("Enable MCP? [no]: "));
     assert!(plan.settings.mcp_enabled);
-    assert!(has(&plan, "Would enable plugin MCP definitions"));
+    assert!(!has(&plan, "MCP"));
 }
 
 #[test]
@@ -1303,8 +1312,7 @@ fn terminal_selects_skills_with_descriptions_and_edits_individual_choices() {
             ("lean-proving", false),
         ] {
             assert_eq!(
-                plan.actions
-                    .contains(&format!("Would install {}", dir.join(skill).display())),
+                plan.steps.iter().any(|step| matches!(step, Step::Tree { destination, .. } if destination == &dir.join(skill))),
                 installed,
                 "{skill}"
             );
@@ -1335,16 +1343,16 @@ fn plain_terminal_can_select_only_the_minimal_skill() {
     };
     assert!(!out.contains('\x1b'));
     assert!(!plan.settings.cli);
-    let installs: Vec<&String> = plan
-        .actions
+    let actions = plan.actions();
+    let installs: Vec<&String> = actions
         .iter()
         .filter(|a| a.contains(".agents/skills"))
         .collect();
     assert_eq!(
         installs,
         [&format!(
-            "Would install {}",
-            home(".agents/skills/leanck").display()
+            "Install skills into {}",
+            home(".agents/skills").display()
         )]
     );
 }
@@ -1386,12 +1394,15 @@ fn conflict_answers_are_remembered_across_replans() {
     assert_eq!(t.count("already exists or has local edits"), 1);
     assert!(
         t.plan()
-            .actions
-            .contains(&format!("Preserve {}", skill.display()))
+            .actions()
+            .contains(&format!("Keep {} unchanged", skill.display()))
     );
     assert!(has(
         t.plan(),
-        &home("claude/agents/lean-expert.md").display().to_string()
+        &format!(
+            "Install Claude Code agents into {}",
+            home("claude/agents").display()
+        )
     ));
 }
 
@@ -1623,23 +1634,165 @@ fn the_plan_is_shown_before_confirmation_and_after_changed_edits_only() {
     let f = Fixture::new();
     let mut t = f.ui(&[]);
     t.plugin_config("none", "no");
-    assert_eq!(t.count("Ready to install leanck v1.2.3"), 1);
+    assert_eq!(t.count("Install Plan: leanck v1.2.3"), 1);
     assert!(
         t.transcript()
-            .contains("Would install /home/user/data/leanck/bundle")
+            .contains("Install leanck into /home/user/data/leanck")
     );
     // Closing the form unchanged keeps the plan already shown above.
     t.choose(PLUGIN_PROMPT, "Edit advanced config...");
     t.action("Cancel");
-    assert_eq!(t.count("Ready to install leanck v1.2.3"), 1);
+    assert_eq!(t.count("Install Plan: leanck v1.2.3"), 1);
     t.choose(PLUGIN_PROMPT, "Edit advanced config...");
     t.set_enum("Enable MCP", "yes");
     t.action("Save changes");
-    assert_eq!(t.count("Ready to install leanck v1.2.3"), 2);
+    assert_eq!(t.count("Install Plan: leanck v1.2.3"), 2);
     t.choose(PLUGIN_PROMPT, "Cancel");
 
     let (effect, out) = f.plain(&[], &["", "none", "no", "cancel"], Style::PLAIN);
     assert_eq!(effect, Effect::Cancelled);
-    let review = out.find("Ready to install leanck v1.2.3").expect("plan");
+    let review = out.find("Install Plan: leanck v1.2.3").expect("plan");
     assert!(review < out.find(PLUGIN_PROMPT).unwrap());
+}
+
+#[test]
+fn standalone_form_lists_component_directories_and_resets_derived_defaults() {
+    let f = Fixture::new();
+    let mut t = f.ui(&["--claude-agents-dir", "/custom/agents"]);
+    t.standalone_config("", "both", &[], "both", "none", "no");
+    t.choose(STANDALONE_PROMPT, "Edit advanced config...");
+    let rows: Vec<_> = t
+        .form()
+        .fields()
+        .iter()
+        .map(|field| {
+            (
+                t.form().label(*field).trim().to_owned(),
+                t.form().value(*field),
+            )
+        })
+        .collect();
+    for (label, value) in [
+        ("Claude skills directory", "~/claude/skills"),
+        ("Claude agents directory", "/custom/agents"),
+        ("Codex skills directory", "~/.agents/skills"),
+        ("Codex agents directory", "~/codex/agents/leanck"),
+    ] {
+        assert!(rows.contains(&(label.into(), value.into())), "{rows:?}");
+    }
+    assert!(
+        !rows
+            .iter()
+            .any(|(label, _)| label == "Claude configuration")
+    );
+    t.edit(
+        "Claude agents directory",
+        &home("claude/agents").display().to_string(),
+    );
+    assert_eq!(t.form().draft().claude_agents_dir, None);
+    t.edit("Claude skills directory", "/custom/skills");
+    assert_eq!(
+        t.form().draft().claude_skills_dir.as_deref(),
+        Some(Path::new("/custom/skills"))
+    );
+    t.edit(
+        "Claude skills directory",
+        &home("claude/skills").display().to_string(),
+    );
+    assert_eq!(t.form().draft().claude_skills_dir, None);
+}
+
+#[test]
+fn standalone_prompt_sequence_uses_claude_component_directories() {
+    let f = Fixture::new();
+    let mut t = f.ui(&[]);
+    t.choose("Install as plugin or standalone?", "Standalone");
+    let prompts = [
+        ("Install the CLI?", ""),
+        ("Install location", ""),
+        ("Standalone skills", "both"),
+        ("Install lean-proving (", ""),
+        ("Install lean-style (", ""),
+        ("Install leanck (", ""),
+        ("Custom agents", "both"),
+        ("Claude skills directory", "/x/skills"),
+        ("Codex skills directory", ""),
+        ("Claude agents directory", "/y/agents"),
+        ("Codex agents directory", ""),
+        ("Shell completions (", "none"),
+        ("Add leanck to PATH?", "no"),
+    ];
+    for (prefix, reply) in prompts {
+        t.prompt(prefix, reply);
+    }
+    assert_eq!(t.ui.menu_selection(), Some("Cancel"));
+    assert_eq!(t.plan().settings.claude_skills(), Path::new("/x/skills"));
+    assert_eq!(t.plan().settings.claude_agents(), Path::new("/y/agents"));
+}
+
+#[test]
+fn standalone_skips_path_question_after_choosing_a_directory_on_path() {
+    let f = Fixture::new().var("PATH", "/chosen/bin:/usr/bin:/bin");
+    let mut t = f.ui(&[]);
+    t.choose("Install as plugin or standalone?", "Standalone");
+    t.prompt("Install the CLI?", "");
+    t.prompt("Install location", "/chosen/bin");
+    t.prompt("Standalone skills", "none");
+    t.prompt("Custom agents", "none");
+    t.prompt("Shell completions (", "none");
+    assert_eq!(t.ui.menu_selection(), Some("Cancel"));
+    assert!(!t.transcript().contains("Add leanck to PATH?"));
+    assert!(!t.plan().settings.add_to_path);
+    assert!(
+        !t.plan()
+            .steps
+            .iter()
+            .any(|step| matches!(step, Step::Profile { .. }))
+    );
+    assert!(
+        !t.plan()
+            .warnings
+            .iter()
+            .any(|warning| warning.contains(NO_PATH_WARNING))
+    );
+}
+
+#[test]
+fn plugin_skips_path_question_when_binary_directory_is_on_path() {
+    let bin = home("data/leanck/bin").display().to_string();
+    let f = Fixture::new().var("PATH", &format!("{bin}:/usr/bin:/bin"));
+    let mut t = f.ui(&[]);
+    t.choose("Install as plugin or standalone?", "Plugin (recommended)");
+    t.prompt("Shell completions (", "none");
+    assert_eq!(t.ui.menu_selection(), Some("Cancel"));
+    assert!(!t.transcript().contains("Add leanck to PATH?"));
+    assert!(!t.plan().settings.add_to_path);
+    assert!(
+        !t.plan()
+            .steps
+            .iter()
+            .any(|step| matches!(step, Step::Profile { .. }))
+    );
+    assert!(
+        !t.plan()
+            .warnings
+            .iter()
+            .any(|warning| warning.contains(NO_PATH_WARNING))
+    );
+    t.choose(PLUGIN_PROMPT, "Edit advanced config...");
+    assert!(t.form().fields().contains(&Field::AddToPath));
+    t.set_enum("Add leanck to PATH", "yes");
+    t.action("Save changes");
+    assert!(t.plan().settings.add_to_path);
+}
+
+#[test]
+fn path_question_is_asked_when_binary_directory_is_not_on_path() {
+    let f = Fixture::new();
+    let mut t = f.ui(&[]);
+    t.choose("Install as plugin or standalone?", "Plugin (recommended)");
+    t.prompt("Shell completions (", "none");
+    assert!(
+        matches!(t.question(), Question::Prompt { label, .. } if label == "Add leanck to PATH?")
+    );
 }

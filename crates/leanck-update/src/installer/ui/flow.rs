@@ -9,7 +9,7 @@
 //! Nothing here reads the terminal or the filesystem.
 use super::super::{
     Answer, Answers, CompletionShell, Hosts, Mode, Plan, PlanError, PlanFailure, ReleaseInventory,
-    Settings, SkillSelection, Style, config_summary, ensure_path_shell,
+    Settings, SkillSelection, config_summary, ensure_path_shell,
 };
 use crate::paths::{absolute, display, valid_text};
 use std::{
@@ -77,6 +77,8 @@ pub enum Output {
     Error(String),
     /// Unprefixed text, such as the configuration summary or the plan.
     Text(String),
+    /// A plan rendered with the front end's style.
+    Plan(Box<Plan>),
 }
 
 /// What the front end must do next.
@@ -138,6 +140,8 @@ enum Ask {
     AgentHosts(&'static str),
     PluginHosts,
     ClaudeDir,
+    ClaudeSkillsDir,
+    ClaudeAgentsDir,
     CodexSkills,
     CodexDir,
     CodexAgentsDir,
@@ -365,6 +369,12 @@ impl Flow {
                 s.plugin_hosts.label().into(),
             ),
             Ask::ClaudeDir => prompt("Claude configuration directory".into(), path(&s.claude_dir)),
+            Ask::ClaudeSkillsDir => {
+                prompt("Claude skills directory".into(), path(&s.claude_skills()))
+            }
+            Ask::ClaudeAgentsDir => {
+                prompt("Claude agents directory".into(), path(&s.claude_agents()))
+            }
             Ask::CodexSkills => prompt("Codex skills directory".into(), path(&s.codex_skills)),
             Ask::CodexDir => prompt("Codex configuration directory".into(), path(&s.codex_dir)),
             Ask::CodexAgentsDir => {
@@ -460,7 +470,7 @@ impl Flow {
             Ok(plan) => {
                 self.before_edit = None;
                 // Show what Continue approves; an unchanged plan stays above.
-                self.output.push(Output::Text(plan.review(Style::PLAIN)));
+                self.output.push(Output::Plan(Box::new(plan.clone())));
                 self.plan = Some(plan);
                 self.enter_confirm()
             }
@@ -586,9 +596,9 @@ impl Flow {
     /// Completions, then the PATH dialog; the same in both modes.
     fn queue_path_dialog(&mut self) {
         self.push(Ask::Completions, |s| s.cli);
-        self.push(Ask::AddToPath, |s| s.cli);
+        self.push(Ask::AddToPath, |s| s.cli && !s.bin_on_path());
         self.push(Ask::PathShell, |s| {
-            s.cli && s.add_to_path && ensure_path_shell(&s.shell).is_err()
+            s.cli && !s.bin_on_path() && s.add_to_path && ensure_path_shell(&s.shell).is_err()
         });
     }
 
@@ -602,17 +612,19 @@ impl Flow {
             });
         }
         self.push(Ask::AgentHosts("Custom agents"), always);
-        self.push(Ask::ClaudeDir, |s| {
-            s.skill_hosts.claude || s.agent_hosts.claude
-        });
+        self.push(Ask::ClaudeSkillsDir, |s| s.skill_hosts.claude);
         self.push(Ask::CodexSkills, |s| s.skill_hosts.codex);
-        self.push(Ask::CodexDir, |s| s.agent_hosts.codex);
+        self.push(Ask::ClaudeAgentsDir, |s| s.agent_hosts.claude);
+        self.push(Ask::CodexAgentsDir, |s| s.agent_hosts.codex);
         self.queue_path_dialog();
     }
 
     /// Ask the next queued question whose condition holds.
     fn next(&mut self) -> Effect {
         while let Some((ask, when)) = self.queue.pop_front() {
+            if ask == Ask::AddToPath {
+                self.settings.apply_path_default();
+            }
             if when(&self.settings) {
                 if ask == Ask::Skill(0) {
                     let selection = &self.settings.selected_skills;
@@ -686,7 +698,7 @@ impl Flow {
                     for index in 0..self.skills.len() {
                         self.push(Ask::Skill(index), always);
                     }
-                    self.push(Ask::ClaudeDir, |s| s.skill_hosts.claude);
+                    self.push(Ask::ClaudeSkillsDir, |s| s.skill_hosts.claude);
                     self.push(Ask::CodexSkills, |s| s.skill_hosts.codex);
                 }
                 self.push(Ask::Extra(Group::Skills), always);
@@ -694,7 +706,7 @@ impl Flow {
             "agents" => {
                 if standalone {
                     self.push(Ask::AgentHosts("Install agents"), always);
-                    self.push(Ask::ClaudeDir, |s| s.agent_hosts.claude);
+                    self.push(Ask::ClaudeAgentsDir, |s| s.agent_hosts.claude);
                 }
                 self.push(Ask::CodexAgentsDir, |s| {
                     s.agent_hosts.codex || (s.mode == Mode::Plugin && s.plugin_hosts.codex)
@@ -797,7 +809,10 @@ impl Flow {
                 s.completions_dir =
                     (s.default_completion_dir(s.completions).as_ref() != Some(&dir)).then_some(dir);
             }
-            Ask::AddToPath => self.settings.add_to_path = parse!(self.boolean(reply)),
+            Ask::AddToPath => {
+                self.settings.add_to_path = parse!(self.boolean(reply));
+                self.settings.path_explicit = true;
+            }
             Ask::PathShell => {
                 let shell = parse!(self.shell(reply));
                 let s = &mut self.settings;
@@ -830,6 +845,16 @@ impl Flow {
                 self.settings.selected_skills = selection(&self.skills, &self.skill_choices);
             }
             Ask::ClaudeDir => self.settings.claude_dir = parse!(self.path(reply)),
+            Ask::ClaudeSkillsDir => {
+                let dir = parse!(self.path(reply));
+                let s = &mut self.settings;
+                s.claude_skills_dir = (dir != s.claude_dir.join("skills")).then_some(dir);
+            }
+            Ask::ClaudeAgentsDir => {
+                let dir = parse!(self.path(reply));
+                let s = &mut self.settings;
+                s.claude_agents_dir = (dir != s.claude_dir.join("agents")).then_some(dir);
+            }
             Ask::CodexSkills => self.settings.codex_skills = parse!(self.path(reply)),
             Ask::CodexDir => self.settings.codex_dir = parse!(self.path(reply)),
             Ask::CodexAgentsDir => {

@@ -1670,7 +1670,10 @@ fn configuration_example_honors_xdg_and_preserves_existing_configuration() {
     assert_eq!(mode(&example), 0o644);
     fs::write(&example, "# Edited example.\n").unwrap();
     case.install(&["--force"]).ok();
-    assert_eq!(fs::read_to_string(&example).unwrap(), "# Edited example.\n");
+    assert_eq!(
+        fs::read(&example).unwrap(),
+        fs::read(case.release.join("docs/leanck.example.toml")).unwrap()
+    );
     assert_eq!(
         fs::read_to_string(&config).unwrap(),
         "# User configuration.\n"
@@ -1678,14 +1681,19 @@ fn configuration_example_honors_xdg_and_preserves_existing_configuration() {
 }
 
 #[test]
-fn configuration_example_preserves_existing_symlink() {
+fn configuration_example_refuses_existing_symlink() {
     let case = Case::new();
     let example = case.home("config/leanck/config.example.toml");
     fs::create_dir_all(example.parent().unwrap()).unwrap();
     let target = case.root.join("existing example.toml");
     fs::write(&target, "# Existing example.\n").unwrap();
     std::os::unix::fs::symlink(&target, &example).unwrap();
-    case.install(&["--force"]).ok();
+    assert!(
+        case.install(&["--force"])
+            .err()
+            .0
+            .contains("refusing symlink:")
+    );
     assert!(
         fs::symlink_metadata(&example)
             .unwrap()

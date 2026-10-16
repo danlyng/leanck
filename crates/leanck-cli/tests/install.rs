@@ -90,15 +90,15 @@ fn dry_run_prints_the_plan_and_changes_nothing() {
         "Detected coding agents: none".to_owned(),
         "- Selected skills: all".to_owned(),
         format!(
-            "Would install {} (v1.2.3)",
+            "Install executable: {}",
             home.join(".local/bin/leanck").display()
         ),
         format!(
-            "Would install {}",
-            home.join(".claude/skills/leanck").display()
+            "Install skills into {}",
+            home.join(".claude/skills").display()
         ),
         format!(
-            "Installer choices and replacement backups: {}",
+            "Save installer choices and backups in {}",
             home.join(".local/state/leanck/installer").display()
         ),
         "[WARN] leanck will not be added to PATH".to_owned(),

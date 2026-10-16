@@ -32,6 +32,8 @@ pub enum Field {
     SkillHosts,
     Skill(usize),
     ClaudeDir,
+    ClaudeSkillsDir,
+    ClaudeAgentsDir,
     CodexSkills,
     Extra(Group, usize),
     AddExtra(Group),
@@ -237,6 +239,8 @@ impl Form {
             Field::SkillsBundle | Field::SkillHosts => "Install skills".into(),
             Field::Skill(i) => format!("  {}", self.skills[i]),
             Field::ClaudeDir => "  Claude configuration".into(),
+            Field::ClaudeSkillsDir => "  Claude skills directory".into(),
+            Field::ClaudeAgentsDir => "  Claude agents directory".into(),
             Field::CodexSkills => "  Codex skills directory".into(),
             Field::Extra(Group::Skills, _) => "  Additional location".into(),
             Field::Extra(Group::ClaudeAgents, _) => "  Claude location".into(),
@@ -277,6 +281,8 @@ impl Form {
             Field::SkillHosts => s.skill_hosts.label().into(),
             Field::Skill(i) => yes_no(s.selected_skills.includes(&self.skills[i])),
             Field::ClaudeDir => path(&s.claude_dir),
+            Field::ClaudeSkillsDir => path(&s.claude_skills()),
+            Field::ClaudeAgentsDir => path(&s.claude_agents()),
             Field::CodexSkills => path(&s.codex_skills),
             Field::Extra(group, i) => group.list(s).get(i).map(|p| path(p)).unwrap_or_default(),
             Field::AgentsBundle => match (s.plugin_hosts.claude, s.plugin_hosts.codex) {
@@ -319,15 +325,15 @@ impl Form {
                 fields.extend([Field::Cli, Field::BinDir, Field::SkillHosts]);
                 fields.extend((0..self.skills.len()).map(Field::Skill));
                 if s.skill_hosts.claude {
-                    fields.push(Field::ClaudeDir);
+                    fields.push(Field::ClaudeSkillsDir);
                 }
                 if s.skill_hosts.codex {
                     fields.push(Field::CodexSkills);
                 }
                 extras(&mut fields, Group::Skills);
                 fields.extend([Field::AddExtra(Group::Skills), Field::AgentHosts]);
-                if s.agent_hosts.claude && !s.skill_hosts.claude {
-                    fields.push(Field::ClaudeDir);
+                if s.agent_hosts.claude {
+                    fields.push(Field::ClaudeAgentsDir);
                 }
                 if s.agent_hosts.codex {
                     fields.push(Field::CodexAgentsDir);
@@ -478,7 +484,10 @@ impl Form {
         let s = &mut self.draft;
         match field {
             Field::Cli => s.cli = !s.cli,
-            Field::AddToPath => s.add_to_path = !s.add_to_path,
+            Field::AddToPath => {
+                s.add_to_path = !s.add_to_path;
+                s.path_explicit = true;
+            }
             Field::Mcp => s.mcp_enabled = !s.mcp_enabled,
             Field::SkillHosts => s.skill_hosts = cycle(&HOSTS, s.skill_hosts, forward),
             Field::AgentHosts => s.agent_hosts = cycle(&HOSTS, s.agent_hosts, forward),
@@ -584,6 +593,22 @@ impl Form {
                             .then_some(dir)
                     };
                 }
+                Field::ClaudeSkillsDir => {
+                    s.claude_skills_dir = if value.is_empty() {
+                        None
+                    } else {
+                        let dir = path(value)?;
+                        (dir != s.claude_dir.join("skills")).then_some(dir)
+                    };
+                }
+                Field::ClaudeAgentsDir => {
+                    s.claude_agents_dir = if value.is_empty() {
+                        None
+                    } else {
+                        let dir = path(value)?;
+                        (dir != s.claude_dir.join("agents")).then_some(dir)
+                    };
+                }
                 Field::CodexAgentsDir => {
                     s.codex_agents_dir = if value.is_empty() {
                         None
@@ -610,6 +635,7 @@ impl Form {
         })();
         match result {
             Ok(()) => {
+                self.draft.apply_path_default();
                 self.editing = None;
                 self.message = None;
                 self.rebuild(keep);

@@ -159,7 +159,7 @@ impl Fixture {
     }
     fn err(&self, argv: &[&str]) -> String {
         match self.plan(argv) {
-            Ok(plan) => panic!("{argv:?} unexpectedly planned: {:#?}", plan.actions),
+            Ok(plan) => panic!("{argv:?} unexpectedly planned: {:#?}", plan.actions()),
             Err(failure) => failure.to_string(),
         }
     }
@@ -273,14 +273,17 @@ impl Fixture {
     }
 }
 
-fn text(plan: &Plan) -> String {
-    plan.text()
-}
 fn has(plan: &Plan, needle: &str) -> bool {
-    plan.actions.iter().any(|a| a.contains(needle))
+    plan.actions().iter().any(|a| a.contains(needle))
 }
-fn install_line(path: &Path) -> String {
-    format!("Would install {}\n", path.display())
+fn installs(plan: &Plan, path: &Path) -> bool {
+    plan.steps.iter().any(|step| match step {
+        Step::Executable { destination }
+        | Step::Tree { destination, .. }
+        | Step::Bundle { destination, .. }
+        | Step::Agent { destination, .. } => destination == path,
+        _ => false,
+    })
 }
 
 #[test]
@@ -306,12 +309,9 @@ fn local_repo_preview_uses_source_inventory_without_network_or_build() {
         "--json",
     ]);
     assert_eq!(plan.version, "v9.8.7 (local source)");
-    assert_eq!(
-        plan.actions[0],
-        format!("Local source: {}", source.display())
-    );
-    for name in ["new-proof", "new-expert.md", "new-grind.toml"] {
-        assert!(has(&plan, name), "{name}: {:#?}", plan.actions);
+    assert_eq!(plan.settings.from_repo.as_ref(), Some(&source));
+    for name in ["new-proof", "new-expert", "new-grind"] {
+        assert!(has(&plan, name), "{name}: {:#?}", plan.actions());
     }
     let outcome = plan.outcome(Status::Preview, "");
     let json: serde_json::Value = serde_json::from_str(&outcome.to_json_line()).unwrap();
@@ -364,8 +364,11 @@ fn local_repo_components_without_cli_skip_compilation() {
             .iter()
             .any(|s| matches!(s, Step::Executable { .. } | Step::Completions { .. }))
     );
-    assert!(text(&plan).contains(&install_line(&home("claude/skills/leanck"))));
-    assert!(text(&plan).contains(&install_line(&home("codex/agents/leanck/lean-grind.toml"))));
+    assert!(installs(&plan, &home("claude/skills/leanck")));
+    assert!(installs(
+        &plan,
+        &home("codex/agents/leanck/lean-grind.toml")
+    ));
     assert!(!has(&plan, "/leanck ("));
 }
 
@@ -393,26 +396,30 @@ fn offline_terminal_preview_can_handle_conflicts_without_changes() {
     let settings = f.settings(&["--standalone", "--skills", "claude", "--dry-run"]);
     let unanswered = f.plan_settings(&settings, &Answers::new()).unwrap_err();
     assert_eq!(unanswered.error, PlanError::Conflict(skill.clone()));
-    for (answer, line, installs) in [
+    for (answer, line, should_install) in [
         (
             Answer::Replace,
-            format!("Back up and replace conflict: {}", skill.display()),
+            format!("Replace {} (backed up first)", skill.display()),
             true,
         ),
-        (Answer::Keep, format!("Preserve {}", skill.display()), false),
+        (
+            Answer::Keep,
+            format!("Keep {} unchanged", skill.display()),
+            false,
+        ),
     ] {
         let answers = Answers::from([(skill.clone(), answer)]);
         let plan = f.plan_settings(&settings, &answers).unwrap();
-        assert!(plan.actions.contains(&line), "{:#?}", plan.actions);
-        assert_eq!(text(&plan).contains(&install_line(&skill)), installs);
-        assert_eq!(plan.skips(&skill), !installs);
+        assert!(plan.actions().contains(&line), "{:#?}", plan.actions());
+        assert_eq!(installs(&plan, &skill), should_install);
+        assert_eq!(plan.skips(&skill), !should_install);
         // Answers survive re-planning after an edit.
         let mut edited = settings.clone();
         edited.mcp_enabled = !edited.mcp_enabled;
         assert!(
             f.plan_settings(&edited, &answers)
                 .unwrap()
-                .actions
+                .actions()
                 .contains(&line)
         );
     }
@@ -475,11 +482,11 @@ fn advanced_data_directory_edit_moves_default_binary_without_writing_on_cancel()
     settings.set_data_dir(data.clone());
     assert_eq!(settings.bin_dir, data.join("bin"));
     let plan = f.plan_settings(&settings, &Answers::new()).unwrap();
-    assert!(plan.actions.contains(&format!(
-        "Would install {} (v1.2.3)",
+    assert!(plan.actions().contains(&format!(
+        "  Executable: {}",
         data.join("bin/leanck").display()
     )));
-    assert!(text(&plan).contains(&install_line(&data.join("bundle"))));
+    assert!(installs(&plan, &data.join("bundle")));
     // An executable directory chosen separately stays put.
     let mut custom = f.settings(&["--bin-dir", "/opt/bin"]);
     custom.set_data_dir(root("other data"));
@@ -499,10 +506,10 @@ fn saved_choices_and_flags_override_them() {
     ]);
     let plan = f.ok(&["--standalone", "--dry-run"]);
     assert!(has(&plan, &custom.join("leanck").display().to_string()));
-    assert!(has(&plan, "claude/skills/lean-proving"));
+    assert!(installs(&plan, &home("claude/skills/lean-proving")));
     let plan = f.ok(&["--standalone", "--skills", "codex", "--dry-run"]);
-    assert!(has(&plan, ".agents/skills/lean-proving"));
-    assert!(!has(&plan, "claude/skills/lean-proving"));
+    assert!(installs(&plan, &home(".agents/skills/lean-proving")));
+    assert!(!installs(&plan, &home("claude/skills/lean-proving")));
 }
 
 #[test]
@@ -519,10 +526,10 @@ fn locally_edited_managed_files_require_force_and_are_backed_up() {
         )
     );
     let plan = f.ok(&["--standalone", "--force"]);
-    assert!(plan.actions.contains(&format!(
-        "Back up and replace conflict: {}",
-        skill.display()
-    )));
+    assert!(
+        plan.actions()
+            .contains(&format!("Replace {} (backed up first)", skill.display()))
+    );
     assert!(plan.replaced.contains(&skill));
     f.remember(&plan);
     let agent = home("codex/agents/leanck/lean-expert.toml");
@@ -552,15 +559,15 @@ fn completion_and_path_preview_and_idempotent_install() {
         "--dry-run",
     ]);
     let script = completions.join("leanck.fish");
-    assert!(plan.actions.contains(&format!(
-        "Would install fish completions: {}",
-        script.display()
-    )));
-    assert!(plan.actions.contains(&format!(
-        "Would update shell profile: {}",
-        profile.display()
-    )));
-    assert!(plan.actions.contains(&format!(
+    assert!(
+        plan.actions()
+            .contains(&format!("Install fish completions: {}", script.display()))
+    );
+    assert!(
+        plan.actions()
+            .contains(&format!("Add leanck to PATH in {}", profile.display()))
+    );
+    assert!(plan.actions().contains(&format!(
         "  fish_add_path -- '{}'",
         home(".local/bin").display()
     )));
@@ -683,16 +690,16 @@ fn missing_custom_shell_paths_are_skipped_in_preview_and_install() {
         "--add-to-path",
         "--dry-run",
     ]);
-    assert!(plan.actions.contains(&format!(
-        "Skip shell completions (directory missing): {}",
+    assert!(plan.actions().contains(&format!(
+        "Skip shell completions: directory missing ({})",
         directory.display()
     )));
-    assert!(plan.actions.contains(&format!(
-        "Skip PATH update (shell profile missing): {}",
+    assert!(plan.actions().contains(&format!(
+        "Skip PATH update: shell profile missing ({})",
         profile.display()
     )));
-    assert!(!has(&plan, "Would install fish completions"));
-    assert!(!has(&plan, "Would update shell profile"));
+    assert!(!has(&plan, "Install fish completions"));
+    assert!(!has(&plan, "Add leanck to PATH in"));
 }
 
 #[test]
@@ -803,8 +810,8 @@ fn custom_completion_directory_is_previewed_and_remembered() {
         dir,
         "--dry-run",
     ]);
-    assert!(plan.actions.contains(&format!(
-        "Skip shell completions (directory missing): {}",
+    assert!(plan.actions().contains(&format!(
+        "Skip shell completions: directory missing ({})",
         directory.display()
     )));
     f.dir(&directory);
@@ -823,10 +830,10 @@ fn custom_completion_directory_is_previewed_and_remembered() {
             .starts_with(&script.display().to_string())
     );
     let plan = f.ok(&["--standalone", "--force"]);
-    assert!(plan.actions.contains(&format!(
-        "Back up and replace conflict: {}",
-        script.display()
-    )));
+    assert!(
+        plan.actions()
+            .contains(&format!("Replace {} (backed up first)", script.display()))
+    );
     assert!(plan.steps.contains(&Step::Completions {
         shell: CompletionShell::Bash,
         destination: script,
@@ -863,11 +870,7 @@ fn additional_locations_are_repeatable_remembered_and_rolled_back() {
         claude.join("lean-expert.md"),
         codex.join("lean-expert.toml"),
     ] {
-        assert!(
-            text(&plan).contains(&install_line(&path)),
-            "{}",
-            path.display()
-        );
+        assert!(installs(&plan, &path), "{}", path.display());
     }
     f.install(&argv);
     let plan = f.install(&["--plugin", "codex"]);
@@ -984,11 +987,7 @@ fn plugin_mcp_flags_override_saved_choice_and_replace_definition_names() {
             binary: home("data/leanck/bin/leanck"),
             mcp_enabled: enabled,
         }));
-        assert_eq!(has(&plan, "Would enable plugin MCP definitions"), enabled);
-        assert_eq!(
-            has(&plan, "Would disable MCP: save .mcp.disabled.json"),
-            !enabled
-        );
+        assert!(!has(&plan, "MCP"));
         assert_eq!(
             f.saved.get("mcp_enabled"),
             Some(if enabled { "1" } else { "0" })
@@ -1086,9 +1085,9 @@ fn individual_skills_apply_to_hosts_extra_locations_and_saved_choices() {
     ]);
     for directory in [home("claude/skills"), home(".agents/skills"), extra.clone()] {
         for name in ["leanck", "lean-style"] {
-            assert!(text(&plan).contains(&install_line(&directory.join(name))));
+            assert!(installs(&plan, &directory.join(name)));
         }
-        assert!(!text(&plan).contains(&install_line(&directory.join("lean-proving"))));
+        assert!(!installs(&plan, &directory.join("lean-proving")));
     }
     assert_eq!(f.saved.get("selected_skills"), Some("leanck lean-style"));
     let plan = f.ok(&["--no-cli", "--skills", "both", "--dry-run"]);
@@ -1121,10 +1120,10 @@ fn skill_flags_override_saved_choices_and_can_restore_all() {
         "--dry-run",
     ]);
     assert!(config_summary(&plan.settings).contains("- Selected skills: lean-style\n"));
-    assert!(!text(&plan).contains(&install_line(&skills.join("leanck"))));
+    assert!(!installs(&plan, &skills.join("leanck")));
     let plan = f.ok(&["--no-cli", "--skills", "codex", "--skill", "all"]);
     for name in ["lean-proving", "lean-style", "leanck"] {
-        assert!(text(&plan).contains(&install_line(&skills.join(name))));
+        assert!(installs(&plan, &skills.join(name)));
     }
     // `--skill NAME --skill all` selects all; `--skill all --skill NAME` selects NAME.
     assert_eq!(
@@ -1181,25 +1180,29 @@ fn dry_run_all_preserves_existing_files_and_never_executes_hosts_or_binary() {
     assert!(f.err(&argv).starts_with(&binary.display().to_string()));
     let plan = f.ok(&[&argv[..], &["--force"]].concat());
     assert!(
-        plan.actions
-            .contains(&format!("Would install {} (v1.2.3)", binary.display()))
+        plan.actions()
+            .contains(&format!("  Executable: {}", binary.display()))
     );
     assert!(
-        plan.actions
-            .contains(&"  Back up and replace existing executable".to_owned())
+        plan.actions()
+            .contains(&"  Replaces the existing executable (backed up first)".to_owned())
     );
-    assert!(has(&plan, "Would run: claude plugin install"));
-    assert!(has(&plan, "Would run: codex plugin add"));
-    assert!(has(&plan, "codex/agents/leanck/lean-expert.toml"));
+    assert!(has(&plan, "  $ claude plugin install"));
+    assert!(has(&plan, "  $ codex plugin add"));
+    assert!(has(&plan, "Link Codex agents into"));
+    assert!(has(&plan, "lean-expert, lean-grind, lean-style-worker"));
     assert!(!has(&plan, "claude/skills/"));
     assert!(!has(&plan, ".agents/skills/"));
     assert!(!has(
         &plan,
-        &format!("Would install {}", home("claude/agents").display())
+        &format!(
+            "Install Claude Code agents into {}",
+            home("claude/agents").display()
+        )
     ));
     assert!(!has(&plan, "Would sign "));
-    assert!(plan.actions.contains(&format!(
-        "Would install configuration example: {}",
+    assert!(plan.actions().contains(&format!(
+        "Install configuration example: {}",
         home("config/leanck/config.example.toml").display()
     )));
 }
@@ -1226,10 +1229,7 @@ fn dry_run_standalone_components_with_force_preserves_foreign_files() {
         "claude/agents/lean-expert.md",
         "codex/agents/leanck/lean-expert.toml",
     ] {
-        assert!(
-            text(&plan).contains(&install_line(&home(destination))),
-            "{destination}"
-        );
+        assert!(installs(&plan, &home(destination)), "{destination}");
     }
     assert!(!has(&plan, "/.local/bin/leanck"));
     assert_eq!(plan.settings.version, "1.2.3");
@@ -1250,9 +1250,12 @@ fn dry_run_custom_destinations_are_not_created() {
     ]);
     assert!(has(
         &plan,
-        &format!("Would install {}", binary_dir.join("leanck").display())
+        &format!(
+            "Install executable: {}",
+            binary_dir.join("leanck").display()
+        )
     ));
-    assert!(text(&plan).contains(&install_line(&data_dir.join("bundle"))));
+    assert!(installs(&plan, &data_dir.join("bundle")));
 }
 
 #[test]
@@ -1287,24 +1290,15 @@ fn all_registers_plugins_and_installs_codex_agents_without_duplicate_skills() {
             },
         ]
     );
-    let order: Vec<_> = plan
-        .actions
-        .iter()
-        .filter(|a| a.starts_with("Would run:"))
-        .collect();
+    let actions = plan.actions();
+    let order: Vec<_> = actions.iter().filter(|a| a.starts_with("  $")).collect();
     assert_eq!(
         order,
         [
-            &format!(
-                "Would run: claude plugin marketplace add \"{}\"",
-                bundle.display()
-            ),
-            "Would run: claude plugin install leanck@leanck --scope user",
-            &format!(
-                "Would run: codex plugin marketplace add \"{}\"",
-                bundle.display()
-            ),
-            "Would run: codex plugin add leanck@leanck",
+            &format!("  $ claude plugin marketplace add \"{}\"", bundle.display()),
+            "  $ claude plugin install leanck@leanck --scope user",
+            &format!("  $ codex plugin marketplace add \"{}\"", bundle.display()),
+            "  $ codex plugin add leanck@leanck",
         ]
     );
     assert!(!has(&plan, &home(".agents/skills").display().to_string()));
@@ -1368,7 +1362,7 @@ fn custom_agents_preserve_unrelated_files_and_require_force() {
     let plan = f.install(&["--standalone", "--agents", "both", "--force"]);
     assert!(plan.replaced.contains(&agents.join("lean-expert.toml")));
     assert!(!has(&plan, "other.toml"));
-    assert!(text(&plan).contains(&install_line(&home("claude/agents/lean-expert.md"))));
+    assert!(installs(&plan, &home("claude/agents/lean-expert.md")));
     assert!(!has(
         &f.ok(&["--standalone", "--agents", "both"]),
         "conflict"
@@ -1510,18 +1504,21 @@ fn the_configuration_example_falls_back_to_the_release_mirror() {
             "https://mirror.example/releases/download/v1.2.3/leanck.example.toml".into()
         ),
     }));
+}
+
+#[test]
+fn existing_configuration_example_is_replaced() {
+    let mut f = Fixture::new();
     f.file(home("config/leanck/config.example.toml"), "mine");
-    let plan = f.ok(&["--standalone", "--force"]);
-    assert!(plan.actions.contains(&format!(
-        "Preserve existing configuration example: {}",
+    let plan = f.ok(&["--standalone", "--skills", "both", "--dry-run"]);
+    assert!(plan.review(Style::PLAIN).contains(&format!(
+        "Install configuration example: {}",
         home("config/leanck/config.example.toml").display()
     )));
-    assert!(
-        !plan
-            .steps
-            .iter()
-            .any(|s| matches!(s, Step::ConfigExample { .. }))
-    );
+    assert!(plan.steps.contains(&Step::ConfigExample {
+        destination: home("config/leanck/config.example.toml"),
+        source: ExampleSource::Release("docs/leanck.example.toml".into()),
+    }));
 }
 
 #[test]
@@ -1557,7 +1554,10 @@ fn release_api_and_pins_survive_reinstalls_and_selections_keep_shell_keys() {
         .lines()
         .map(|line| line.split('\t').next().unwrap())
         .collect();
-    let expected: Vec<_> = SELECTION_KEYS.to_vec();
+    let expected: Vec<_> = SELECTION_KEYS
+        .into_iter()
+        .filter(|key| !matches!(*key, "claude_skills_dir" | "claude_agents_dir"))
+        .collect();
     assert_eq!(keys, expected);
 }
 
@@ -1610,4 +1610,121 @@ fn plans_from_an_observed_filesystem_match_the_snapshot_model() {
             .contains(&home.join("claude/skills/lean-proving"))
     );
     assert!(plan.warnings.iter().any(|w| w.contains("PATH")));
+}
+
+#[test]
+fn standalone_claude_component_directories_install_and_round_trip() {
+    let mut f = Fixture::new();
+    let plan = f.install(&[
+        "--standalone",
+        "--skills",
+        "claude",
+        "--agents",
+        "claude",
+        "--claude-skills-dir",
+        "/x/skills",
+        "--claude-agents-dir",
+        "/y/agents",
+    ]);
+    for name in &f.inventory.skills {
+        assert!(installs(&plan, &Path::new("/x/skills").join(name)));
+    }
+    for name in &f.inventory.claude_agents {
+        assert!(installs(&plan, &Path::new("/y/agents").join(name)));
+    }
+    assert_eq!(f.saved.get("claude_skills_dir"), Some("/x/skills"));
+    assert_eq!(f.saved.get("claude_agents_dir"), Some("/y/agents"));
+    let restored = f.settings(&["--standalone"]);
+    assert_eq!(
+        restored.claude_skills_dir.as_deref(),
+        Some(Path::new("/x/skills"))
+    );
+    assert_eq!(
+        restored.claude_agents_dir.as_deref(),
+        Some(Path::new("/y/agents"))
+    );
+    assert_eq!(restored.claude_dir, home("claude"));
+    let summary = config_summary(&restored);
+    assert!(summary.contains("- Claude skills directory: /x/skills\n"));
+    assert!(summary.contains("- Claude agents directory: /y/agents\n"));
+}
+
+#[test]
+fn claude_component_directories_default_to_the_current_parent() {
+    let mut f = Fixture::new();
+    f.saved = SavedState::parse("claude_dir\t/old\n").unwrap();
+    let settings = f.settings(&["--standalone"]);
+    assert_eq!(settings.claude_skills_dir, None);
+    assert_eq!(settings.claude_agents_dir, None);
+    assert_eq!(settings.claude_skills(), home("claude/skills"));
+    assert_eq!(settings.claude_agents(), home("claude/agents"));
+    let rendered = f.saved.render(&settings, &Recorded::default());
+    assert!(!rendered.contains("claude_skills_dir\t"));
+    assert!(!rendered.contains("claude_agents_dir\t"));
+    let settings = f.settings(&[
+        "--standalone",
+        "--claude-dir",
+        "/new",
+        "--claude-skills-dir",
+        "/new/skills",
+        "--claude-agents-dir",
+        "/new/agents",
+    ]);
+    assert_eq!(settings.claude_skills_dir, None);
+    assert_eq!(settings.claude_agents_dir, None);
+    assert_eq!(settings.claude_skills(), Path::new("/new/skills"));
+    assert_eq!(settings.claude_agents(), Path::new("/new/agents"));
+}
+
+#[test]
+fn bundled_claude_agents_detail_requires_a_codex_link_and_claude_host() {
+    let f = Fixture::new();
+    for (argv, expected) in [
+        (vec!["--plugin", "both"], true),
+        (vec!["--plugin", "codex"], false),
+        (vec!["--plugin", "claude"], false),
+        (vec!["--plugin", "none"], false),
+        (vec!["--standalone", "--agents", "both"], false),
+    ] {
+        let plan = f.ok(&argv);
+        let notice = "Claude Code agents are bundled with the plugin";
+        let item = plan
+            .items
+            .iter()
+            .find(|item| item.text.starts_with("Link Codex agents into "));
+        assert_eq!(
+            item.is_some_and(|item| item.details.iter().any(|detail| detail == notice)),
+            expected
+        );
+        assert_eq!(plan.actions().contains(&format!("  {notice}")), expected);
+        if expected {
+            assert_eq!(
+                item.unwrap().details,
+                ["lean-expert, lean-grind, lean-style-worker", notice,]
+            );
+            assert!(plan.review(Style::PLAIN).contains(concat!(
+                "│  ├─ lean-expert, lean-grind, lean-style-worker\n",
+                "│  └─ Claude Code agents are bundled with the plugin\n",
+            )));
+        }
+    }
+}
+
+#[test]
+fn explicit_path_update_is_honored_when_binary_directory_is_on_path() {
+    for mode in ["--standalone", "--all"] {
+        let mut f = Fixture::new();
+        f.var("PATH", Some("/already/bin:/usr/bin:/bin"));
+        f.file(home(".zshrc"), "profile");
+        let plan = f.ok(&[mode, "--bin-dir", "/already/bin", "--add-to-path"]);
+        assert!(plan.settings.bin_on_path());
+        assert!(plan.settings.add_to_path);
+        assert!(
+            plan.steps
+                .iter()
+                .any(|step| matches!(step, Step::Profile { .. }))
+        );
+        let rendered = f.saved.render(&plan.settings, &Recorded::default());
+        assert!(!rendered.contains("path_entries"));
+    }
 }

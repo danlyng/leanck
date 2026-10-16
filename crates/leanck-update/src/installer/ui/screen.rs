@@ -197,6 +197,7 @@ impl Installer {
                 Output::Error(message) => {
                     out.push_str(&format!("{} [ERR]:{} {message}\n", style.red, style.reset))
                 }
+                Output::Plan(plan) => out.push_str(&plan.review(style)),
                 Output::Text(text) => out.push_str(text),
             }
         }

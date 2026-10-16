@@ -211,6 +211,8 @@ pub struct Settings {
     /// `--skill` was given.
     pub skill_explicit: bool,
     pub bin_dir: PathBuf,
+    /// The original PATH entries, never persisted as installer selections.
+    pub path_entries: Vec<PathBuf>,
     /// `--bin-dir` was given.
     pub bin_dir_explicit: bool,
     /// The remembered executable directories for each mode.
@@ -219,6 +221,10 @@ pub struct Settings {
     pub data_dir: PathBuf,
     pub state_dir: PathBuf,
     pub claude_dir: PathBuf,
+    /// `None` means `CLAUDE_DIR/skills`.
+    pub claude_skills_dir: Option<PathBuf>,
+    /// `None` means `CLAUDE_DIR/agents`.
+    pub claude_agents_dir: Option<PathBuf>,
     pub codex_dir: PathBuf,
     pub codex_skills: PathBuf,
     /// `None` means `CODEX_DIR/agents/leanck`.
@@ -295,12 +301,15 @@ impl Settings {
             selected_skills: SkillSelection::All,
             skill_explicit: false,
             bin_dir: home.join(".local/bin"),
+            path_entries: env.path.clone(),
             bin_dir_explicit: false,
             standalone_bin_dir: home.join(".local/bin"),
             plugin_bin_dir: None,
             data_dir: data_home.join("leanck"),
             state_dir: Self::state_dir(args, env)?,
             claude_dir: home.join(".claude"),
+            claude_skills_dir: None,
+            claude_agents_dir: None,
             codex_dir: home.join(".codex"),
             codex_skills: home.join(".agents/skills"),
             codex_agents_dir: None,
@@ -377,6 +386,8 @@ impl Settings {
                 "codex_dir" => set_path(&mut s.codex_dir, optional_path()?),
                 "codex_skills" => set_path(&mut s.codex_skills, optional_path()?),
                 "codex_agents_dir" => s.codex_agents_dir = optional_path()?,
+                "claude_skills_dir" => s.claude_skills_dir = optional_path()?,
+                "claude_agents_dir" => s.claude_agents_dir = optional_path()?,
                 "completions_dir" => s.completions_dir = optional_path()?,
                 "fish_completions_dir" => set_path(&mut s.fish_completions_dir, optional_path()?),
                 "path_file" => set_path(&mut s.path_file, optional_path()?),
@@ -463,6 +474,14 @@ impl Settings {
                 *target = path(value)?;
             }
         }
+        if let Some(dir) = &args.claude_skills_dir {
+            let dir = path(dir)?;
+            s.claude_skills_dir = (dir != s.claude_dir.join("skills")).then_some(dir);
+        }
+        if let Some(dir) = &args.claude_agents_dir {
+            let dir = path(dir)?;
+            s.claude_agents_dir = (dir != s.claude_dir.join("agents")).then_some(dir);
+        }
         if let Some(dir) = &args.codex_agents_dir {
             s.codex_agents_dir = Some(path(dir)?);
         }
@@ -517,6 +536,8 @@ impl Settings {
         if s.mode == Mode::Plugin && !s.cli_explicit {
             s.cli = true;
         }
+
+        s.apply_path_default();
 
         // Value validation.
         s.completions = CompletionShell::parse(&completions).ok_or_else(|| {
@@ -599,7 +620,20 @@ impl Settings {
                 );
             }
         }
+        self.apply_path_default();
         Ok(())
+    }
+
+    /// Whether the executable directory was on the original PATH.
+    pub fn bin_on_path(&self) -> bool {
+        self.path_entries.iter().any(|entry| entry == &self.bin_dir)
+    }
+
+    /// An executable already on PATH needs no implicit profile update.
+    pub fn apply_path_default(&mut self) {
+        if !self.path_explicit && self.bin_on_path() {
+            self.add_to_path = false;
+        }
     }
 
     /// Change the data directory; an executable directory that followed the
@@ -641,6 +675,16 @@ impl Settings {
     }
     pub fn binary(&self) -> PathBuf {
         self.bin_dir.join("leanck")
+    }
+    pub fn claude_skills(&self) -> PathBuf {
+        self.claude_skills_dir
+            .clone()
+            .unwrap_or_else(|| self.claude_dir.join("skills"))
+    }
+    pub fn claude_agents(&self) -> PathBuf {
+        self.claude_agents_dir
+            .clone()
+            .unwrap_or_else(|| self.claude_dir.join("agents"))
     }
     pub fn codex_agent_dir(&self) -> PathBuf {
         self.codex_agents_dir

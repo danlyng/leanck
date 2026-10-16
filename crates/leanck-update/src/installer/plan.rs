@@ -148,14 +148,32 @@ pub struct Registration {
     pub bundle: PathBuf,
 }
 
+/// One preview item, with optional subordinate details.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct PlanItem {
+    pub text: String,
+    pub details: Vec<String>,
+    pub notice: bool,
+}
+
+fn actions(items: &[PlanItem]) -> Vec<String> {
+    items
+        .iter()
+        .flat_map(|item| {
+            std::iter::once(item.text.clone())
+                .chain(item.details.iter().map(|detail| format!("  {detail}")))
+        })
+        .collect()
+}
+
 /// A reviewed installation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Plan {
     pub settings: Settings,
     /// The version shown to the user: `v1.2.3` or `v1.2.3 (local source)`.
     pub version: String,
-    /// Preview lines, exactly as printed and reported in JSON `actions`.
-    pub actions: Vec<String>,
+    /// Structured preview items, in installation order.
+    pub items: Vec<PlanItem>,
     /// Skipped-option warnings.
     pub warnings: Vec<String>,
     /// Paths left untouched: kept conflicts and missing shell destinations.
@@ -167,6 +185,11 @@ pub struct Plan {
 }
 
 impl Plan {
+    /// Plain preview lines for JSON outcomes and failures.
+    pub fn actions(&self) -> Vec<String> {
+        actions(&self.items)
+    }
+
     pub fn skips(&self, path: &Path) -> bool {
         self.skipped.contains(path)
     }
@@ -193,6 +216,9 @@ pub fn plan_settings(
     inventory: &ReleaseInventory,
     answers: &Answers,
 ) -> Result<Plan, PlanFailure> {
+    let mut settings = settings.clone();
+    settings.apply_path_default();
+    let settings = &settings;
     let mut planner = Planner {
         s: settings,
         env,
@@ -203,7 +229,7 @@ pub fn plan_settings(
             Some(_) => format!("{} (local source)", inventory.tag),
             None => inventory.tag.clone(),
         },
-        actions: vec![],
+        items: vec![],
         warnings: vec![],
         skipped: BTreeSet::new(),
         replaced: BTreeSet::new(),
@@ -214,7 +240,7 @@ pub fn plan_settings(
     let result = planner.run();
     let failure = |error| PlanFailure {
         error,
-        actions: planner.actions.clone(),
+        actions: actions(&planner.items),
         warnings: planner.warnings.clone(),
     };
     if !planner.misses.is_empty() {
@@ -228,7 +254,7 @@ pub fn plan_settings(
     Ok(Plan {
         settings: settings.clone(),
         version: planner.version,
-        actions: planner.actions,
+        items: planner.items,
         warnings: planner.warnings,
         skipped: planner.skipped,
         replaced: planner.replaced,
@@ -282,7 +308,7 @@ struct Planner<'a> {
     inventory: &'a ReleaseInventory,
     answers: &'a Answers,
     version: String,
-    actions: Vec<String>,
+    items: Vec<PlanItem>,
     warnings: Vec<String>,
     skipped: BTreeSet<PathBuf>,
     replaced: BTreeSet<PathBuf>,
@@ -326,7 +352,22 @@ impl<'a> Planner<'a> {
         }
     }
     fn action(&mut self, line: impl Into<String>) {
-        self.actions.push(line.into());
+        self.item(line, vec![], false);
+    }
+    fn item(&mut self, text: impl Into<String>, details: Vec<String>, notice: bool) {
+        self.items.push(PlanItem {
+            text: text.into(),
+            details,
+            notice,
+        });
+    }
+    fn notice(&mut self, text: impl Into<String>) {
+        self.item(text, vec![], true);
+    }
+    fn in_data_dir(&self, path: &Path) -> bool {
+        self.s.mode == Mode::Plugin
+            && !self.skipped(&self.s.bundle_dir())
+            && path.starts_with(&self.s.data_dir)
     }
     fn warn(&mut self, message: impl Into<String>) {
         self.warnings.push(message.into());
@@ -362,7 +403,6 @@ impl<'a> Planner<'a> {
                     repo.display()
                 ));
             }
-            self.action(format!("Local source: {}", repo.display()));
         }
         let inventory = s.state_dir.join("uninstall.tsv");
         let node = self.node(&inventory);
@@ -375,7 +415,7 @@ impl<'a> Planner<'a> {
                 inventory.display()
             ));
         }
-        if s.cli && !s.add_to_path {
+        if s.cli && !s.add_to_path && !s.bin_on_path() {
             self.warn(
                 "leanck will not be added to PATH; agents may not be able to execute leanck.",
             );
@@ -412,11 +452,7 @@ impl<'a> Planner<'a> {
         }
         let codex_agents = s.codex_agent_dir();
         if s.agent_hosts.claude {
-            self.check_agents(
-                &inventory_names.claude_agents,
-                &s.claude_dir.join("agents"),
-                None,
-            )?;
+            self.check_agents(&inventory_names.claude_agents, &s.claude_agents(), None)?;
         }
         if s.agent_hosts.codex {
             self.check_agents(&inventory_names.codex_agents, &codex_agents, None)?;
@@ -476,8 +512,8 @@ impl<'a> Planner<'a> {
                     dir.display()
                 ));
                 self.skipped.insert(path.clone());
-                self.action(format!(
-                    "Skip shell completions (directory missing): {}",
+                self.notice(format!(
+                    "Skip shell completions: directory missing ({})",
                     dir.display()
                 ));
             }
@@ -516,22 +552,36 @@ impl<'a> Planner<'a> {
                     file.display()
                 ));
                 self.skipped.insert(file.clone());
-                self.action(format!(
-                    "Skip PATH update (shell profile missing): {}",
+                self.notice(format!(
+                    "Skip PATH update: shell profile missing ({})",
                     file.display()
                 ));
             }
         }
 
         // The preview, in the order `apply` performs each step.
+        let mut data_item_added = false;
         if s.cli && !self.skipped(&binary) {
-            self.action(format!(
-                "Would install {} ({})",
-                binary.display(),
-                self.version
-            ));
+            let mut details = vec![];
+            if self.in_data_dir(&binary) {
+                details.push(format!("Executable: {}", binary.display()));
+            }
             if self.node(&binary).present() {
-                self.action("  Back up and replace existing executable");
+                details.push("Replaces the existing executable (backed up first)".into());
+            }
+            if self.in_data_dir(&binary) {
+                self.item(
+                    format!("Install leanck into {}", s.data_dir.display()),
+                    details,
+                    false,
+                );
+                data_item_added = true;
+            } else {
+                self.item(
+                    format!("Install executable: {}", binary.display()),
+                    details,
+                    false,
+                );
             }
             self.steps.push(Step::Executable {
                 destination: binary.clone(),
@@ -539,16 +589,14 @@ impl<'a> Planner<'a> {
         }
         for (enabled, dir) in self.skill_dirs() {
             if enabled {
-                for skill in self.selected_skills() {
-                    self.install_tree(&format!("plugin/skills/{skill}"), &dir.join(skill));
-                }
+                self.install_skills(&dir);
             }
         }
         if s.agent_hosts.claude {
             self.install_agents(
                 "plugin/agents",
                 &inventory_names.claude_agents,
-                &s.claude_dir.join("agents"),
+                &s.claude_agents(),
                 None,
             );
         }
@@ -561,24 +609,23 @@ impl<'a> Planner<'a> {
             );
         }
         if s.mode == Mode::Plugin && !self.skipped(&bundle) {
-            self.action(format!("Would install {}", bundle.display()));
+            if !data_item_added {
+                self.action(format!("Install leanck into {}", s.data_dir.display()));
+            }
             self.steps.push(Step::Bundle {
                 destination: bundle.clone(),
                 binary: binary.clone(),
                 mcp_enabled: s.mcp_enabled,
             });
-            self.action(format!("Pin Codex MCP command to {}", binary.display()));
-            self.action(if s.mcp_enabled {
-                "Would enable plugin MCP definitions"
-            } else {
-                "Would disable MCP: save .mcp.disabled.json and .mcp.codex.disabled.json; remove Codex MCP manifest reference"
-            });
             if s.plugin_hosts.claude {
-                self.action(format!(
-                    "Would run: claude plugin marketplace add \"{}\"",
-                    bundle.display()
-                ));
-                self.action("Would run: claude plugin install leanck@leanck --scope user");
+                self.item(
+                    "Register the Claude Code plugin",
+                    vec![
+                        format!("$ claude plugin marketplace add \"{}\"", bundle.display()),
+                        "$ claude plugin install leanck@leanck --scope user".into(),
+                    ],
+                    false,
+                );
                 self.registrations.push(Registration {
                     host: HostName::Claude,
                     home: s.claude_dir.clone(),
@@ -586,11 +633,14 @@ impl<'a> Planner<'a> {
                 });
             }
             if s.plugin_hosts.codex {
-                self.action(format!(
-                    "Would run: codex plugin marketplace add \"{}\"",
-                    bundle.display()
-                ));
-                self.action("Would run: codex plugin add leanck@leanck");
+                self.item(
+                    "Register the Codex plugin",
+                    vec![
+                        format!("$ codex plugin marketplace add \"{}\"", bundle.display()),
+                        "$ codex plugin add leanck@leanck".into(),
+                    ],
+                    false,
+                );
                 self.registrations.push(Registration {
                     host: HostName::Codex,
                     home: s.codex_dir.clone(),
@@ -608,9 +658,7 @@ impl<'a> Planner<'a> {
             }
         }
         for location in &s.extra_skills {
-            for skill in self.selected_skills() {
-                self.install_tree(&format!("plugin/skills/{skill}"), &location.join(skill));
-            }
+            self.install_skills(location);
         }
         for location in &s.extra_claude_agents {
             self.install_agents(
@@ -629,40 +677,47 @@ impl<'a> Planner<'a> {
             );
         }
         let example = &s.config_example;
-        if self.node(example).present() {
-            self.action(format!(
-                "Preserve existing configuration example: {}",
-                example.display()
-            ));
-        } else {
-            self.action(format!(
-                "Would install configuration example: {}",
-                example.display()
-            ));
-            let source = if self.inventory.config_example {
-                ExampleSource::Release("docs/leanck.example.toml".into())
-            } else if let Some(repo) = &s.from_repo {
-                ExampleSource::Path(repo.join("docs/leanck.example.toml"))
-            } else {
-                ExampleSource::Url(format!(
-                    "{}/download/{}/leanck.example.toml",
-                    s.release_url, self.inventory.tag
-                ))
-            };
-            self.steps.push(Step::ConfigExample {
-                destination: example.clone(),
-                source,
-            });
+        let node = self.node(example);
+        if node.is_symlink() {
+            return invalid(format!("refusing symlink: {}", example.display()));
         }
+        if node.present() && !matches!(node, Node::File { .. }) {
+            return invalid(format!(
+                "configuration example is not a regular file: {}",
+                example.display()
+            ));
+        }
+        if !self.in_data_dir(example) {
+            self.action(format!(
+                "Install configuration example: {}",
+                example.display()
+            ));
+        }
+        let source = if self.inventory.config_example {
+            ExampleSource::Release("docs/leanck.example.toml".into())
+        } else if let Some(repo) = &s.from_repo {
+            ExampleSource::Path(repo.join("docs/leanck.example.toml"))
+        } else {
+            ExampleSource::Url(format!(
+                "{}/download/{}/leanck.example.toml",
+                s.release_url, self.inventory.tag
+            ))
+        };
+        self.steps.push(Step::ConfigExample {
+            destination: example.clone(),
+            source,
+        });
         if s.cli
             && let Some(path) = &completion
             && !self.skipped(path)
         {
-            self.action(format!(
-                "Would install {} completions: {}",
-                s.completions.as_str(),
-                path.display()
-            ));
+            if !self.in_data_dir(path) {
+                self.action(format!(
+                    "Install {} completions: {}",
+                    s.completions.as_str(),
+                    path.display()
+                ));
+            }
             self.steps.push(Step::Completions {
                 shell: s.completions,
                 destination: path.clone(),
@@ -670,18 +725,20 @@ impl<'a> Planner<'a> {
         }
         if s.cli && s.add_to_path && !self.skipped(&s.path_file) {
             let line = s.profile_line();
-            self.action(format!(
-                "Would update shell profile: {}",
-                s.path_file.display()
-            ));
-            self.action(format!("  {line}"));
+            if !self.in_data_dir(&s.path_file) {
+                self.item(
+                    format!("Add leanck to PATH in {}", s.path_file.display()),
+                    vec![line.clone()],
+                    false,
+                );
+            }
             self.steps.push(Step::Profile {
                 file: s.path_file.clone(),
                 line,
             });
         }
         self.action(format!(
-            "Installer choices and replacement backups: {}",
+            "Save installer choices and backups in {}",
             s.state_dir.display()
         ));
         Ok(())
@@ -689,7 +746,7 @@ impl<'a> Planner<'a> {
 
     fn skill_dirs(&self) -> [(bool, PathBuf); 2] {
         [
-            (self.s.skill_hosts.claude, self.s.claude_dir.join("skills")),
+            (self.s.skill_hosts.claude, self.s.claude_skills()),
             (self.s.skill_hosts.codex, self.s.codex_skills.clone()),
         ]
     }
@@ -707,13 +764,13 @@ impl<'a> Planner<'a> {
     fn conflict(&mut self, path: &Path) -> Checked {
         match (self.s.force, self.answers.get(path)) {
             (true, _) | (false, Some(Answer::Replace)) => {
-                self.action(format!("Back up and replace conflict: {}", path.display()));
+                self.notice(format!("Replace {} (backed up first)", path.display()));
                 self.replaced.insert(path.to_owned());
                 Ok(())
             }
             (false, Some(Answer::Keep)) => {
                 self.skipped.insert(path.to_owned());
-                self.action(format!("Preserve {}", path.display()));
+                self.notice(format!("Keep {} unchanged", path.display()));
                 Ok(())
             }
             (false, None) => Err(PlanError::Conflict(path.to_owned())),
@@ -787,19 +844,23 @@ impl<'a> Planner<'a> {
             return;
         }
         let inventory_names: &'a ReleaseInventory = self.inventory;
+        let mut details = vec![];
         for name in &inventory_names.codex_agents {
             let legacy = s.codex_dir.join("agents").join(name);
             if self.skipped(&destination.join(name)) || legacy == destination.join(name) {
                 continue;
             }
             if self.unchanged_managed_agent(&legacy) {
-                self.action(format!(
-                    "Move managed Codex agent {} into {}/",
-                    legacy.display(),
-                    destination.display()
-                ));
+                details.push(legacy.display().to_string());
                 self.steps.push(Step::MigrateCodexAgent { legacy });
             }
+        }
+        if !details.is_empty() {
+            self.item(
+                format!("Move managed Codex agents into {}/", destination.display()),
+                details,
+                false,
+            );
         }
     }
 
@@ -821,20 +882,56 @@ impl<'a> Planner<'a> {
         if self.skipped(destination) {
             return;
         }
-        self.action(format!("Would install {}", destination.display()));
         self.steps.push(Step::Tree {
             source: source.to_owned(),
             destination: destination.to_owned(),
         });
     }
 
+    fn install_skills(&mut self, dir: &Path) {
+        let skills: Vec<_> = self
+            .selected_skills()
+            .into_iter()
+            .filter(|skill| !self.skipped(&dir.join(skill)))
+            .collect();
+        if !skills.is_empty() && !self.in_data_dir(dir) {
+            self.item(
+                format!("Install skills into {}", dir.display()),
+                vec![skills.join(", ")],
+                false,
+            );
+        }
+        for skill in skills {
+            self.install_tree(&format!("plugin/skills/{skill}"), &dir.join(skill));
+        }
+    }
+
     fn install_agents(&mut self, source: &str, names: &[String], dir: &Path, link: Option<&Path>) {
-        for name in names {
-            let destination = dir.join(name);
-            if self.skipped(&destination) {
-                continue;
+        let installed: Vec<_> = names
+            .iter()
+            .filter(|name| !self.skipped(&dir.join(name)))
+            .collect();
+        if !installed.is_empty() && !self.in_data_dir(dir) {
+            let label = if link.is_some() {
+                "Link Codex agents"
+            } else if source == "plugin/agents" {
+                "Install Claude Code agents"
+            } else {
+                "Install Codex agents"
+            };
+            let names = installed
+                .iter()
+                .map(|name| Path::new(name).file_stem().unwrap().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let mut details = vec![names];
+            if link.is_some() && self.s.mode == Mode::Plugin && self.s.plugin_hosts.claude {
+                details.push("Claude Code agents are bundled with the plugin".into());
             }
-            self.action(format!("Would install {}", destination.display()));
+            self.item(format!("{label} into {}", dir.display()), details, false);
+        }
+        for name in installed {
+            let destination = dir.join(name);
             self.steps.push(Step::Agent {
                 source: format!("{source}/{name}"),
                 destination,

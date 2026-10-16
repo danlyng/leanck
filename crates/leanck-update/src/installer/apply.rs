@@ -484,10 +484,17 @@ impl<'a, W: Write> Installer<'a, W> {
     }
 
     fn install_config_example(&mut self, destination: &Path, source: &ExampleSource) -> Result<()> {
-        // Never replace a configuration example, even one created since review.
-        if observe_node(destination)?.present() {
-            return Ok(());
-        }
+        let node = observe_node(destination)?;
+        ensure!(
+            !node.is_symlink(),
+            "refusing symlink: {}",
+            destination.display()
+        );
+        ensure!(
+            !node.present() || matches!(node, super::Node::File { .. }),
+            "configuration example is not a regular file: {}",
+            destination.display()
+        );
         let bytes = match source {
             ExampleSource::Release(relative) => fs::read(self.release.root.join(relative))?,
             ExampleSource::Path(path) => fs::read(path)?,

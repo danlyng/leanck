@@ -14,7 +14,7 @@ use std::{
 };
 
 /// `selections.tsv` keys in the order the installer writes them.
-pub const SELECTION_KEYS: [&str; 33] = [
+pub const SELECTION_KEYS: [&str; 35] = [
     "mode",
     "plugin_claude",
     "plugin_codex",
@@ -40,6 +40,8 @@ pub const SELECTION_KEYS: [&str; 33] = [
     "plugin_bin_dir",
     "data_dir",
     "claude_dir",
+    "claude_skills_dir",
+    "claude_agents_dir",
     "codex_dir",
     "codex_skills",
     "codex_agents_dir",
@@ -174,6 +176,14 @@ impl SavedState {
                 "plugin_bin_dir" => plugin_bin_dir.clone(),
                 "data_dir" => path(&settings.data_dir),
                 "claude_dir" => path(&settings.claude_dir),
+                "claude_skills_dir" => match &settings.claude_skills_dir {
+                    Some(dir) => path(dir),
+                    None => continue,
+                },
+                "claude_agents_dir" => match &settings.claude_agents_dir {
+                    Some(dir) => path(dir),
+                    None => continue,
+                },
                 "codex_dir" => path(&settings.codex_dir),
                 "codex_skills" => path(&settings.codex_skills),
                 "codex_agents_dir" => settings

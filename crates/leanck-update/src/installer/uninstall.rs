@@ -605,6 +605,8 @@ fn legacy_inventory(saved: &SavedState, env: &Environment, plugin: bool) -> Resu
     let codex_dir = value("codex_dir")
         .or_else(|| env.codex_home.clone())
         .unwrap_or_else(|| env.home.join(".codex"));
+    let claude_skills = value("claude_skills_dir").unwrap_or_else(|| claude_dir.join("skills"));
+    let claude_agents = value("claude_agents_dir").unwrap_or_else(|| claude_dir.join("agents"));
     let codex_skills = value("codex_skills").unwrap_or_else(|| env.home.join(".agents/skills"));
     let codex_agents = value("codex_agents_dir").unwrap_or_else(|| codex_dir.join("agents/leanck"));
     let mut records = vec![];
@@ -627,18 +629,20 @@ fn legacy_inventory(saved: &SavedState, env: &Environment, plugin: bool) -> Resu
     for directory in [
         &data_dir,
         &claude_dir,
+        &claude_skills,
+        &claude_agents,
         &codex_dir,
         &codex_skills,
         &codex_agents,
     ] {
         valid_path(directory)?;
     }
-    for directory in [claude_dir.join("skills"), codex_skills] {
+    for directory in [claude_skills, codex_skills] {
         for skill in sorted_entries(&directory) {
             legacy_tree(&skill, &mut records);
         }
     }
-    legacy_agents(&claude_dir.join("agents"), &data_dir, &mut records);
+    legacy_agents(&claude_agents, &data_dir, &mut records);
     legacy_agents(&codex_dir.join("agents"), &data_dir, &mut records);
     legacy_agents(&codex_agents, &data_dir, &mut records);
     legacy_tree(&data_dir.join("agents"), &mut records);

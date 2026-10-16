@@ -167,7 +167,7 @@ fn drive(argv: &[OsString], installer: &str, run: &mut Run) -> Result<i32> {
         show(run, &plan, args.quiet);
         plan
     };
-    run.actions = plan.actions.clone();
+    run.actions = plan.actions();
     if args.dry_run {
         run.status = Status::Preview;
         run.console.info(

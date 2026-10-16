@@ -45,6 +45,18 @@ pub fn config_summary(settings: &Settings) -> String {
             line(format!("- Selected skills: {}", s.selected_skills.render()));
             line(format!("- Agents: {}", s.agent_hosts.label()));
             line("- MCP: disabled (available through leanck serve mcp)".into());
+            if s.skill_hosts.claude {
+                line(format!(
+                    "- Claude skills directory: {}",
+                    display(&s.claude_skills(), home)
+                ));
+            }
+            if s.agent_hosts.claude {
+                line(format!(
+                    "- Claude agents directory: {}",
+                    display(&s.claude_agents(), home)
+                ));
+            }
             if s.agent_hosts.codex {
                 line(format!(
                     "- Codex custom agents: {}",
@@ -81,19 +93,47 @@ pub fn config_summary(settings: &Settings) -> String {
 }
 
 impl Plan {
-    /// The plan lines, one per line.
-    pub fn text(&self) -> String {
-        self.actions.iter().map(|a| format!("{a}\n")).collect()
-    }
-    /// The review block: a heading, the plan lines, and a blank line.
+    /// The review block: a heading, a tree of items, and a blank line.
     pub fn review(&self, style: Style) -> String {
-        format!(
-            "\n{}Ready to install leanck {}{}\n{}\n",
-            style.bold,
-            self.version,
-            style.reset,
-            self.text()
-        )
+        let mut out = format!(
+            "\n{}{}Install Plan{}{}: leanck {}{}\n",
+            style.bold, style.cyan, style.reset, style.bold, self.version, style.reset
+        );
+        if let Some(repo) = &self.settings.from_repo {
+            out.push_str(&format!(
+                "{}Source checkout: {}{}\n",
+                style.dim,
+                repo.display(),
+                style.reset
+            ));
+        }
+        for (index, item) in self.items.iter().enumerate() {
+            let last = index + 1 == self.items.len();
+            let branch = if last { "└─ " } else { "├─ " };
+            out.push_str(&format!("{}{branch}{}", style.dim, style.reset));
+            if item.notice {
+                out.push_str(style.yellow);
+            }
+            out.push_str(&item.text);
+            if item.notice {
+                out.push_str(style.reset);
+            }
+            out.push('\n');
+            for (index, detail) in item.details.iter().enumerate() {
+                let prefix = if last { "   " } else { "│  " };
+                let branch = if index + 1 == item.details.len() {
+                    "└─ "
+                } else {
+                    "├─ "
+                };
+                out.push_str(&format!(
+                    "{}{prefix}{branch}{}{}{detail}{}\n",
+                    style.dim, style.reset, style.dim, style.reset
+                ));
+            }
+        }
+        out.push('\n');
+        out
     }
     /// The JSON outcome for this plan.
     pub fn outcome(&self, status: Status, message: impl Into<String>) -> Outcome {
@@ -101,7 +141,7 @@ impl Plan {
             status,
             version: self.version.clone(),
             message: message.into(),
-            actions: self.actions.clone(),
+            actions: self.actions(),
         }
     }
 }
@@ -136,6 +176,57 @@ impl Outcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn review_renders_notices_multiple_details_and_last_item_details() {
+        use super::super::plan::PlanItem;
+        use super::super::{Environment, FileSnapshot, InstallArgs, SavedState};
+        use std::{collections::BTreeMap, ffi::OsString, path::PathBuf};
+        let vars = BTreeMap::from([("HOME".into(), OsString::from("/home/user"))]);
+        let mut env = Environment::from_vars(&vars, PathBuf::from("/work")).unwrap();
+        env.files = FileSnapshot::assume_missing();
+        let args = InstallArgs::parse_from(["--standalone"]).unwrap();
+        let settings = Settings::resolve(&args, &env, &SavedState::default()).unwrap();
+        let plan = Plan {
+            settings,
+            version: "v1.2.3".into(),
+            items: vec![
+                PlanItem {
+                    text: "Keep /existing unchanged".into(),
+                    details: vec![],
+                    notice: true,
+                },
+                PlanItem {
+                    text: "Register the Codex plugin".into(),
+                    details: vec!["$ first".into(), "$ second".into()],
+                    notice: false,
+                },
+                PlanItem {
+                    text: "Last item".into(),
+                    details: vec!["first detail".into(), "last detail".into()],
+                    notice: false,
+                },
+            ],
+            warnings: vec![],
+            skipped: Default::default(),
+            replaced: Default::default(),
+            steps: vec![],
+            registrations: vec![],
+        };
+        assert_eq!(
+            plan.review(Style::PLAIN),
+            concat!(
+                "\nInstall Plan: leanck v1.2.3\n",
+                "├─ Keep /existing unchanged\n",
+                "├─ Register the Codex plugin\n",
+                "│  ├─ $ first\n",
+                "│  └─ $ second\n",
+                "└─ Last item\n",
+                "   ├─ first detail\n",
+                "   └─ last detail\n\n",
+            )
+        );
+    }
 
     #[test]
     fn outcome_is_one_line_with_keys_in_order_and_escaped_controls() {
