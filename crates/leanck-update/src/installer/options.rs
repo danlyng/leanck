@@ -22,7 +22,7 @@ Skills:
   lean-style    Style cleanup using specialized agents
 
 Examples:
-  curl -fsSL https://lean4.party/leanck-install.sh | sh
+  /bin/bash -c \"$(curl -fsSL https://github.com/danlyng/leanck/releases/latest/download/install.sh)\"
   sh install.sh --plugin codex
   sh install.sh --standalone --skills both --skill leanck
   sh install.sh --yes --all --version v0.30.0

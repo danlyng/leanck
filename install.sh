@@ -23,7 +23,7 @@ cleanup() {
 }
 usage() {
     cat <<'EOF'
-Usage: curl -fsSL https://lean4.party/leanck-install.sh | sh -s -- [OPTIONS]
+Usage: /bin/bash -c "$(curl -fsSL https://github.com/danlyng/leanck/releases/latest/download/install.sh)" -- [OPTIONS]
        sh install.sh [OPTIONS]
 
 Download a leanck release, verify its SHA-256 checksum, and run its installer.
@@ -43,7 +43,7 @@ hosts, skills, agents, completions, directories) and go to the release's install
 `leanck _install --help` lists them.
 
 Examples:
-  curl -fsSL https://lean4.party/leanck-install.sh | sh
+  /bin/bash -c "$(curl -fsSL https://github.com/danlyng/leanck/releases/latest/download/install.sh)"
   sh install.sh --yes --all
   sh install.sh --standalone --skills both --skill leanck
   sh install.sh --from-repo .

@@ -18,13 +18,13 @@
 Install prebuilt `leanck` (macOS or Linux, ARM64 or x86-64):
 
 ```bash
-curl -fsSL https://lean4.party/leanck-install.sh | sh
+/bin/bash -c "$(curl -fsSL https://github.com/danlyng/leanck/releases/latest/download/install.sh)"
 ```
 
-The installer needs only `sh`, `curl`, `tar`, and `sha256sum` or `shasum`; it does not use Python. [`install.sh`](install.sh) downloads the release archive for your platform, verifies its SHA-256 checksum, and runs the installer bundled in that release (`leanck _install`). The interactive installer walks through installing the CLI, shell completions, and the Claude Code / Codex plugin (with skills, subagents, hooks, and optional MCP server). Pass flags after `sh -s --` for non-interactive or custom setups: `--yes` approves without prompts (required without a terminal), `--dry-run` previews, `--json` reports one JSON object, and `--version vX.Y.Z` pins a release. `--help` lists these bootstrap options; every other option (plugin or `--standalone` mode, hosts, skills, agents, completions, directories) goes to the release's installer, and `leanck _install --help` lists them all.
+The installer needs only `bash` (or any POSIX `sh`, as `sh install.sh`), `curl`, `tar`, and `sha256sum` or `shasum`; it does not use Python. [`install.sh`](install.sh) downloads the release archive for your platform, verifies its SHA-256 checksum, and runs the installer bundled in that release (`leanck _install`). The interactive installer walks through installing the CLI, shell completions, and the Claude Code / Codex plugin (with skills, subagents, hooks, and optional MCP server). Pass flags after `--` for non-interactive or custom setups: `--yes` approves without prompts (required without a terminal), `--dry-run` previews, `--json` reports one JSON object, and `--version vX.Y.Z` pins a release. `--help` lists these bootstrap options; every other option (plugin or `--standalone` mode, hosts, skills, agents, completions, directories) goes to the release's installer, and `leanck _install --help` lists them all.
 
 ```bash
-curl -fsSL https://lean4.party/leanck-install.sh | sh -s -- --help
+/bin/bash -c "$(curl -fsSL https://github.com/danlyng/leanck/releases/latest/download/install.sh)" -- --help
 ```
 
 To install from a source checkout (requires Rust 1.89+ and Cargo), run the same installer with `--from-repo`. It first asks whether to build, because building runs the repository's build scripts (`--yes` answers for you); then it runs `cargo build --release --locked -p leanck-cli`, packages the checkout with `cargo xtask package-local`, and installs the result through the same flow:
