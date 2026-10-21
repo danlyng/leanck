@@ -27,6 +27,7 @@ pub struct Installer {
     serial: u64,
     cursor: usize,
     buffer: Buffer,
+    checks: Vec<bool>,
     form: Option<Form>,
 }
 
@@ -40,6 +41,7 @@ impl Installer {
             serial: u64::MAX,
             cursor: 0,
             buffer: Buffer::default(),
+            checks: vec![],
             form: None,
         };
         installer.sync();
@@ -70,7 +72,12 @@ impl Installer {
     /// The highlighted menu option's label, when a menu is shown.
     pub fn menu_selection(&self) -> Option<&'static str> {
         match self.flow.question() {
-            Question::Menu { options, .. } => options.get(self.cursor).map(|o| o.label),
+            Question::Menu { options, .. } => {
+                options.get(self.cursor).and_then(|o| match &o.label {
+                    std::borrow::Cow::Borrowed(label) => Some(*label),
+                    _ => None,
+                })
+            }
             _ => None,
         }
     }
@@ -103,6 +110,28 @@ impl Installer {
                         }
                         KeyCode::Enter => self.flow.choose(self.cursor),
                         // Menus ignore text; there is no Escape action.
+                        _ => Effect::None,
+                    }
+                }
+                Input::Paste(_) => Effect::None,
+            },
+            Question::Checklist { options, .. } => match input {
+                Input::Key(key) => {
+                    let n = options.len();
+                    match key.code {
+                        KeyCode::Up if n > 0 => {
+                            self.cursor = (self.cursor + n - 1) % n;
+                            Effect::None
+                        }
+                        KeyCode::Down if n > 0 => {
+                            self.cursor = (self.cursor + 1) % n;
+                            Effect::None
+                        }
+                        KeyCode::Char(' ') if n > 0 => {
+                            self.checks[self.cursor] = !self.checks[self.cursor];
+                            Effect::None
+                        }
+                        KeyCode::Enter => self.flow.check(self.checks.clone()),
                         _ => Effect::None,
                     }
                 }
@@ -161,6 +190,10 @@ impl Installer {
         self.cursor = match &question {
             Question::Menu { default, .. } => *default,
             _ => 0,
+        };
+        self.checks = match &question {
+            Question::Checklist { selected, .. } => selected.clone(),
+            _ => vec![],
         };
         self.form = match question {
             Question::Form => Some(self.form.take().unwrap_or_else(|| {
@@ -230,6 +263,31 @@ impl Installer {
                         Line::raw(format!("  {}", option.label))
                     });
                 }
+            }
+            Question::Checklist {
+                title,
+                note,
+                options,
+                ..
+            } => {
+                lines.push(Line::styled(title, styles.prompt));
+                if let Some(note) = note {
+                    lines.push(Line::styled(note, styles.note));
+                }
+                for (i, option) in options.iter().enumerate() {
+                    let marker = if i == self.cursor { "> " } else { "  " };
+                    let check = if self.checks[i] { 'x' } else { ' ' };
+                    let style = if i == self.cursor {
+                        styles.selected
+                    } else {
+                        TextStyle::default()
+                    };
+                    lines.push(Line::styled(
+                        format!("{marker}[{check}] {}", option.label),
+                        style,
+                    ));
+                }
+                lines.push(Line::styled("Space: toggle  Enter: confirm", styles.dim));
             }
             Question::Prompt { label, default } => {
                 let mut prompt = wrap(

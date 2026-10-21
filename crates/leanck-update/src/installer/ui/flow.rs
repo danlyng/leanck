@@ -13,6 +13,7 @@ use super::super::{
 };
 use crate::paths::{absolute, display, valid_text};
 use std::{
+    borrow::Cow,
     collections::VecDeque,
     path::{Path, PathBuf},
 };
@@ -20,9 +21,9 @@ use std::{
 /// The fixed description shown with each skill.
 pub fn skill_description(name: &str) -> &'static str {
     match name {
-        "leanck" => "Minimal leanck command reference",
-        "lean-proving" => "Opinionated Lean theorem-proving workflow",
-        "lean-style" => "Style cleanup using specialized agents",
+        "leanck" => "leanck command reference",
+        "lean-proving" => "opinionated workflow for proving theorems",
+        "lean-style" => "opinionated workflow for code and documentation style cleanup",
         _ => "Lean development skill",
     }
 }
@@ -36,13 +37,16 @@ pub fn confirmation_title(mode: Mode) -> &'static str {
 }
 
 /// One menu option: the word line mode accepts, and the label shown.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Choice {
-    pub value: &'static str,
-    pub label: &'static str,
+    pub value: Cow<'static, str>,
+    pub label: Cow<'static, str>,
 }
-const fn choice(value: &'static str, label: &'static str) -> Choice {
-    Choice { value, label }
+fn choice(value: impl Into<Cow<'static, str>>, label: impl Into<Cow<'static, str>>) -> Choice {
+    Choice {
+        value: value.into(),
+        label: label.into(),
+    }
 }
 
 /// What the user is being asked.
@@ -54,6 +58,13 @@ pub enum Question {
         title: String,
         options: Vec<Choice>,
         default: usize,
+    },
+    /// Pick any number of options; an empty line takes `selected`.
+    Checklist {
+        title: String,
+        note: Option<String>,
+        options: Vec<Choice>,
+        selected: Vec<bool>,
     },
     /// A line of text. An empty reply takes `default`.
     Prompt { label: String, default: String },
@@ -136,7 +147,7 @@ enum Ask {
     Cli,
     BinDir(&'static str),
     SkillHosts(&'static str),
-    Skill(usize),
+    Skills,
     AgentHosts(&'static str),
     PluginHosts,
     ClaudeDir,
@@ -183,8 +194,6 @@ pub struct Flow {
     ask: Ask,
     queue: VecDeque<(Ask, When)>,
     phase: Phase,
-    /// Per-skill answers while the skill prompts run.
-    skill_choices: Vec<bool>,
     /// Settings when the plain editor opened.
     editor_initial: Option<Settings>,
     /// Settings before the advanced edit that the pending plan checks.
@@ -227,7 +236,12 @@ impl Flow {
     ) -> Self {
         Self {
             settings,
-            skills: inventory.skills.clone(),
+            // The command reference comes first; the workflows follow.
+            skills: {
+                let mut skills = inventory.skills.clone();
+                skills.sort_by_key(|name| name != "leanck");
+                skills
+            },
             cwd,
             plain,
             answers: Answers::new(),
@@ -235,7 +249,6 @@ impl Flow {
             ask: Ask::Mode,
             queue: VecDeque::new(),
             phase: Phase::Configure,
-            skill_choices: vec![],
             editor_initial: None,
             before_edit: None,
             output: vec![],
@@ -349,25 +362,25 @@ impl Flow {
             Ask::Profile => prompt("Shell profile to update".into(), path(&s.path_file)),
             Ask::Cli => prompt("Install the CLI?".into(), yes_no(s.cli).into()),
             Ask::BinDir(label) => prompt((*label).into(), path(&s.bin_dir)),
-            Ask::SkillHosts(label) => prompt(
-                format!("{label} (none / claude / codex / both)"),
-                s.skill_hosts.label().into(),
-            ),
-            Ask::Skill(index) => {
-                let name = &self.skills[*index];
-                prompt(
-                    format!("Install {name} ({})?", skill_description(name)),
-                    yes_no(self.skill_choices.get(*index).copied().unwrap_or(false)).into(),
-                )
-            }
-            Ask::AgentHosts(label) => prompt(
-                format!("{label} (none / claude / codex / both)"),
-                s.agent_hosts.label().into(),
-            ),
-            Ask::PluginHosts => prompt(
-                "Register plugins (none / claude / codex / both)".into(),
-                s.plugin_hosts.label().into(),
-            ),
+            Ask::Skills => Question::Checklist {
+                title: "Install skills:".into(),
+                note: None,
+                options: self.skills.iter().map(|name| choice(
+                    name.clone(), format!("{name} ({})", skill_description(name)),
+                )).collect(),
+                selected: self.skills.iter().map(|name| {
+                    if s.skills_chosen { s.selected_skills.includes(name) } else { name == "leanck" }
+                }).collect(),
+            },
+            Ask::SkillHosts(label) => host_checklist(label, if s.skill_hosts_chosen {
+                s.skill_hosts
+            } else { s.detected_hosts }, None),
+            Ask::AgentHosts(label) => host_checklist(label, if s.agent_hosts_chosen {
+                s.agent_hosts
+            } else { s.detected_hosts },
+                self.skills.iter().any(|name| matches!(name.as_str(), "lean-proving" | "lean-style") && s.selected_skills.includes(name))
+                    .then(|| "Note: Custom agents are strongly recommended if `lean-proving` or `lean-style` are installed".into())),
+            Ask::PluginHosts => host_checklist("Register plugins for:", s.plugin_hosts, None),
             Ask::ClaudeDir => prompt("Claude configuration directory".into(), path(&s.claude_dir)),
             Ask::ClaudeSkillsDir => {
                 prompt("Claude skills directory".into(), path(&s.claude_skills()))
@@ -412,18 +425,52 @@ impl Flow {
                 default,
             } => {
                 let value = if reply.is_empty() {
-                    options[default].value
+                    options[default].value.as_ref()
                 } else {
                     reply
                 };
                 match options.iter().position(|o| o.value == value) {
                     Some(index) => self.select(&title, &options, index),
                     None => {
-                        let values: Vec<&str> = options.iter().map(|o| o.value).collect();
+                        let values: Vec<&str> = options.iter().map(|o| o.value.as_ref()).collect();
                         self.warn(format!("Enter 1-{} or {}.", values.len(), or_list(&values)));
                         Effect::None
                     }
                 }
+            }
+            Question::Checklist {
+                options, selected, ..
+            } => {
+                let selected = if reply.is_empty() {
+                    selected
+                } else if reply == "none" {
+                    vec![false; options.len()]
+                } else {
+                    let mut selected = vec![false; options.len()];
+                    let tokens: Vec<_> = reply
+                        .split(|c: char| c == ',' || c.is_whitespace())
+                        .filter(|token| !token.is_empty())
+                        .collect();
+                    if tokens.is_empty() {
+                        self.warn("Enter numbers or names separated by spaces, or none.");
+                        return Effect::None;
+                    }
+                    for token in tokens {
+                        let index = token
+                            .parse::<usize>()
+                            .ok()
+                            .filter(|n| (1..=options.len()).contains(n))
+                            .map(|n| n - 1)
+                            .or_else(|| options.iter().position(|o| o.value == token));
+                        let Some(index) = index else {
+                            self.warn("Enter numbers or names separated by spaces, or none.");
+                            return Effect::None;
+                        };
+                        selected[index] = true;
+                    }
+                    selected
+                };
+                self.check(selected)
             }
             Question::Prompt { label, default } => {
                 self.output.push(Output::Answer {
@@ -454,6 +501,57 @@ impl Flow {
             }
             _ => Effect::None,
         }
+    }
+
+    /// Confirm a checklist; malformed selections leave it unchanged.
+    pub fn check(&mut self, selected: Vec<bool>) -> Effect {
+        let Question::Checklist { title, options, .. } = self.question() else {
+            return Effect::None;
+        };
+        if selected.len() != options.len() {
+            return Effect::None;
+        }
+        self.serial += 1;
+        let labels: Vec<_> = options
+            .iter()
+            .zip(&selected)
+            .filter(|(_, checked)| **checked)
+            // The answer line names skills without their descriptions.
+            .map(|(o, _)| o.label.split(" (").next().unwrap_or_default())
+            .collect();
+        self.output.push(Output::Answer {
+            prompt: title,
+            reply: if labels.is_empty() {
+                "none".into()
+            } else {
+                labels.join(", ")
+            },
+        });
+        let hosts = || Hosts {
+            claude: selected[0],
+            codex: selected[1],
+        };
+        match self.ask {
+            Ask::Skills => {
+                self.settings.selected_skills = selection(&self.skills, &selected);
+                self.settings.skills_chosen = true;
+                if !selected.iter().any(|checked| *checked) {
+                    self.settings.skill_hosts = Hosts::NONE;
+                    self.settings.skill_hosts_chosen = true;
+                }
+            }
+            Ask::SkillHosts(_) => {
+                self.settings.skill_hosts = hosts();
+                self.settings.skill_hosts_chosen = true;
+            }
+            Ask::AgentHosts(_) => {
+                self.settings.agent_hosts = hosts();
+                self.settings.agent_hosts_chosen = true;
+            }
+            Ask::PluginHosts => self.settings.plugin_hosts = hosts(),
+            _ => return Effect::None,
+        }
+        self.next()
     }
 
     /// Stop: Ctrl-C, Ctrl-D, or the end of input.
@@ -537,12 +635,12 @@ impl Flow {
     }
 
     fn select(&mut self, title: &str, options: &[Choice], index: usize) -> Effect {
-        let option = options[index];
+        let option = &options[index];
         self.output.push(Output::Answer {
             prompt: title.to_owned(),
-            reply: option.label.to_owned(),
+            reply: option.label.to_string(),
         });
-        match (&self.ask, option.value) {
+        match (&self.ask, option.value.as_ref()) {
             (Ask::Mode, "plugin") => self.start(Mode::Plugin),
             (Ask::Mode, _) => self.start(Mode::Standalone),
             (Ask::Confirm, "continue") => {
@@ -605,13 +703,11 @@ impl Flow {
     fn queue_standalone(&mut self) {
         self.push(Ask::Cli, always);
         self.push(Ask::BinDir("Install location"), |s| s.cli);
-        self.push(Ask::SkillHosts("Standalone skills"), always);
-        for index in 0..self.skills.len() {
-            self.push(Ask::Skill(index), |s| {
-                s.skill_hosts.any() || !s.extra_skills.is_empty()
-            });
-        }
-        self.push(Ask::AgentHosts("Custom agents"), always);
+        self.push(Ask::Skills, always);
+        self.push(Ask::SkillHosts("Install skills for:"), |s| {
+            s.selected_skills != SkillSelection::None
+        });
+        self.push(Ask::AgentHosts("Install custom agents for:"), always);
         self.push(Ask::ClaudeSkillsDir, |s| s.skill_hosts.claude);
         self.push(Ask::CodexSkills, |s| s.skill_hosts.codex);
         self.push(Ask::ClaudeAgentsDir, |s| s.agent_hosts.claude);
@@ -626,11 +722,6 @@ impl Flow {
                 self.settings.apply_path_default();
             }
             if when(&self.settings) {
-                if ask == Ask::Skill(0) {
-                    let selection = &self.settings.selected_skills;
-                    self.skill_choices =
-                        self.skills.iter().map(|s| selection.includes(s)).collect();
-                }
                 self.ask = ask;
                 return Effect::None;
             }
@@ -694,10 +785,10 @@ impl Flow {
             }
             "skills" => {
                 if standalone {
-                    self.push(Ask::SkillHosts("Install skills"), always);
-                    for index in 0..self.skills.len() {
-                        self.push(Ask::Skill(index), always);
-                    }
+                    self.push(Ask::Skills, always);
+                    self.push(Ask::SkillHosts("Install skills for:"), |s| {
+                        s.selected_skills != SkillSelection::None
+                    });
                     self.push(Ask::ClaudeSkillsDir, |s| s.skill_hosts.claude);
                     self.push(Ask::CodexSkills, |s| s.skill_hosts.codex);
                 }
@@ -705,7 +796,7 @@ impl Flow {
             }
             "agents" => {
                 if standalone {
-                    self.push(Ask::AgentHosts("Install agents"), always);
+                    self.push(Ask::AgentHosts("Install agents for:"), always);
                     self.push(Ask::ClaudeAgentsDir, |s| s.agent_hosts.claude);
                 }
                 self.push(Ask::CodexAgentsDir, |s| {
@@ -758,14 +849,6 @@ impl Flow {
                 None
             }
         }
-    }
-
-    fn hosts(&mut self, reply: &str) -> Option<Hosts> {
-        let hosts = Hosts::parse(reply);
-        if hosts.is_none() {
-            self.warn("Choose none, claude, codex, or both.");
-        }
-        hosts
     }
 
     fn boolean(&mut self, reply: &str) -> Option<bool> {
@@ -834,16 +917,6 @@ impl Flow {
             Ask::Profile => self.settings.path_file = parse!(self.path(reply)),
             Ask::Cli => self.settings.cli = parse!(self.boolean(reply)),
             Ask::BinDir(_) => self.settings.bin_dir = parse!(self.path(reply)),
-            Ask::SkillHosts(_) => self.settings.skill_hosts = parse!(self.hosts(reply)),
-            Ask::AgentHosts(_) => self.settings.agent_hosts = parse!(self.hosts(reply)),
-            Ask::PluginHosts => self.settings.plugin_hosts = parse!(self.hosts(reply)),
-            Ask::Skill(index) => {
-                let yes = parse!(self.boolean(reply));
-                if let Some(choice) = self.skill_choices.get_mut(index) {
-                    *choice = yes;
-                }
-                self.settings.selected_skills = selection(&self.skills, &self.skill_choices);
-            }
             Ask::ClaudeDir => self.settings.claude_dir = parse!(self.path(reply)),
             Ask::ClaudeSkillsDir => {
                 let dir = parse!(self.path(reply));
@@ -901,6 +974,15 @@ impl Flow {
             _ => return Effect::None,
         }
         self.next()
+    }
+}
+
+fn host_checklist(title: &str, hosts: Hosts, note: Option<String>) -> Question {
+    Question::Checklist {
+        title: title.into(),
+        note,
+        options: vec![choice("claude", "Claude"), choice("codex", "Codex")],
+        selected: vec![hosts.claude, hosts.codex],
     }
 }
 

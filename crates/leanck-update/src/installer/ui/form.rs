@@ -8,7 +8,7 @@ use super::{
     flow::{Group, selection, skill_description},
 };
 use crate::{
-    installer::{CompletionShell, Hosts, Mode, Settings, ensure_path_shell},
+    installer::{CompletionShell, Mode, Settings, ensure_path_shell},
     paths::{absolute, display, valid_text},
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -30,6 +30,7 @@ pub enum Field {
     Cli,
     SkillsBundle,
     SkillHosts,
+    SkillHost(Host),
     Skill(usize),
     ClaudeDir,
     ClaudeSkillsDir,
@@ -39,6 +40,7 @@ pub enum Field {
     AddExtra(Group),
     AgentsBundle,
     AgentHosts,
+    AgentHost(Host),
     CodexAgentsDir,
     Completions,
     CompletionsDir,
@@ -47,15 +49,25 @@ pub enum Field {
     PathFile,
     Mcp,
     PluginHosts,
+    PluginHost(Host),
     CodexDir,
     Save,
     Cancel,
+}
+
+/// One host checkbox within a hosts heading.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Host {
+    Claude,
+    Codex,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
     Path,
     Choice,
+    Checkbox,
+    Heading,
     Info,
     Action,
 }
@@ -63,15 +75,13 @@ enum Kind {
 impl Field {
     fn kind(self) -> Kind {
         match self {
-            Field::Cli
-            | Field::SkillHosts
-            | Field::Skill(_)
-            | Field::AgentHosts
-            | Field::Completions
-            | Field::AddToPath
-            | Field::Shell
-            | Field::Mcp
-            | Field::PluginHosts => Kind::Choice,
+            Field::Cli | Field::Completions | Field::AddToPath | Field::Shell | Field::Mcp => {
+                Kind::Choice
+            }
+            Field::SkillHosts | Field::AgentHosts | Field::PluginHosts => Kind::Heading,
+            Field::SkillHost(_) | Field::AgentHost(_) | Field::PluginHost(_) | Field::Skill(_) => {
+                Kind::Checkbox
+            }
             Field::SkillsBundle | Field::AgentsBundle => Kind::Info,
             Field::AddExtra(_) | Field::Save | Field::Cancel => Kind::Action,
             _ => Kind::Path,
@@ -154,21 +164,6 @@ fn yes_no(value: bool) -> String {
     if value { "yes" } else { "no" }.into()
 }
 
-const HOSTS: [Hosts; 4] = [
-    Hosts::NONE,
-    Hosts {
-        claude: true,
-        codex: false,
-    },
-    Hosts {
-        claude: false,
-        codex: true,
-    },
-    Hosts {
-        claude: true,
-        codex: true,
-    },
-];
 const SHELLS: [&str; 3] = ["bash", "zsh", "fish"];
 
 /// The next (or previous) value after `current` in `values`. An unknown
@@ -237,6 +232,11 @@ impl Form {
             Field::BinDir => "Executable directory".into(),
             Field::Cli => "Install executable".into(),
             Field::SkillsBundle | Field::SkillHosts => "Install skills".into(),
+            Field::SkillHost(host) | Field::AgentHost(host) | Field::PluginHost(host) => match host
+            {
+                Host::Claude => "  Claude".into(),
+                Host::Codex => "  Codex".into(),
+            },
             Field::Skill(i) => format!("  {}", self.skills[i]),
             Field::ClaudeDir => "  Claude configuration".into(),
             Field::ClaudeSkillsDir => "  Claude skills directory".into(),
@@ -278,7 +278,19 @@ impl Form {
             Field::BinDir => path(&s.bin_dir),
             Field::Cli => yes_no(s.cli),
             Field::SkillsBundle => "[bundled with plugin]".into(),
-            Field::SkillHosts => s.skill_hosts.label().into(),
+            Field::SkillHosts | Field::AgentHosts | Field::PluginHosts => String::new(),
+            Field::SkillHost(host) => yes_no(match host {
+                Host::Claude => s.skill_hosts.claude,
+                Host::Codex => s.skill_hosts.codex,
+            }),
+            Field::AgentHost(host) => yes_no(match host {
+                Host::Claude => s.agent_hosts.claude,
+                Host::Codex => s.agent_hosts.codex,
+            }),
+            Field::PluginHost(host) => yes_no(match host {
+                Host::Claude => s.plugin_hosts.claude,
+                Host::Codex => s.plugin_hosts.codex,
+            }),
             Field::Skill(i) => yes_no(s.selected_skills.includes(&self.skills[i])),
             Field::ClaudeDir => path(&s.claude_dir),
             Field::ClaudeSkillsDir => path(&s.claude_skills()),
@@ -290,7 +302,6 @@ impl Form {
                 (false, true) => "Codex".into(),
                 (false, false) => "[bundled with plugin]".into(),
             },
-            Field::AgentHosts => s.agent_hosts.label().into(),
             Field::CodexAgentsDir => path(&s.codex_agent_dir()),
             Field::Completions => s.completions.as_str().into(),
             Field::CompletionsDir => s.completion_dir().map(|d| path(&d)).unwrap_or_default(),
@@ -298,7 +309,6 @@ impl Form {
             Field::Shell => s.shell.clone(),
             Field::PathFile => path(&s.path_file),
             Field::Mcp => yes_no(s.mcp_enabled),
-            Field::PluginHosts => s.plugin_hosts.label().into(),
             Field::CodexDir => path(&s.codex_dir),
             Field::AddExtra(_) | Field::Save | Field::Cancel => String::new(),
         }
@@ -322,7 +332,13 @@ impl Form {
                 }
             }
             Mode::Standalone => {
-                fields.extend([Field::Cli, Field::BinDir, Field::SkillHosts]);
+                fields.extend([
+                    Field::Cli,
+                    Field::BinDir,
+                    Field::SkillHosts,
+                    Field::SkillHost(Host::Claude),
+                    Field::SkillHost(Host::Codex),
+                ]);
                 fields.extend((0..self.skills.len()).map(Field::Skill));
                 if s.skill_hosts.claude {
                     fields.push(Field::ClaudeSkillsDir);
@@ -331,7 +347,12 @@ impl Form {
                     fields.push(Field::CodexSkills);
                 }
                 extras(&mut fields, Group::Skills);
-                fields.extend([Field::AddExtra(Group::Skills), Field::AgentHosts]);
+                fields.extend([
+                    Field::AddExtra(Group::Skills),
+                    Field::AgentHosts,
+                    Field::AgentHost(Host::Claude),
+                    Field::AgentHost(Host::Codex),
+                ]);
                 if s.agent_hosts.claude {
                     fields.push(Field::ClaudeAgentsDir);
                 }
@@ -355,7 +376,12 @@ impl Form {
             fields.extend([Field::Shell, Field::PathFile]);
         }
         if s.mode == Mode::Plugin {
-            fields.extend([Field::Mcp, Field::PluginHosts]);
+            fields.extend([
+                Field::Mcp,
+                Field::PluginHosts,
+                Field::PluginHost(Host::Claude),
+                Field::PluginHost(Host::Codex),
+            ]);
             if s.plugin_hosts.claude {
                 fields.push(Field::ClaudeDir);
             }
@@ -412,9 +438,12 @@ impl Form {
             }
             KeyCode::Left | KeyCode::Right => {
                 let field = self.selected();
-                if field.kind() == Kind::Choice {
+                if matches!(field.kind(), Kind::Choice | Kind::Checkbox) {
                     self.cycle(field, key.code == KeyCode::Right);
                 }
+            }
+            KeyCode::Char(' ') if self.selected().kind() == Kind::Checkbox => {
+                self.cycle(self.selected(), true);
             }
             KeyCode::Esc => return self.request_cancel(),
             KeyCode::Enter => return self.activate(),
@@ -468,7 +497,8 @@ impl Form {
                 });
                 self.message = None;
             }
-            _ if field.kind() == Kind::Choice => self.cycle(field, true),
+            _ if matches!(field.kind(), Kind::Choice | Kind::Checkbox) => self.cycle(field, true),
+            _ if field.kind() == Kind::Heading => {}
             _ => {
                 self.editing = Some(Editing {
                     buffer: Buffer::new(self.value(field)),
@@ -489,9 +519,24 @@ impl Form {
                 s.path_explicit = true;
             }
             Field::Mcp => s.mcp_enabled = !s.mcp_enabled,
-            Field::SkillHosts => s.skill_hosts = cycle(&HOSTS, s.skill_hosts, forward),
-            Field::AgentHosts => s.agent_hosts = cycle(&HOSTS, s.agent_hosts, forward),
-            Field::PluginHosts => s.plugin_hosts = cycle(&HOSTS, s.plugin_hosts, forward),
+            Field::SkillHost(host) | Field::AgentHost(host) | Field::PluginHost(host) => {
+                let hosts = match field {
+                    Field::SkillHost(_) => {
+                        s.skill_hosts_chosen = true;
+                        &mut s.skill_hosts
+                    }
+                    Field::AgentHost(_) => {
+                        s.agent_hosts_chosen = true;
+                        &mut s.agent_hosts
+                    }
+                    _ => &mut s.plugin_hosts,
+                };
+                let checked = match host {
+                    Host::Claude => &mut hosts.claude,
+                    Host::Codex => &mut hosts.codex,
+                };
+                *checked = !*checked;
+            }
             Field::Completions => {
                 s.completions = cycle(&CompletionShell::ALL, s.completions, forward)
             }
@@ -507,6 +552,7 @@ impl Form {
                     .collect();
                 chosen[index] = !chosen[index];
                 s.selected_skills = selection(&self.skills, &chosen);
+                s.skills_chosen = true;
             }
             _ => return,
         }
@@ -723,7 +769,20 @@ impl Form {
                     Style::default()
                 };
                 let label = truncate(&self.label(field), label_width);
-                if field.kind() == Kind::Action {
+                if field.kind() == Kind::Checkbox {
+                    let check = if self.value(field) == "yes" { 'x' } else { ' ' };
+                    let indent = if matches!(field, Field::Skill(_)) {
+                        ""
+                    } else {
+                        "  "
+                    };
+                    lines.push(Line::styled(
+                        format!("{marker}{indent}[{check}] {}", self.label(field).trim()),
+                        style,
+                    ));
+                    continue;
+                }
+                if matches!(field.kind(), Kind::Action | Kind::Heading) {
                     lines.push(Line::styled(format!("{marker}{label}"), style));
                     continue;
                 }
@@ -781,6 +840,9 @@ impl Form {
         }
         match self.selected() {
             Field::Skill(i) => skill_description(&self.skills[i]).into(),
+            field if field.kind() == Kind::Checkbox => {
+                "Space/Enter/Left/Right: toggle  Up/Down: move  Esc: close".into()
+            }
             field if field.kind() == Kind::Choice => {
                 "Left/Right or Enter: change  Up/Down: move  Esc: close".into()
             }
@@ -795,6 +857,8 @@ pub(super) struct Styles {
     pub prompt: Style,
     pub selected: Style,
     pub error: Style,
+    pub note: Style,
+    pub dim: Style,
 }
 impl Styles {
     pub fn new(color: bool) -> Self {
@@ -807,12 +871,16 @@ impl Styles {
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
                 error: Style::default().fg(Color::Red),
+                note: Style::default().fg(Color::Yellow),
+                dim: Style::default().add_modifier(Modifier::DIM),
             }
         } else {
             Styles {
                 prompt: Style::default(),
                 selected: Style::default(),
                 error: Style::default(),
+                note: Style::default(),
+                dim: Style::default(),
             }
         }
     }

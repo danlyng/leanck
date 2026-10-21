@@ -74,6 +74,38 @@ pub fn run(
                     None => flow.interrupt(),
                 }
             }
+            Question::Checklist {
+                title,
+                note,
+                options,
+                selected,
+            } => {
+                writeln!(out, "{}{}{title}{}", style.bold, style.cyan, style.reset)?;
+                if let Some(note) = note {
+                    writeln!(out, "{}[NOTE] {note}{}", style.yellow, style.reset)?;
+                }
+                for (i, option) in options.iter().enumerate() {
+                    let check = if selected[i] { 'x' } else { ' ' };
+                    writeln!(out, "  {}) [{check}] {}", i + 1, option.label)?;
+                }
+                let defaults: Vec<_> = selected
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, checked)| **checked)
+                    .map(|(i, _)| (i + 1).to_string())
+                    .collect();
+                let defaults = if defaults.is_empty() {
+                    "none".into()
+                } else {
+                    defaults.join(" ")
+                };
+                write!(out, "Select [{defaults}]: ")?;
+                out.flush()?;
+                match read_reply(input)? {
+                    Some(reply) => flow.answer(&reply),
+                    None => flow.interrupt(),
+                }
+            }
             Question::Prompt { label, default } => {
                 write_prompt(out, style, &label, &default)?;
                 match read_reply(input)? {

@@ -17,9 +17,9 @@ Installation modes:
   individual skills, and agents you select, without plugin registration or hooks.
 
 Skills:
-  leanck        Minimal leanck command reference
-  lean-proving  Opinionated Lean theorem-proving workflow
-  lean-style    Style cleanup using specialized agents
+  leanck        leanck command reference
+  lean-proving  opinionated workflow for proving theorems
+  lean-style    opinionated workflow for code and documentation style cleanup
 
 Examples:
   /bin/bash -c \"$(curl -fsSL https://github.com/danlyng/leanck/releases/latest/download/install.sh)\"

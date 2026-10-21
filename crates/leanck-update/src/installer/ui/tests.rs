@@ -315,6 +315,40 @@ impl Harness<'_> {
         self.enter()
     }
 
+    /// Set a checklist with the same number/name syntax as line mode.
+    fn checklist(&mut self, title: &str, reply: &str) -> Effect {
+        let Question::Checklist {
+            title: actual,
+            options,
+            selected,
+            ..
+        } = self.question()
+        else {
+            panic!("expected checklist {title}, got {:?}", self.question());
+        };
+        assert_eq!(actual, title);
+        let desired = if reply.is_empty() {
+            selected.clone()
+        } else {
+            options
+                .iter()
+                .enumerate()
+                .map(|(i, option)| {
+                    reply
+                        .split(|c: char| c == ',' || c.is_whitespace())
+                        .any(|token| token == option.value || token == (i + 1).to_string())
+                })
+                .collect()
+        };
+        for (i, checked) in selected.iter().enumerate() {
+            if *checked != desired[i] {
+                self.press(KeyCode::Char(' '));
+            }
+            self.press(KeyCode::Down);
+        }
+        self.enter()
+    }
+
     fn plugin_config(&mut self, completions: &str, path: &str) {
         self.choose("Install as plugin or standalone?", "Plugin (recommended)");
         self.prompt("Shell completions (", completions);
@@ -337,27 +371,61 @@ impl Harness<'_> {
         self.choose("Install as plugin or standalone?", "Standalone");
         self.prompt("Install the CLI?", "");
         self.prompt("Install location", binary_dir);
-        self.prompt("Standalone skills", skills);
-        if matches!(skills, "claude" | "codex" | "both") {
-            for name in self.fixture.inventory.skills.clone() {
-                let reply = choices
+        let Question::Checklist {
+            options, selected, ..
+        } = self.question()
+        else {
+            panic!("skills checklist");
+        };
+        let names: Vec<_> = options
+            .iter()
+            .zip(selected)
+            .filter_map(|(option, checked)| {
+                let name = option.value.as_ref();
+                let chosen = choices
                     .iter()
                     .find(|(n, _)| *n == name)
-                    .map_or("", |(_, r)| r);
-                self.prompt(&format!("Install {name} ("), reply);
+                    .map_or(checked, |(_, reply)| *reply == "yes");
+                chosen.then_some(name.to_owned())
+            })
+            .collect();
+        self.checklist(
+            "Install skills:",
+            if names.is_empty() {
+                "none".into()
+            } else {
+                names.join(" ")
             }
+            .as_str(),
+        );
+        if !names.is_empty() {
+            self.checklist(
+                "Install skills for:",
+                if skills == "both" {
+                    "claude codex"
+                } else {
+                    skills
+                },
+            );
         }
-        self.prompt("Custom agents", agents);
-        if matches!(skills, "claude" | "both") {
+        self.checklist(
+            "Install custom agents for:",
+            if agents == "both" {
+                "claude codex"
+            } else {
+                agents
+            },
+        );
+        if self.ui.settings().skill_hosts.claude {
             self.prompt("Claude skills directory", "");
         }
-        if matches!(skills, "codex" | "both") {
+        if self.ui.settings().skill_hosts.codex {
             self.prompt("Codex skills directory", "");
         }
-        if matches!(agents, "claude" | "both") {
+        if self.ui.settings().agent_hosts.claude {
             self.prompt("Claude agents directory", "");
         }
-        if matches!(agents, "codex" | "both") {
+        if self.ui.settings().agent_hosts.codex {
             self.prompt("Codex agents directory", "");
         }
         self.prompt("Shell completions (", completions);
@@ -379,6 +447,34 @@ impl Harness<'_> {
         form.value(form.selected())
     }
     fn set_enum(&mut self, label: &str, value: &str) {
+        let heading = match label {
+            "Install skills" => Some(Field::SkillHosts),
+            "Install agents" => Some(Field::AgentHosts),
+            "Register plugins" => Some(Field::PluginHosts),
+            _ => None,
+        };
+        if let Some(heading) = heading {
+            use super::form::Host;
+            let hosts = crate::installer::Hosts::parse(value).unwrap();
+            for (host, checked) in [(Host::Claude, hosts.claude), (Host::Codex, hosts.codex)] {
+                let field = match heading {
+                    Field::SkillHosts => Field::SkillHost(host),
+                    Field::AgentHosts => Field::AgentHost(host),
+                    _ => Field::PluginHost(host),
+                };
+                for _ in 0..=self.form().fields().len() {
+                    if self.form().selected() == field {
+                        break;
+                    }
+                    self.press(KeyCode::Down);
+                }
+                assert_eq!(self.form().selected(), field);
+                if (self.value() == "yes") != checked {
+                    self.press(KeyCode::Char(' '));
+                }
+            }
+            return;
+        }
         self.focus(label);
         for _ in 0..8 {
             if self.value() == value {
@@ -472,7 +568,7 @@ fn offline_terminal_preview_can_handle_conflicts_without_changes() {
         .checkout()
         .dir(home("claude/skills/lean-proving"));
     let mut t = f.ui(&["--from-repo", "/src", "--dry-run", "--verbose"]);
-    t.standalone_config("", "claude", &[], "", "none", "");
+    t.standalone_config("", "claude", &[("lean-proving", "yes")], "", "none", "");
     let skill = home("claude/skills/lean-proving");
     assert!(t.transcript().contains(&format!(
         "[WARN] {} already exists or has local edits.",
@@ -678,7 +774,7 @@ fn terminal_color_controls_and_piped_stdout() {
     // Styled line prompts, as on a terminal whose stdout is piped.
     let (effect, out) = f.plain(
         &[],
-        &["standalone", "", "", "", "", "", "no", "cancel"],
+        &["standalone", "", "", "none", "none", "", "no", "cancel"],
         Style::COLOR,
     );
     assert_eq!(effect, Effect::Cancelled);
@@ -888,10 +984,18 @@ fn advanced_form_scrolls_and_preserves_selection_on_small_terminals() {
     let visible = |t: &Harness| {
         let screen = t.screen_sized(64, 12);
         let label = t.form().label(t.form().selected());
+        let expected = match t.form().selected() {
+            Field::PluginHost(_) | Field::SkillHost(_) | Field::AgentHost(_) => {
+                format!(
+                    ">   [{}] {}",
+                    if t.value() == "yes" { 'x' } else { ' ' },
+                    label.trim()
+                )
+            }
+            _ => format!("> {}", label.trim_end()),
+        };
         assert!(
-            screen
-                .lines()
-                .any(|l| l.starts_with(&format!("> {}", label.trim_end()))),
+            screen.lines().any(|line| line.starts_with(&expected)),
             "{label:?} is visible in\n{screen}"
         );
         assert_eq!(screen.lines().count(), 11, "one terminal row stays free");
@@ -1039,7 +1143,7 @@ fn advanced_removing_new_location_restores_clean_state() {
 fn advanced_standalone_component_enums_install_selected_hosts() {
     let f = Fixture::new();
     let mut t = f.ui(&[]);
-    t.standalone_config("", "", &[], "", "", "");
+    t.standalone_config("", "", &[("lean-proving", "yes")], "", "", "");
     t.choose(STANDALONE_PROMPT, "Edit advanced config...");
     assert!(t.screen().contains("Standalone installation"));
     t.set_enum("Install executable", "no");
@@ -1216,7 +1320,14 @@ fn terminal_can_preserve_a_conflicting_skill() {
     let skill = home("claude/skills/lean-proving");
     let f = Fixture::new().dir(&skill);
     let mut t = f.ui(&[]);
-    t.standalone_config("", "claude", &[], "", "", "");
+    t.standalone_config(
+        "",
+        "claude",
+        &[("lean-proving", "yes"), ("lean-style", "yes")],
+        "",
+        "",
+        "",
+    );
     t.prompt("Keep it, back up and replace", "keep");
     t.choose(STANDALONE_PROMPT, "Continue");
     let plan = t.confirmed();
@@ -1278,32 +1389,24 @@ fn terminal_selects_skills_with_descriptions_and_edits_individual_choices() {
         "",
         "no",
     );
-    let transcript = t.transcript();
-    for description in [
-        "Minimal leanck command reference",
-        "Opinionated Lean theorem-proving workflow",
-        "Style cleanup using specialized agents",
-    ] {
-        assert!(transcript.contains(description), "{description}");
-    }
     assert_eq!(
         t.ui.settings().selected_skills,
         SkillSelection::Names(strings(&["leanck"]))
     );
     t.choose(STANDALONE_PROMPT, "Edit advanced config...");
     t.focus("leanck");
-    assert!(t.screen().contains("Minimal leanck command reference"));
+    assert!(t.screen().contains("leanck command reference"));
     t.set_enum("lean-style", "yes");
     assert!(
         t.screen()
-            .contains("Style cleanup using specialized agents")
+            .contains("opinionated workflow for code and documentation style cleanup")
     );
     t.action("Save changes");
     t.choose(STANDALONE_PROMPT, "Continue");
     let plan = t.confirmed();
     assert_eq!(
         plan.settings.selected_skills,
-        SkillSelection::Names(strings(&["lean-style", "leanck"]))
+        SkillSelection::Names(strings(&["leanck", "lean-style"]))
     );
     for dir in [home("claude/skills"), home(".agents/skills")] {
         for (skill, installed) in [
@@ -1328,10 +1431,8 @@ fn plain_terminal_can_select_only_the_minimal_skill() {
         &[
             "standalone",
             "no",
+            "leanck",
             "codex",
-            "no",
-            "no",
-            "yes",
             "none",
             "",
             "continue",
@@ -1368,8 +1469,8 @@ fn the_standalone_path_dialog_matches_plugin_mode() {
     t.choose("Install as plugin or standalone?", "Standalone");
     t.prompt("Install the CLI?", "");
     t.prompt("Install location", "");
-    t.prompt("Standalone skills", "");
-    t.prompt("Custom agents", "");
+    t.checklist("Install skills:", "none");
+    t.checklist("Install custom agents for:", "none");
     t.prompt("Shell completions (", "");
     t.prompt("Add leanck to PATH?", "yes");
     t.prompt("Shell for PATH (", "fish");
@@ -1384,7 +1485,7 @@ fn conflict_answers_are_remembered_across_replans() {
     let skill = home("claude/skills/lean-proving");
     let f = Fixture::new().dir(&skill);
     let mut t = f.ui(&[]);
-    t.standalone_config("", "claude", &[], "", "none", "");
+    t.standalone_config("", "claude", &[("lean-proving", "yes")], "", "none", "");
     t.prompt("Keep it, back up and replace", "keep");
     t.choose(STANDALONE_PROMPT, "Edit advanced config...");
     t.set_enum("Install agents", "claude");
@@ -1416,13 +1517,8 @@ fn invalid_text_reprompts_instead_of_aborting() {
     assert_eq!(t.ui.buffer(), "", "the prompt starts over");
     t.prompt("Install the CLI?", "yes");
     t.prompt("Install location", "");
-    t.prompt("Standalone skills", "all of them");
-    assert!(
-        t.transcript()
-            .contains("[WARN] Choose none, claude, codex, or both.")
-    );
-    t.prompt("Standalone skills", "");
-    t.prompt("Custom agents", "");
+    t.checklist("Install skills:", "none");
+    t.checklist("Install custom agents for:", "none");
     t.prompt("Shell completions (", "tcsh");
     assert!(
         t.transcript()
@@ -1440,8 +1536,8 @@ fn invalid_text_reprompts_instead_of_aborting() {
             "",
             "bad\u{1}dir",
             "/opt/bin",
-            "",
-            "",
+            "none",
+            "none",
             "",
             "",
             "cancel",
@@ -1467,7 +1563,7 @@ fn the_advanced_form_keeps_all_when_every_skill_is_selected() {
         "--skill",
         "lean-style",
     ]);
-    t.standalone_config("", "claude", &[], "", "none", "");
+    t.standalone_config("", "claude", &[("lean-proving", "yes")], "", "none", "");
     assert_eq!(
         t.ui.settings().selected_skills,
         SkillSelection::Names(strings(&["lean-proving", "lean-style"]))
@@ -1503,19 +1599,17 @@ fn standalone_mode_asks_again_until_something_is_selected() {
     let mut t = f.ui(&[]);
     t.choose("Install as plugin or standalone?", "Standalone");
     t.prompt("Install the CLI?", "no");
-    t.prompt("Standalone skills", "");
-    t.prompt("Custom agents", "");
+    t.checklist("Install skills:", "none");
+    t.checklist("Install custom agents for:", "none");
     assert!(
         t.transcript()
             .contains("[WARN] Select an executable, skills, or custom agents before continuing.")
     );
     assert_eq!(t.plans, 0);
     t.prompt("Install the CLI?", "no");
-    t.prompt("Standalone skills", "codex");
-    for _ in 0..3 {
-        t.prompt("Install ", "");
-    }
-    t.prompt("Custom agents", "");
+    t.checklist("Install skills:", "leanck");
+    t.checklist("Install skills for:", "codex");
+    t.checklist("Install custom agents for:", "none");
     t.prompt("Codex skills directory", "");
     assert_eq!(t.ui.menu_selection(), Some("Cancel"));
 
@@ -1551,7 +1645,7 @@ fn a_cancelled_conflict_prompt_interrupts() {
     let skill = home("claude/skills/lean-proving");
     let f = Fixture::new().dir(&skill);
     let mut t = f.ui(&[]);
-    t.standalone_config("", "claude", &[], "", "none", "");
+    t.standalone_config("", "claude", &[("lean-proving", "yes")], "", "none", "");
     t.prompt("Keep it, back up and replace", "sure");
     assert_eq!(
         t.count("[WARN]"),
@@ -1575,7 +1669,11 @@ fn numeric_menu_reply_selects_an_option_and_invalid_numbers_reprompt() {
     let menu = "Install as plugin or standalone?\n  1) Plugin (recommended)\n  2) Standalone\nChoice [1]: ";
     assert_eq!(out.matches(menu).count(), 2);
     assert!(out.contains("[WARN] Enter 1-2 or plugin or standalone."));
-    let (effect, out) = f.plain(&[], &["2", "", "", "", "", "none", "no", "2"], Style::PLAIN);
+    let (effect, out) = f.plain(
+        &[],
+        &["2", "", "", "none", "none", "none", "no", "2"],
+        Style::PLAIN,
+    );
     let Effect::Confirmed(plan) = effect else {
         panic!("{effect:?}\n{out}");
     };
@@ -1710,11 +1808,9 @@ fn standalone_prompt_sequence_uses_claude_component_directories() {
     let prompts = [
         ("Install the CLI?", ""),
         ("Install location", ""),
-        ("Standalone skills", "both"),
-        ("Install lean-proving (", ""),
-        ("Install lean-style (", ""),
-        ("Install leanck (", ""),
-        ("Custom agents", "both"),
+        ("Install skills:", "leanck"),
+        ("Install skills for:", "claude codex"),
+        ("Install custom agents for:", "claude codex"),
         ("Claude skills directory", "/x/skills"),
         ("Codex skills directory", ""),
         ("Claude agents directory", "/y/agents"),
@@ -1723,7 +1819,11 @@ fn standalone_prompt_sequence_uses_claude_component_directories() {
         ("Add leanck to PATH?", "no"),
     ];
     for (prefix, reply) in prompts {
-        t.prompt(prefix, reply);
+        if prefix.ends_with(':') {
+            t.checklist(prefix, reply);
+        } else {
+            t.prompt(prefix, reply);
+        }
     }
     assert_eq!(t.ui.menu_selection(), Some("Cancel"));
     assert_eq!(t.plan().settings.claude_skills(), Path::new("/x/skills"));
@@ -1737,8 +1837,8 @@ fn standalone_skips_path_question_after_choosing_a_directory_on_path() {
     t.choose("Install as plugin or standalone?", "Standalone");
     t.prompt("Install the CLI?", "");
     t.prompt("Install location", "/chosen/bin");
-    t.prompt("Standalone skills", "none");
-    t.prompt("Custom agents", "none");
+    t.checklist("Install skills:", "none");
+    t.checklist("Install custom agents for:", "none");
     t.prompt("Shell completions (", "none");
     assert_eq!(t.ui.menu_selection(), Some("Cancel"));
     assert!(!t.transcript().contains("Add leanck to PATH?"));
@@ -1795,4 +1895,386 @@ fn path_question_is_asked_when_binary_directory_is_not_on_path() {
     assert!(
         matches!(t.question(), Question::Prompt { label, .. } if label == "Add leanck to PATH?")
     );
+}
+
+fn skills_flow(f: &Fixture, args: &[&str]) -> Flow {
+    let mut flow = Flow::new(f.settings(args), &f.inventory, PathBuf::from("/work"), true);
+    flow.answer("standalone");
+    flow.answer("no");
+    flow.take_output();
+    flow
+}
+
+#[test]
+fn inline_checklists_render_toggle_wrap_and_confirm() {
+    let f = Fixture::new();
+    let mut t = f.ui(&[]);
+    t.choose("Install as plugin or standalone?", "Standalone");
+    t.prompt("Install the CLI?", "no");
+    assert_eq!(t.ui.height(120), 5);
+    assert_eq!(
+        t.screen_sized(120, 10).trim_end(),
+        "Install skills:\n> [x] leanck (leanck command reference)\n  [ ] lean-proving (opinionated workflow for proving theorems)\n  [ ] lean-style (opinionated workflow for code and documentation style cleanup)\nSpace: toggle  Enter: confirm"
+    );
+    // Text, paste, and unrelated keys cannot change the checks.
+    let original = t.screen();
+    t.type_text("none");
+    t.send(Input::Paste("lean-style".into()));
+    t.press(KeyCode::Left);
+    assert_eq!(t.screen(), original);
+    t.press(KeyCode::Up);
+    assert!(t.screen().contains("> [ ] lean-style"));
+    t.press(KeyCode::Down);
+    assert_eq!(t.screen(), original);
+    t.press(KeyCode::Down);
+    t.press(KeyCode::Char(' '));
+    assert!(t.screen().contains("> [x] lean-proving"));
+    t.enter();
+    assert_eq!(
+        t.ui.settings().selected_skills,
+        SkillSelection::Names(strings(&["leanck", "lean-proving"]))
+    );
+    assert!(
+        t.transcript()
+            .contains("Install skills: leanck, lean-proving\n")
+    );
+    assert_eq!(
+        t.screen_sized(120, 10).trim_end(),
+        "Install skills for:\n> [x] Claude\n  [x] Codex\nSpace: toggle  Enter: confirm"
+    );
+    t.enter();
+    assert_eq!(t.ui.height(120), 5);
+    assert_eq!(
+        t.screen_sized(120, 10).trim_end(),
+        "Install custom agents for:\nNote: Custom agents are strongly recommended if `lean-proving` or `lean-style` are installed\n> [x] Claude\n  [x] Codex\nSpace: toggle  Enter: confirm"
+    );
+    assert!(
+        t.transcript()
+            .contains("Install skills for: Claude, Codex\n")
+    );
+    t.press(KeyCode::Char(' '));
+    t.enter();
+    assert_eq!(t.ui.settings().agent_hosts.label(), "codex");
+    assert!(
+        t.transcript()
+            .contains("Install custom agents for: Codex\n")
+    );
+
+    for c in ['c', 'd'] {
+        let mut ui = Installer::new(skills_flow(&f, &[]), false);
+        assert_eq!(ui.update(ctrl(c)), Effect::Interrupted);
+    }
+}
+
+#[test]
+fn line_checklist_rendering_and_parse_rules() {
+    let f = Fixture::new();
+    let (effect, out) = f.plain(&[], &["standalone", "no"], Style::PLAIN);
+    assert_eq!(effect, Effect::Interrupted);
+    assert!(out.ends_with("Install skills:\n  1) [x] leanck (leanck command reference)\n  2) [ ] lean-proving (opinionated workflow for proving theorems)\n  3) [ ] lean-style (opinionated workflow for code and documentation style cleanup)\nSelect [1]: "));
+    for (reply, expected) in [
+        ("", SkillSelection::Names(strings(&["leanck"]))),
+        ("none", SkillSelection::None),
+        (
+            "1 2",
+            SkillSelection::Names(strings(&["leanck", "lean-proving"])),
+        ),
+        (
+            "2,1,1",
+            SkillSelection::Names(strings(&["leanck", "lean-proving"])),
+        ),
+        (
+            "lean-style leanck",
+            SkillSelection::Names(strings(&["leanck", "lean-style"])),
+        ),
+        ("leanck, 2 3", SkillSelection::All),
+    ] {
+        let mut flow = skills_flow(&f, &[]);
+        assert_eq!(flow.answer(reply), Effect::None);
+        assert_eq!(flow.settings().selected_skills, expected, "{reply}");
+    }
+    for reply in [
+        "0",
+        "4",
+        "both",
+        "all",
+        "none 1",
+        "lean-proving nope",
+        ",",
+        "\u{1}",
+    ] {
+        let mut flow = skills_flow(&f, &[]);
+        let question = flow.question();
+        flow.answer(reply);
+        assert_eq!(flow.question(), question, "{reply:?}");
+        assert_eq!(
+            flow.take_output(),
+            vec![Output::Warn(
+                "Enter numbers or names separated by spaces, or none.".into()
+            )]
+        );
+    }
+    let mut flow = skills_flow(&f, &[]);
+    let question = flow.question();
+    assert_eq!(flow.check(vec![true]), Effect::None);
+    assert_eq!(flow.question(), question);
+    assert!(flow.take_output().is_empty());
+    flow.answer("");
+    flow.answer("codex,1");
+    assert_eq!(flow.settings().skill_hosts.label(), "both");
+    flow.answer("none");
+    assert_eq!(flow.settings().agent_hosts.label(), "none");
+    assert!(flow.take_output().contains(&Output::Answer {
+        prompt: "Install custom agents for:".into(),
+        reply: "none".into()
+    }));
+}
+
+#[test]
+fn checklist_defaults_use_detection_saved_selections_and_flags() {
+    let mut f = Fixture::new();
+    let s = f.settings(&[]);
+    assert!(!s.skills_chosen && !s.skill_hosts_chosen && !s.agent_hosts_chosen);
+    // Interactive defaults do not change the non-interactive configuration.
+    assert_eq!(s.selected_skills, SkillSelection::All);
+    assert_eq!(s.skill_hosts.label(), "none");
+    assert_eq!(s.agent_hosts.label(), "none");
+    for commands in [
+        vec![],
+        strings(&["claude"]),
+        strings(&["codex"]),
+        strings(&["claude", "codex"]),
+    ] {
+        let mut env = f.env();
+        env.commands = commands.clone().into_iter().collect();
+        let s = Settings::resolve(
+            &InstallArgs::parse_from(&[] as &[&str]).unwrap(),
+            &env,
+            &f.saved,
+        )
+        .unwrap();
+        let mut flow = Flow::new(s, &f.inventory, env.cwd, true);
+        flow.answer("standalone");
+        flow.answer("no");
+        assert!(
+            matches!(flow.question(), Question::Checklist { selected, .. } if selected == [true, false, false])
+        );
+        flow.answer("");
+        let expected = vec![
+            commands.contains(&"claude".to_owned()),
+            commands.contains(&"codex".to_owned()),
+        ];
+        assert!(
+            matches!(flow.question(), Question::Checklist { selected, .. } if selected == expected)
+        );
+        flow.answer("");
+        assert!(
+            matches!(flow.question(), Question::Checklist { selected, note: None, .. } if selected == expected)
+        );
+    }
+    f.saved = SavedState::parse("selected_skills\tlean-style\nskills_claude\t0\nskills_codex\t1\nagents_claude\t1\nagents_codex\t0\n").unwrap();
+    for (args, skills, hosts, agents) in [
+        (
+            vec![],
+            vec![false, false, true],
+            vec![false, true],
+            vec![true, false],
+        ),
+        (
+            vec![
+                "--skill",
+                "lean-proving",
+                "--skills",
+                "none",
+                "--agents",
+                "codex",
+            ],
+            vec![false, true, false],
+            vec![false, false],
+            vec![false, true],
+        ),
+    ] {
+        let s = f.settings(&args);
+        assert!(s.skills_chosen && s.skill_hosts_chosen && s.agent_hosts_chosen);
+        let json = serde_json::to_value(&s).unwrap();
+        for key in [
+            "skills_chosen",
+            "skill_hosts_chosen",
+            "agent_hosts_chosen",
+            "detected_hosts",
+        ] {
+            assert!(json.get(key).is_none());
+        }
+        let mut flow = skills_flow(&f, &args);
+        assert!(
+            matches!(flow.question(), Question::Checklist { selected, .. } if selected == skills)
+        );
+        flow.answer("");
+        assert!(
+            matches!(flow.question(), Question::Checklist { selected, .. } if selected == hosts)
+        );
+        flow.answer("");
+        assert!(
+            matches!(flow.question(), Question::Checklist { selected, .. } if selected == agents)
+        );
+    }
+}
+
+#[test]
+fn custom_agents_note_follows_selected_skills_and_empty_skills_skip_hosts() {
+    let f = Fixture::new();
+    for (reply, note) in [
+        ("leanck", false),
+        ("lean-proving", true),
+        ("lean-style", true),
+        ("1 2 3", true),
+        ("none", false),
+    ] {
+        let mut flow = skills_flow(&f, &[]);
+        flow.answer(reply);
+        if reply != "none" {
+            flow.answer("none");
+        }
+        assert!(
+            matches!(flow.question(), Question::Checklist { title, note: actual, .. }
+            if title == "Install custom agents for:" && actual.is_some() == note)
+        );
+        if reply == "none" {
+            assert_eq!(flow.settings().skill_hosts.label(), "none");
+        }
+    }
+    // All means every release skill, including releases with no workflow skills.
+    let mut minimal = Fixture::new();
+    minimal.inventory.skills = strings(&["leanck"]);
+    let mut flow = skills_flow(&minimal, &[]);
+    flow.answer("");
+    assert_eq!(flow.settings().selected_skills, SkillSelection::All);
+    flow.answer("none");
+    assert!(matches!(
+        flow.question(),
+        Question::Checklist { note: None, .. }
+    ));
+    let (_, out) = f.plain(
+        &[],
+        &["standalone", "no", "lean-proving", "none"],
+        Style::COLOR,
+    );
+    assert!(out.contains("\x1b[33m[NOTE] Note: Custom agents are strongly recommended if `lean-proving` or `lean-style` are installed\x1b[0m"));
+    let (_, out) = f.plain(&[], &["standalone", "no", "none"], Style::PLAIN);
+    assert!(!out.contains("Install skills for:"));
+    assert!(out.ends_with("Select [1 2]: "));
+}
+
+#[test]
+fn advanced_host_checkbox_rows_toggle_and_reveal_directories() {
+    use super::form::Host;
+    let f = Fixture::new();
+    let mut t = f.ui(&[]);
+    t.standalone_config("", "none", &[], "none", "none", "no");
+    t.choose(STANDALONE_PROMPT, "Edit advanced config...");
+    for (heading, fields) in [
+        (
+            Field::SkillHosts,
+            [
+                (Field::SkillHost(Host::Claude), Field::ClaudeSkillsDir),
+                (Field::SkillHost(Host::Codex), Field::CodexSkills),
+            ],
+        ),
+        (
+            Field::AgentHosts,
+            [
+                (Field::AgentHost(Host::Claude), Field::ClaudeAgentsDir),
+                (Field::AgentHost(Host::Codex), Field::CodexAgentsDir),
+            ],
+        ),
+    ] {
+        assert_eq!(t.form().value(heading), "");
+        for (checkbox, directory) in fields {
+            assert!(!t.form().fields().contains(&directory));
+            while t.form().selected() != checkbox {
+                t.press(KeyCode::Down);
+            }
+            for key in [
+                KeyCode::Enter,
+                KeyCode::Char(' '),
+                KeyCode::Left,
+                KeyCode::Right,
+            ] {
+                t.press(key);
+                let checked = t.form().value(checkbox) == "yes";
+                assert_eq!(t.form().fields().contains(&directory), checked);
+                let label = t.form().label(checkbox);
+                assert!(t.screen().contains(&format!(
+                    "[{}] {}",
+                    if checked { 'x' } else { ' ' },
+                    label.trim()
+                )));
+                assert!(!t.form().is_editing());
+            }
+        }
+    }
+    let mut t = f.ui(&[]);
+    t.open_plugin_config();
+    assert!(!t.form().fields().contains(&Field::SkillHosts));
+    assert!(!t.form().fields().contains(&Field::AgentHosts));
+    assert_eq!(t.form().value(Field::PluginHosts), "");
+    t.set_enum("Register plugins", "none");
+    assert!(!t.form().fields().contains(&Field::CodexAgentsDir));
+    assert!(!t.form().fields().contains(&Field::ClaudeDir));
+    assert!(!t.form().fields().contains(&Field::CodexDir));
+    t.set_enum("Register plugins", "both");
+    for field in [Field::CodexAgentsDir, Field::ClaudeDir, Field::CodexDir] {
+        assert!(t.form().fields().contains(&field));
+    }
+}
+
+#[test]
+fn plain_editor_uses_host_and_skill_checklists() {
+    let f = Fixture::new();
+    let (effect, out) = f.plain(
+        &["--plugin", "codex"],
+        &[
+            "plugin", "none", "no", "edit", "hosts", "", "", "save", "continue",
+        ],
+        Style::PLAIN,
+    );
+    let Effect::Confirmed(plan) = effect else {
+        panic!("{effect:?}\n{out}");
+    };
+    assert_eq!(plan.settings.plugin_hosts.label(), "codex");
+    assert!(out.contains("Register plugins for:\n  1) [ ] Claude\n  2) [x] Codex\nSelect [2]: "));
+
+    let (effect, out) = f.plain(
+        &[],
+        &[
+            "standalone",
+            "no",
+            "leanck",
+            "codex",
+            "none",
+            "",
+            "edit",
+            "skills",
+            "1 2 3",
+            "1",
+            "",
+            "keep",
+            "agents",
+            "1",
+            "",
+            "keep",
+            "keep",
+            "save",
+            "continue",
+        ],
+        Style::PLAIN,
+    );
+    let Effect::Confirmed(plan) = effect else {
+        panic!("{effect:?}\n{out}");
+    };
+    assert_eq!(plan.settings.selected_skills, SkillSelection::All);
+    assert_eq!(plan.settings.skill_hosts.label(), "claude");
+    assert_eq!(plan.settings.agent_hosts.label(), "claude");
+    assert!(out.contains("Install agents for:"));
+    assert!(!out.contains("none / claude / codex / both"));
 }

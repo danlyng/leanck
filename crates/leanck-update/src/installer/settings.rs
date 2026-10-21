@@ -208,6 +208,15 @@ pub struct Settings {
     pub skill_hosts: Hosts,
     pub agent_hosts: Hosts,
     pub selected_skills: SkillSelection,
+    /// Interactive defaults only; never part of saved or JSON settings.
+    #[serde(skip)]
+    pub skills_chosen: bool,
+    #[serde(skip)]
+    pub skill_hosts_chosen: bool,
+    #[serde(skip)]
+    pub agent_hosts_chosen: bool,
+    #[serde(skip)]
+    pub detected_hosts: Hosts,
     /// `--skill` was given.
     pub skill_explicit: bool,
     pub bin_dir: PathBuf,
@@ -299,6 +308,13 @@ impl Settings {
             skill_hosts: Hosts::NONE,
             agent_hosts: Hosts::NONE,
             selected_skills: SkillSelection::All,
+            skills_chosen: false,
+            skill_hosts_chosen: false,
+            agent_hosts_chosen: false,
+            detected_hosts: Hosts {
+                claude: env.has_command("claude"),
+                codex: env.has_command("codex"),
+            },
             skill_explicit: false,
             bin_dir: home.join(".local/bin"),
             path_entries: env.path.clone(),
@@ -361,10 +377,30 @@ impl Settings {
                 "extra_claude_agents" => push_location(&mut s.extra_claude_agents, path(value)?),
                 "extra_codex_agents" => push_location(&mut s.extra_codex_agents, path(value)?),
                 "cli" => s.cli = flag().unwrap_or(s.cli),
-                "skills_claude" => s.skill_hosts.claude = flag().unwrap_or(s.skill_hosts.claude),
-                "skills_codex" => s.skill_hosts.codex = flag().unwrap_or(s.skill_hosts.codex),
-                "agents_claude" => s.agent_hosts.claude = flag().unwrap_or(s.agent_hosts.claude),
-                "agents_codex" => s.agent_hosts.codex = flag().unwrap_or(s.agent_hosts.codex),
+                "skills_claude" => {
+                    if let Some(enabled) = flag() {
+                        s.skill_hosts.claude = enabled;
+                        s.skill_hosts_chosen = true;
+                    }
+                }
+                "skills_codex" => {
+                    if let Some(enabled) = flag() {
+                        s.skill_hosts.codex = enabled;
+                        s.skill_hosts_chosen = true;
+                    }
+                }
+                "agents_claude" => {
+                    if let Some(enabled) = flag() {
+                        s.agent_hosts.claude = enabled;
+                        s.agent_hosts_chosen = true;
+                    }
+                }
+                "agents_codex" => {
+                    if let Some(enabled) = flag() {
+                        s.agent_hosts.codex = enabled;
+                        s.agent_hosts_chosen = true;
+                    }
+                }
                 "mcp_enabled" => s.mcp_enabled = flag().unwrap_or(s.mcp_enabled),
                 "add_to_path" => {
                     if let Some(enabled) = flag() {
@@ -379,7 +415,10 @@ impl Settings {
                     }
                 }
                 "plugin_bin_dir" => s.plugin_bin_dir = optional_path()?,
-                "selected_skills" => s.selected_skills = SkillSelection::parse(value),
+                "selected_skills" => {
+                    s.selected_skills = SkillSelection::parse(value);
+                    s.skills_chosen = true;
+                }
                 "version" if !value.is_empty() => s.version = value.trim_start_matches('v').into(),
                 "data_dir" => set_path(&mut s.data_dir, optional_path()?),
                 "claude_dir" => set_path(&mut s.claude_dir, optional_path()?),
@@ -422,13 +461,16 @@ impl Settings {
         }
         if !args.skills.is_empty() {
             s.skill_hosts = Hosts::fold("skills", &args.skills)?;
+            s.skill_hosts_chosen = true;
         }
         if !args.agents.is_empty() {
             s.agent_hosts = Hosts::fold("agents", &args.agents)?;
+            s.agent_hosts_chosen = true;
         }
         if !args.skill.is_empty() {
             s.selected_skills = SkillSelection::fold(&args.skill)?;
             s.skill_explicit = true;
+            s.skills_chosen = true;
         }
         let cli = args.cli_request.or(if args.no_cli {
             Some(false)
