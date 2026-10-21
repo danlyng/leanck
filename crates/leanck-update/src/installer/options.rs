@@ -170,7 +170,7 @@ pub struct InstallArgs {
         help_heading = "Directories & paths"
     )]
     pub claude_skills_dir: Option<String>,
-    /// Claude agent definitions dir (default: CLAUDE_DIR/agents).
+    /// Claude agent definitions dir (default: CLAUDE_DIR/agents/leanck).
     #[arg(
         long,
         value_name = "DIR",

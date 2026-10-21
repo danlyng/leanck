@@ -647,7 +647,7 @@ fn local_repo_standalone_installs_built_cli_and_selected_components() {
         ".local/bin/leanck",
         "claude/skills/lean-proving/SKILL.md",
         ".agents/skills/lean-proving/SKILL.md",
-        "claude/agents/lean-expert.md",
+        "claude/agents/leanck/lean-expert.md",
         "codex/agents/leanck/lean-grind.toml",
         "data/bash-completion/completions/leanck",
     ] {
@@ -1912,7 +1912,7 @@ fn custom_agents_preserve_unrelated_files_and_require_force() {
             .contains("developer_instructions")
     );
     assert_eq!(fs::read_to_string(&unrelated).unwrap(), "unrelated");
-    assert!(case.home("claude/agents/lean-expert.md").is_file());
+    assert!(case.home("claude/agents/leanck/lean-expert.md").is_file());
     case.install(&["--agents", "both"]).ok();
 }
 
@@ -1978,8 +1978,8 @@ fn uninstall_standalone_preserves_user_files_and_backups() {
         ".local/bin/.leanck-installation.json",
         "claude/skills/lean-proving",
         ".agents/skills/lean-proving",
-        "claude/agents/lean-expert.md",
-        "claude/agents/lean-expert.md.leanck-installed",
+        "claude/agents/leanck/lean-expert.md",
+        "claude/agents/leanck/lean-expert.md.leanck-installed",
         "codex/agents/leanck/lean-expert.toml",
         "config/fish/completions/leanck.fish",
         "config/leanck/config.example.toml",
@@ -2076,7 +2076,7 @@ fn uninstall_preserves_modified_components_and_can_resume() {
     let changed: Vec<PathBuf> = [
         ".local/bin/leanck",
         "claude/skills/lean-proving/SKILL.md",
-        "claude/agents/lean-expert.md",
+        "claude/agents/leanck/lean-expert.md",
         "codex/agents/leanck/lean-grind.toml",
         "config/fish/completions/leanck.fish",
     ]
@@ -2096,7 +2096,7 @@ fn uninstall_preserves_modified_components_and_can_resume() {
         assert!(fs::read(path).unwrap().ends_with(b"# edited\n"));
     }
     assert!(
-        case.home("claude/agents/lean-expert.md.leanck-installed")
+        case.home("claude/agents/leanck/lean-expert.md.leanck-installed")
             .exists()
     );
     // The edited executable is never run.
@@ -2210,7 +2210,11 @@ fn dotfile_links_above_destinations_install_update_and_uninstall() {
     case.install(&["--skills", "claude", "--agents", "claude"])
         .ok();
     assert!(dotfiles.join("claude/skills/leanck/SKILL.md").is_file());
-    assert!(dotfiles.join("claude/agents/lean-expert.md").is_file());
+    assert!(
+        dotfiles
+            .join("claude/agents/leanck/lean-expert.md")
+            .is_file()
+    );
     assert!(
         dotfiles
             .join("state/leanck/installer/uninstall.tsv")
@@ -2229,7 +2233,11 @@ fn dotfile_links_above_destinations_install_update_and_uninstall() {
     }
     case.uninstall(&[]);
     assert!(!dotfiles.join("claude/skills/leanck").exists());
-    assert!(!dotfiles.join("claude/agents/lean-expert.md").exists());
+    assert!(
+        !dotfiles
+            .join("claude/agents/leanck/lean-expert.md")
+            .exists()
+    );
     assert!(dotfiles.join("claude/skills").is_dir());
     // A link at a destination itself is never followed: it is a conflict.
     let elsewhere = dotfiles.join("elsewhere");

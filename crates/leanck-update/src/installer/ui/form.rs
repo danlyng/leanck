@@ -652,7 +652,7 @@ impl Form {
                         None
                     } else {
                         let dir = path(value)?;
-                        (dir != s.claude_dir.join("agents")).then_some(dir)
+                        (dir != s.claude_dir.join("agents/leanck")).then_some(dir)
                     };
                 }
                 Field::CodexAgentsDir => {

@@ -232,7 +232,7 @@ pub struct Settings {
     pub claude_dir: PathBuf,
     /// `None` means `CLAUDE_DIR/skills`.
     pub claude_skills_dir: Option<PathBuf>,
-    /// `None` means `CLAUDE_DIR/agents`.
+    /// `None` means `CLAUDE_DIR/agents/leanck`.
     pub claude_agents_dir: Option<PathBuf>,
     pub codex_dir: PathBuf,
     pub codex_skills: PathBuf,
@@ -522,7 +522,7 @@ impl Settings {
         }
         if let Some(dir) = &args.claude_agents_dir {
             let dir = path(dir)?;
-            s.claude_agents_dir = (dir != s.claude_dir.join("agents")).then_some(dir);
+            s.claude_agents_dir = (dir != s.claude_dir.join("agents/leanck")).then_some(dir);
         }
         if let Some(dir) = &args.codex_agents_dir {
             s.codex_agents_dir = Some(path(dir)?);
@@ -726,7 +726,7 @@ impl Settings {
     pub fn claude_agents(&self) -> PathBuf {
         self.claude_agents_dir
             .clone()
-            .unwrap_or_else(|| self.claude_dir.join("agents"))
+            .unwrap_or_else(|| self.claude_dir.join("agents/leanck"))
     }
     pub fn codex_agent_dir(&self) -> PathBuf {
         self.codex_agents_dir

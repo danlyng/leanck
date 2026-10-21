@@ -1502,7 +1502,7 @@ fn conflict_answers_are_remembered_across_replans() {
         t.plan(),
         &format!(
             "Install Claude Code agents into {}",
-            home("claude/agents").display()
+            home("claude/agents/leanck").display()
         )
     ));
 }
@@ -1785,7 +1785,7 @@ fn standalone_form_lists_component_directories_and_resets_derived_defaults() {
     );
     t.edit(
         "Claude agents directory",
-        &home("claude/agents").display().to_string(),
+        &home("claude/agents/leanck").display().to_string(),
     );
     assert_eq!(t.form().draft().claude_agents_dir, None);
     t.edit("Claude skills directory", "/custom/skills");

@@ -926,7 +926,7 @@ impl Flow {
             Ask::ClaudeAgentsDir => {
                 let dir = parse!(self.path(reply));
                 let s = &mut self.settings;
-                s.claude_agents_dir = (dir != s.claude_dir.join("agents")).then_some(dir);
+                s.claude_agents_dir = (dir != s.claude_dir.join("agents/leanck")).then_some(dir);
             }
             Ask::CodexSkills => self.settings.codex_skills = parse!(self.path(reply)),
             Ask::CodexDir => self.settings.codex_dir = parse!(self.path(reply)),

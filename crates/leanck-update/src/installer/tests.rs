@@ -1197,7 +1197,7 @@ fn dry_run_all_preserves_existing_files_and_never_executes_hosts_or_binary() {
         &plan,
         &format!(
             "Install Claude Code agents into {}",
-            home("claude/agents").display()
+            home("claude/agents/leanck").display()
         )
     ));
     assert!(!has(&plan, "Would sign "));
@@ -1226,7 +1226,7 @@ fn dry_run_standalone_components_with_force_preserves_foreign_files() {
     for destination in [
         "claude/skills/lean-proving",
         ".agents/skills/lean-proving",
-        "claude/agents/lean-expert.md",
+        "claude/agents/leanck/lean-expert.md",
         "codex/agents/leanck/lean-expert.toml",
     ] {
         assert!(installs(&plan, &home(destination)), "{destination}");
@@ -1362,7 +1362,10 @@ fn custom_agents_preserve_unrelated_files_and_require_force() {
     let plan = f.install(&["--standalone", "--agents", "both", "--force"]);
     assert!(plan.replaced.contains(&agents.join("lean-expert.toml")));
     assert!(!has(&plan, "other.toml"));
-    assert!(installs(&plan, &home("claude/agents/lean-expert.md")));
+    assert!(installs(
+        &plan,
+        &home("claude/agents/leanck/lean-expert.md")
+    ));
     assert!(!has(
         &f.ok(&["--standalone", "--agents", "both"]),
         "conflict"
@@ -1657,7 +1660,7 @@ fn claude_component_directories_default_to_the_current_parent() {
     assert_eq!(settings.claude_skills_dir, None);
     assert_eq!(settings.claude_agents_dir, None);
     assert_eq!(settings.claude_skills(), home("claude/skills"));
-    assert_eq!(settings.claude_agents(), home("claude/agents"));
+    assert_eq!(settings.claude_agents(), home("claude/agents/leanck"));
     let rendered = f.saved.render(&settings, &Recorded::default());
     assert!(!rendered.contains("claude_skills_dir\t"));
     assert!(!rendered.contains("claude_agents_dir\t"));
@@ -1668,12 +1671,12 @@ fn claude_component_directories_default_to_the_current_parent() {
         "--claude-skills-dir",
         "/new/skills",
         "--claude-agents-dir",
-        "/new/agents",
+        "/new/agents/leanck",
     ]);
     assert_eq!(settings.claude_skills_dir, None);
     assert_eq!(settings.claude_agents_dir, None);
     assert_eq!(settings.claude_skills(), Path::new("/new/skills"));
-    assert_eq!(settings.claude_agents(), Path::new("/new/agents"));
+    assert_eq!(settings.claude_agents(), Path::new("/new/agents/leanck"));
 }
 
 #[test]

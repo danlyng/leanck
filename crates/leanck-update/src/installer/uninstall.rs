@@ -606,7 +606,8 @@ fn legacy_inventory(saved: &SavedState, env: &Environment, plugin: bool) -> Resu
         .or_else(|| env.codex_home.clone())
         .unwrap_or_else(|| env.home.join(".codex"));
     let claude_skills = value("claude_skills_dir").unwrap_or_else(|| claude_dir.join("skills"));
-    let claude_agents = value("claude_agents_dir").unwrap_or_else(|| claude_dir.join("agents"));
+    let claude_agents =
+        value("claude_agents_dir").unwrap_or_else(|| claude_dir.join("agents/leanck"));
     let codex_skills = value("codex_skills").unwrap_or_else(|| env.home.join(".agents/skills"));
     let codex_agents = value("codex_agents_dir").unwrap_or_else(|| codex_dir.join("agents/leanck"));
     let mut records = vec![];
@@ -642,6 +643,8 @@ fn legacy_inventory(saved: &SavedState, env: &Environment, plugin: bool) -> Resu
             legacy_tree(&skill, &mut records);
         }
     }
+    // Earlier releases installed Claude agents directly in CLAUDE_DIR/agents.
+    legacy_agents(&claude_dir.join("agents"), &data_dir, &mut records);
     legacy_agents(&claude_agents, &data_dir, &mut records);
     legacy_agents(&codex_dir.join("agents"), &data_dir, &mut records);
     legacy_agents(&codex_agents, &data_dir, &mut records);
