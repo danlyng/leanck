@@ -249,6 +249,9 @@ impl Fixture {
             .env("XDG_CONFIG_HOME", self.root.join("config"))
             .env("XDG_CACHE_HOME", self.root.join("cache"))
             .env("TMPDIR", &self.root)
+            // Tokio inherits stdin; a terminal there would make an unapproved
+            // update wait for an answer instead of requiring --yes.
+            .stdin(std::process::Stdio::null())
             .args(["--no-config", "--set", "updates.check=false"]);
         command
     }
