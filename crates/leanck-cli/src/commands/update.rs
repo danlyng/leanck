@@ -30,6 +30,9 @@ pub(crate) struct Args {
         hide_short_help = true
     )]
     to_version: Option<String>,
+    /// Reinstall even if the installed version is unchanged.
+    #[arg(long, conflicts_with_all = ["check", "retry_registration"])]
+    force: bool,
     /// Approve this update without an interactive prompt.
     #[arg(short, long)]
     yes: bool,
@@ -108,14 +111,28 @@ pub(crate) async fn run(args: Args) -> Result<()> {
     if !args.json {
         eprintln!("Checking and preparing leanck update…");
     }
-    let prepared = tokio::time::timeout(std::time::Duration::from_secs(args.timeout), async {
+    let preparation = tokio::time::timeout(std::time::Duration::from_secs(args.timeout), async {
         match receipt {
-            Some(receipt) => install::prepare(receipt, args.to_version.as_deref()).await,
-            None => install::prepare_from_installer(&state, &exe, args.to_version.as_deref()).await,
+            Some(receipt) => {
+                install::prepare(receipt, args.to_version.as_deref(), args.force).await
+            }
+            None => {
+                install::prepare_from_installer(
+                    &state,
+                    &exe,
+                    args.to_version.as_deref(),
+                    args.force,
+                )
+                .await
+            }
         }
     })
     .await
     .context("release preparation timed out")??;
+    let prepared = match preparation {
+        install::Preparation::UpToDate(outcome) => return show(&outcome, args.json),
+        install::Preparation::Update(prepared) => *prepared,
+    };
     if let Some(binary) = &prepared.plan.recording_installer_ownership
         && (!args.json || !args.yes)
     {
@@ -163,7 +180,11 @@ fn show(outcome: &install::Outcome, json: bool) -> Result<()> {
     if json {
         println!("{}", serde_json::to_string_pretty(outcome)?);
     } else {
-        println!("{}: leanck {}", outcome.status, outcome.version);
+        if outcome.status == "up_to_date" {
+            println!("leanck {} is up to date.", outcome.version);
+        } else {
+            println!("{}: leanck {}", outcome.status, outcome.version);
+        }
         for e in &outcome.registration_errors {
             eprintln!("{e}");
         }
@@ -269,11 +290,14 @@ pub(crate) async fn foreground(
             && receipt.provenance == "release"
             && Maintenance::acquire(&receipt.state_dir).is_ok()
         {
-            match install::prepare(receipt.clone(), Some(&version)).await {
-                Ok(prepared) => match prepared.preserve_pin(receipt.pin.clone()).apply().await {
-                    Ok(_) => reexec(&receipt.binary)?,
-                    Err(error) => eprintln!("info: automatic update deferred: {error:#}"),
-                },
+            match install::prepare(receipt.clone(), Some(&version), false).await {
+                Ok(install::Preparation::UpToDate(_)) => {}
+                Ok(install::Preparation::Update(prepared)) => {
+                    match prepared.preserve_pin(receipt.pin.clone()).apply().await {
+                        Ok(_) => reexec(&receipt.binary)?,
+                        Err(error) => eprintln!("info: automatic update deferred: {error:#}"),
+                    }
+                }
                 Err(error) => eprintln!("info: automatic update unavailable: {error:#}"),
             }
         }

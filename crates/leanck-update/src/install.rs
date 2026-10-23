@@ -45,6 +45,12 @@ pub struct Prepared {
     adoption: Option<InstallerAdoption>,
 }
 
+/// Release resolution can finish without downloading an installation payload.
+pub enum Preparation {
+    UpToDate(Outcome),
+    Update(Box<Prepared>),
+}
+
 struct InstallerAdoption {
     receipt: Receipt,
     selections: Vec<u8>,
@@ -234,7 +240,12 @@ fn write_json(path: &Path, value: &serde_json::Value) -> Result<()> {
     fs::write(path, bytes).with_context(|| format!("writing {}", path.display()))
 }
 
-pub async fn prepare(receipt: Receipt, requested: Option<&str>) -> Result<Prepared> {
+/// Skip an unchanged version unless forced or explicitly requested.
+pub async fn prepare(
+    receipt: Receipt,
+    requested: Option<&str>,
+    force: bool,
+) -> Result<Preparation> {
     receipt.validate()?;
     ensure!(
         receipt.provenance == "release",
@@ -256,6 +267,17 @@ pub async fn prepare(receipt: Receipt, requested: Option<&str>) -> Result<Prepar
             || requested.is_some_and(|s| s != "latest"),
         "the published release is older than this installation; downgrades require an explicit --to-version TAG"
     );
+    if !force
+        && requested.is_none()
+        && Version::parse(&version)? == Version::parse(&receipt.version)?
+    {
+        return Ok(Preparation::UpToDate(Outcome {
+            status: "up_to_date".into(),
+            version,
+            registration_errors: vec![],
+            restart_required: false,
+        }));
+    }
     let download_dir = tempfile::tempdir()?;
     let name = format!("leanck-{}.tar.gz", receipt.target);
     let url = format!(
@@ -424,14 +446,14 @@ pub async fn prepare(receipt: Receipt, requested: Option<&str>) -> Result<Prepar
     if let Some(requested) = requested {
         receipt.pin = (requested != "latest").then(|| version.clone());
     }
-    Ok(Prepared {
+    Ok(Preparation::Update(Box::new(Prepared {
         _download: download_dir,
         root,
         receipt,
         components,
         plan,
         adoption: None,
-    })
+    })))
 }
 
 /// Prepare an update without writing ownership until the approved transaction is applied.
@@ -439,12 +461,15 @@ pub async fn prepare_from_installer(
     state: &Path,
     binary: &Path,
     requested: Option<&str>,
-) -> Result<Prepared> {
+    force: bool,
+) -> Result<Preparation> {
     let adoption = InstallerAdoption::read(state, binary)?;
-    let mut prepared = prepare(adoption.receipt.clone(), requested).await?;
-    prepared.plan.recording_installer_ownership = Some(binary.to_owned());
-    prepared.adoption = Some(adoption);
-    Ok(prepared)
+    let mut preparation = prepare(adoption.receipt.clone(), requested, force).await?;
+    if let Preparation::Update(prepared) = &mut preparation {
+        prepared.plan.recording_installer_ownership = Some(binary.to_owned());
+        prepared.adoption = Some(adoption);
+    }
+    Ok(preparation)
 }
 
 fn copy_tree(source: &Path, destination: &Path) -> Result<()> {

@@ -37,7 +37,7 @@ sh install.sh --from-repo .
 
 For development, `cargo build` builds `leanck`; with [just](https://github.com/casey/just), `just install` stages the plugin executable and installs `leanck` on PATH, and `just package-plugin` assembles `./leanck-plugin`.
 
-Update an installer-managed installation with `leanck update`, or remove it with [`uninstall.sh`](uninstall.sh) (`--dry-run` to preview, `--yes` to approve without a prompt). It runs `leanck _uninstall` from the installed executable or, if that is missing, from the plugin bundle, the release archive holding the script, or PATH.
+Update an installer-managed installation with `leanck update`. If the target version is already installed, it reports that leanck is up to date without downloading or reinstalling. Use `leanck update --force` to reinstall the same version; explicit `--to-version` requests also run the installation flow. Remove an installation with [`uninstall.sh`](uninstall.sh) (`--dry-run` to preview, `--yes` to approve without a prompt). It runs `leanck _uninstall` from the installed executable or, if that is missing, from the plugin bundle, the release archive holding the script, or PATH.
 
 ## Usage
 

@@ -258,6 +258,129 @@ impl Fixture {
 }
 
 #[tokio::test]
+async fn unchanged_versions_skip_downloads_approval_and_installation() {
+    let fixture = Fixture::new().await;
+    let mut receipt = fixture.receipt.clone();
+    receipt.version = env!("CARGO_PKG_VERSION").into();
+    receipt.write().unwrap();
+    *fixture.latest.lock().unwrap() = receipt.version.clone();
+    fixture.bad_checksum.store(true, Ordering::SeqCst);
+    let before = fs::read(receipt.path()).unwrap();
+    // An unchanged version needs neither maintenance access nor approval.
+    let _lease = Lease::acquire(&receipt).unwrap();
+    for args in [
+        vec!["update"],
+        vec!["update", "--json"],
+        vec!["update", "--dry-run", "--json"],
+    ] {
+        let result = fixture.run(&args).await;
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        if args.contains(&"--json") {
+            let value: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+            assert_eq!(value["status"], "up_to_date");
+            assert_eq!(value["version"], receipt.version);
+            assert_eq!(value["restart_required"], false);
+        } else {
+            assert!(String::from_utf8_lossy(&result.stdout).contains("is up to date"));
+        }
+        assert_eq!(fs::read(receipt.path()).unwrap(), before);
+        assert_eq!(
+            fs::read_to_string(fixture.root.join("skills/prove/SKILL.md")).unwrap(),
+            "old skill"
+        );
+    }
+    assert_eq!(
+        fixture.calls.load(Ordering::SeqCst),
+        3,
+        "only release metadata is fetched"
+    );
+    assert!(!receipt.state_dir.join("backups").exists());
+
+    receipt.pin = Some(receipt.version.clone());
+    receipt.write().unwrap();
+    let before = fs::read(receipt.path()).unwrap();
+    let result = fixture.run(&["update", "--json"]).await;
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(value["status"], "up_to_date");
+    assert_eq!(
+        fixture.calls.load(Ordering::SeqCst),
+        3,
+        "a current pin needs no network access"
+    );
+    assert_eq!(fs::read(receipt.path()).unwrap(), before);
+}
+
+#[tokio::test]
+async fn unchanged_legacy_installations_skip_recording_ownership() {
+    let mut fixture = Fixture::new().await;
+    fixture.receipt.version = env!("CARGO_PKG_VERSION").into();
+    fixture.legacy_installer();
+    let selections = fs::read(fixture.receipt.state_dir.join("selections.tsv")).unwrap();
+    let result = fixture.run(&["update", "--json"]).await;
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(value["status"], "up_to_date");
+    fixture.assert_no_ownership();
+    assert_eq!(
+        fs::read(fixture.receipt.state_dir.join("selections.tsv")).unwrap(),
+        selections
+    );
+    assert_eq!(fixture.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn force_and_explicit_version_requests_can_reinstall_the_current_version() {
+    for explicit in [false, true] {
+        let fixture = Fixture::new().await;
+        let mut receipt = fixture.receipt.clone();
+        receipt.version = env!("CARGO_PKG_VERSION").into();
+        receipt.write().unwrap();
+        *fixture.latest.lock().unwrap() = receipt.version.clone();
+        let mut args = vec!["update", "--yes", "--json"];
+        if explicit {
+            args.extend(["--to-version", env!("CARGO_PKG_VERSION")]);
+        } else {
+            args.push("--force");
+        }
+        let result = fixture.run(&args).await;
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let value: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+        assert_eq!(value["status"], "updated");
+        let updated = Receipt::discover(&receipt.binary, None).unwrap().unwrap();
+        assert_eq!(updated.generation, 2);
+        assert_eq!(
+            updated.pin.as_deref(),
+            explicit.then_some(env!("CARGO_PKG_VERSION"))
+        );
+        assert_eq!(
+            fs::read_to_string(fixture.root.join("skills/prove/SKILL.md")).unwrap(),
+            "updated proof skill"
+        );
+        assert_eq!(
+            fixture.calls.load(Ordering::SeqCst),
+            if explicit { 2 } else { 3 }
+        );
+    }
+}
+
+#[tokio::test]
 async fn checksum_failure_preserves_every_installed_component() {
     let fixture = Fixture::new().await;
     fixture.bad_checksum.store(true, Ordering::SeqCst);
@@ -935,9 +1058,13 @@ async fn implicit_adoption_revalidates_installer_state_under_the_maintenance_loc
             &fixture.receipt.state_dir,
             &fixture.receipt.binary,
             None,
+            false,
         )
         .await
         .unwrap();
+        let leanck_update::install::Preparation::Update(prepared) = prepared else {
+            panic!("expected an update from the older installed version");
+        };
         match changed {
             "selections" => {
                 let path = fixture.receipt.state_dir.join("selections.tsv");

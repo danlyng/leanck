@@ -1365,7 +1365,7 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
 name = "leanck-cli"
-version = "0.51.1"
+version = "0.51.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -1398,7 +1398,7 @@ dependencies = [
 
 [[package]]
 name = "leanck-client"
-version = "0.51.1"
+version = "0.51.2"
 dependencies = [
  "leanck-config",
  "leanck-core",
@@ -1413,7 +1413,7 @@ dependencies = [
 
 [[package]]
 name = "leanck-config"
-version = "0.51.1"
+version = "0.51.2"
 dependencies = [
  "anyhow",
  "crossterm",
@@ -1430,7 +1430,7 @@ dependencies = [
 
 [[package]]
 name = "leanck-core"
-version = "0.51.1"
+version = "0.51.2"
 dependencies = [
  "blake2",
  "bytes",
@@ -1448,7 +1448,7 @@ dependencies = [
 
 [[package]]
 name = "leanck-lake"
-version = "0.51.1"
+version = "0.51.2"
 dependencies = [
  "libc",
  "serde",
@@ -1461,7 +1461,7 @@ dependencies = [
 
 [[package]]
 name = "leanck-loogle"
-version = "0.51.1"
+version = "0.51.2"
 dependencies = [
  "leanck-config",
  "reqwest",
@@ -1473,7 +1473,7 @@ dependencies = [
 
 [[package]]
 name = "leanck-mcp"
-version = "0.51.1"
+version = "0.51.2"
 dependencies = [
  "anyhow",
  "leanck-client",
@@ -1492,7 +1492,7 @@ dependencies = [
 
 [[package]]
 name = "leanck-normalize"
-version = "0.51.1"
+version = "0.51.2"
 dependencies = [
  "indoc",
  "leanck-config",
@@ -1504,7 +1504,7 @@ dependencies = [
 
 [[package]]
 name = "leanck-update"
-version = "0.51.1"
+version = "0.51.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -1529,7 +1529,7 @@ dependencies = [
 
 [[package]]
 name = "leanckd"
-version = "0.51.1"
+version = "0.51.2"
 dependencies = [
  "anyhow",
  "leanck-client",
@@ -3807,7 +3807,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.51.1"
+version = "0.51.2"
 dependencies = [
  "anyhow",
  "clap",
