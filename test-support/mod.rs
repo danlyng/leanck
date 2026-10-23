@@ -2,8 +2,7 @@
 #![allow(dead_code)] // Each integration suite uses a different subset.
 
 use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use leanck_client::{Client, RequestOptions};
@@ -16,42 +15,25 @@ pub fn fixture(name: &str) -> Value {
     serde_json::from_str::<Value>(include_str!("contracts/v4.json")).unwrap()[name].clone()
 }
 
+#[path = "lean_project.rs"]
+mod lean_project;
+pub use lean_project::LeanProject;
+
 pub struct TestProject {
-    root: PathBuf,
+    project: LeanProject,
     lean_pid: Option<u32>,
 }
 
 impl TestProject {
-    pub fn from_env() -> Option<Self> {
-        let template = std::env::var_os("LEANCKD_TEST_PROJECT")?;
-        let template = PathBuf::from(template)
-            .canonicalize()
-            .expect("valid test template");
-        static NEXT: AtomicU32 = AtomicU32::new(0);
-        let root = std::env::temp_dir().join(format!(
-            "lck-test-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        // Refuse an existing identity, rather than risk reusing someone else's daemon.
-        std::fs::create_dir(&root).expect("unique test workspace");
-        let project = Self {
-            root: root.canonicalize().unwrap(),
+    pub fn new() -> Self {
+        Self {
+            project: LeanProject::new(),
             lean_pid: None,
-        };
-        copy_tree(&template, project.path());
-        std::fs::create_dir_all(project.path().join("TestProject/Contract")).unwrap();
-        std::fs::write(
-            project.path().join(CLEAN),
-            "-- contract fixture\ntheorem contract_clean : True := by\n  trivial\n",
-        )
-        .unwrap();
-        std::fs::write(project.path().join(WARNINGS), "theorem contract_first : True := by sorry\ntheorem contract_second : True := by sorry\n").unwrap();
-        Some(project)
+        }
     }
 
     pub fn path(&self) -> &Path {
-        &self.root
+        self.project.path()
     }
 
     pub fn track_lean(&mut self, pid: Option<u32>) {
@@ -116,7 +98,6 @@ impl Drop for TestProject {
         for path in [socket, pid_file, runtime.lock(), runtime.log()] {
             let _ = std::fs::remove_file(path);
         }
-        let _ = std::fs::remove_dir_all(self.path());
     }
 }
 
@@ -127,26 +108,6 @@ fn terminate(pid: u32) {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status();
-    }
-}
-
-fn copy_tree(from: &Path, to: &Path) {
-    for entry in std::fs::read_dir(from).unwrap() {
-        let entry = entry.unwrap();
-        if [".git", ".lake", "target", "build"]
-            .iter()
-            .any(|name| entry.file_name() == *name)
-        {
-            continue;
-        }
-        let dest = to.join(entry.file_name());
-        let kind = entry.file_type().unwrap();
-        if kind.is_dir() {
-            std::fs::create_dir(&dest).unwrap();
-            copy_tree(&entry.path(), &dest);
-        } else if kind.is_file() {
-            std::fs::copy(entry.path(), dest).unwrap();
-        }
     }
 }
 

@@ -109,7 +109,7 @@ target/release/leanck serve mcp --help
 
 The plugin normally launches this server using its MCP configuration. Stdout is reserved for the MCP protocol; logs go to stderr.
 
-Use `just verify-distribution /absolute/path/to/test-project` from the repository root to test temporary release staging, executable discovery, shared CLI/MCP use, workspace switching, and daemon cleanup.
+Use `just verify-distribution` from the repository root (optionally pass a template path) to test temporary release staging, executable discovery, shared CLI/MCP use, workspace switching, and daemon cleanup.
 
 ## Shared runtime configuration
 

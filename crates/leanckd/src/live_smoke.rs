@@ -1,9 +1,10 @@
 //! Live smoke test against a real `lake serve`. Ignored by default; run with:
 //!
 //! ```sh
-//! LEANCKD_TEST_PROJECT=/path/to/test-project \
-//!   cargo test -p leanckd --lib live_smoke -- --ignored --nocapture
+//! cargo test -p leanckd --lib live_smoke -- --ignored --nocapture
 //! ```
+//!
+//! Set `LEANCK_TEST_PROJECT` to optionally override the in-repo template.
 
 use crate::query;
 use crate::workspace::Workspace;
@@ -14,10 +15,7 @@ mod support;
 #[tokio::test]
 #[ignore]
 async fn diagnostics_goal_list_sorry() {
-    let Some(mut project) = support::TestProject::from_env() else {
-        eprintln!("set LEANCKD_TEST_PROJECT to run this test");
-        return;
-    };
+    let mut project = support::TestProject::new();
     let worktree = project.path().to_path_buf();
     // Standalone builds neither start Lean's server nor require daemon RPC.
     let standalone = leanck_lake::build::run(

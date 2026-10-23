@@ -1,8 +1,8 @@
 """Verify staged release binaries using disposable projects and runtime files.
 
-Run through `just verify-distribution /absolute/path/to/test-project` or pass
---bin-dir and --project directly. --benchmark-only compares CLI query timings
-without running the MCP checks.
+Run through `just verify-distribution [TEMPLATE]`, which defaults to the in-repo
+`test-support/lean-project`, or pass --bin-dir and --project directly.
+--benchmark-only compares CLI query timings without running the MCP checks.
 """
 
 import argparse
@@ -184,8 +184,6 @@ async def verify(args, scratch):
         for mode in (["self"] if args.benchmark_only else ["self", "renamed", "configured"]):
             project = scratch / mode
             shutil.copytree(args.project, project, ignore=shutil.ignore_patterns(".git", ".lake", "target", "build"))
-            (project / "TestProject").mkdir(exist_ok=True)
-            (project / "TestProject/Distribution.lean").write_text("theorem distribution_clean : True := by trivial\n")
             project = project.resolve()
             selected = dict(env)
             frontends = args.bin_dir

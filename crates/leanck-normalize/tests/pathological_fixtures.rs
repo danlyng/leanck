@@ -1,43 +1,50 @@
+use leanck_normalize::{Options, SpellingDirection};
 use std::fs;
-use std::io::Write;
 use std::path::Path;
-use std::process::{Command, Stdio};
 
 struct Case {
     name: &'static str,
-    width: &'static str,
-    extra_args: &'static [&'static str],
+    width: usize,
+    options: Options,
 }
 
-const CASES: &[Case] = &[
-    Case {
-        name: "full_module_shuffle",
-        width: "72",
-        extra_args: &[],
-    },
-    Case {
-        name: "comment_edge_shapes",
-        width: "56",
-        extra_args: &[],
-    },
-    Case {
-        name: "american_to_british",
-        width: "64",
-        extra_args: &["--to-british"],
-    },
-    Case {
-        name: "heading_banners",
-        width: "72",
-        extra_args: &["--headings"],
-    },
-];
+fn cases() -> [Case; 4] {
+    [
+        Case {
+            name: "full_module_shuffle",
+            width: 72,
+            options: Options::default(),
+        },
+        Case {
+            name: "comment_edge_shapes",
+            width: 56,
+            options: Options::default(),
+        },
+        Case {
+            name: "american_to_british",
+            width: 64,
+            options: Options {
+                spelling: Some(SpellingDirection::AmericanToBritish),
+                ..Options::default()
+            },
+        },
+        Case {
+            name: "heading_banners",
+            width: 72,
+            options: Options {
+                headings: true,
+                ..Options::default()
+            },
+        },
+    ]
+}
 
 #[test]
 fn pathological_fixtures_normalize_to_expected_output() {
-    for case in CASES {
+    for case in cases() {
         let input = fixture(case.name, "input.lean");
         let expected = fixture(case.name, "expected.lean");
-        let actual = run_normalizer(case, &input);
+        let actual = run_normalizer(&case, &input);
 
         assert_eq!(
             actual,
@@ -51,9 +58,9 @@ fn pathological_fixtures_normalize_to_expected_output() {
 
 #[test]
 fn pathological_expected_outputs_are_idempotent() {
-    for case in CASES {
+    for case in cases() {
         let expected = fixture(case.name, "expected.lean");
-        let actual = run_normalizer(case, &expected);
+        let actual = run_normalizer(&case, &expected);
 
         assert_eq!(
             actual,
@@ -79,38 +86,16 @@ fn fixture_path(case: &str, kind: &str) -> std::path::PathBuf {
         .join(format!("{case}.{kind}"))
 }
 
-fn run_normalizer(case: &Case, input: &str) -> String {
-    let mut child = normalizer()
-        .arg("--no-config")
-        .args(case.extra_args)
-        .args(["--width", case.width])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap_or_else(|err| panic!("failed to spawn normalizer for {}: {err}", case.name));
-
-    child
-        .stdin
-        .as_mut()
-        .expect("normalizer stdin was not piped")
-        .write_all(input.as_bytes())
-        .unwrap_or_else(|err| panic!("failed to write normalizer stdin for {}: {err}", case.name));
-
-    let output = child
-        .wait_with_output()
-        .unwrap_or_else(|err| panic!("failed to wait for normalizer for {}: {err}", case.name));
-
-    assert!(
-        output.status.success(),
-        "normalizer failed for `{}` with status {}\nstderr:\n{}",
-        case.name,
-        output.status,
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    String::from_utf8(output.stdout)
-        .unwrap_or_else(|err| panic!("normalizer wrote non-UTF-8 output for {}: {err}", case.name))
+fn run_normalizer(case: &Case, source: &str) -> String {
+    leanck_normalize::normalize_with_context(
+        source,
+        case.width,
+        case.options,
+        &leanck_config::NormalizeRules::default(),
+        &leanck_normalize::Context::default(),
+    )
+    .unwrap()
+    .output
 }
 
 fn first_difference(actual: &str, expected: &str) -> String {
@@ -132,10 +117,4 @@ fn first_difference(actual: &str, expected: &str) -> String {
     } else {
         "strings differ outside line content (possibly trailing newline)".to_string()
     }
-}
-
-fn normalizer() -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_leanck"));
-    command.arg("normalize");
-    command
 }

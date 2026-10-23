@@ -35,8 +35,8 @@ stage destination:
     cp target/release/leanck "{{destination}}/leanck"
     if [ "$(uname)" = "Darwin" ]; then codesign --force -s - "{{destination}}/leanck"; fi
 
-# Verify a temporary release distribution against a disposable Lean template.
-verify-distribution project:
+# Verify a temporary release distribution; the template defaults to the in-repo project.
+verify-distribution project=(justfile_directory() / "test-support/lean-project"):
     #!/usr/bin/env bash
     set -euo pipefail
     staging_dir=$(mktemp -d "${TMPDIR:-/tmp}/leanck-distribution.XXXXXX")

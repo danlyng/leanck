@@ -1,8 +1,6 @@
 #! Complete configuration example. Active values below match built-in defaults.
-#! Copy to leanck.toml or .leanck.toml in a project (omit [instances] and [updates]), or ~/.config/leanck/config.toml
-#! for user defaults.
-#! Precedence: defaults < user file < nearest project file < --config/LEANCK_CONFIG
-#! < --set < explicit command flags/MCP parameters.
+#! Copy to leanck.toml or .leanck.toml in a project (omit [instances] and [updates]),
+#! or ~/.config/leanck/config.toml for user defaults.
 #! Relative file paths resolve from the configuration file; no ~ or $VAR expansion.
 #! See CONFIGURATION.md for details.
 

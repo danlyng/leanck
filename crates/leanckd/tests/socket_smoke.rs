@@ -1,9 +1,10 @@
 //! End-to-end test of the daemon over its Unix socket. Ignored by default:
 //!
 //! ```sh
-//! LEANCKD_TEST_PROJECT=/path/to/test-project \
-//!   cargo test -p leanckd --test socket_smoke -- --ignored --nocapture
+//! cargo test -p leanckd --test socket_smoke -- --ignored --nocapture
 //! ```
+//!
+//! Set `LEANCK_TEST_PROJECT` to optionally override the in-repo template.
 
 use std::time::Duration;
 
@@ -44,10 +45,7 @@ async fn call_inner(worktree: &std::path::Path, req: &Request) -> Response {
 #[tokio::test]
 #[ignore]
 async fn daemon_serves_over_socket() {
-    let Some(mut project) = support::TestProject::from_env() else {
-        eprintln!("set LEANCKD_TEST_PROJECT to run this test");
-        return;
-    };
+    let mut project = support::TestProject::new();
     let worktree = project.path().to_path_buf();
 
     // Start the daemon runtime in the background.
@@ -162,10 +160,7 @@ async fn daemon_serves_over_socket() {
 #[tokio::test]
 #[ignore]
 async fn concurrent_requests_do_not_deadlock() {
-    let Some(mut project) = support::TestProject::from_env() else {
-        eprintln!("set LEANCKD_TEST_PROJECT to run this test");
-        return;
-    };
+    let mut project = support::TestProject::new();
     let worktree = project.path().to_path_buf();
 
     let wt = worktree.clone();

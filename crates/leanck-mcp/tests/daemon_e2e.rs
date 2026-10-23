@@ -4,9 +4,10 @@
 //! ```sh
 //! cargo build --workspace --locked
 //!
-//! LEANCKD_TEST_PROJECT=/path/to/test-project \
-//!   cargo test -p leanck-mcp --test daemon_e2e -- --ignored --nocapture
+//! cargo test -p leanck-mcp --test daemon_e2e -- --ignored --nocapture
 //! ```
+//!
+//! Set `LEANCK_TEST_PROJECT` to optionally override the in-repo template.
 
 use leanck_client::RequestOptions;
 use leanck_core::{
@@ -21,10 +22,7 @@ mod support;
 #[tokio::test]
 #[ignore]
 async fn client_auto_spawns_and_queries() {
-    let Some(mut project) = support::TestProject::from_env() else {
-        eprintln!("set LEANCKD_TEST_PROJECT to run this test (build the workspace first)");
-        return;
-    };
+    let mut project = support::TestProject::new();
 
     let root = WorkspaceRoot::from_path(project.path()).unwrap();
     let selection = WorkspaceSelection::new(root.clone());
