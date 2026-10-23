@@ -1,10 +1,12 @@
 [package]
 name = "leanck-client"
+version.workspace = true
 edition.workspace = true
-version = "0.11.2"
+rust-version.workspace = true
+publish.workspace = true
 
 [dependencies]
-leanck-config = { workspace = true, default-features = true }
+leanck-config = { workspace = true, features = ["loader"] }
 leanck-core = { workspace = true, features = ["wire"] }
 libc.workspace = true
 serde.workspace = true

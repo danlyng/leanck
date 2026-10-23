@@ -1,21 +1,23 @@
 [package]
 name = "leanck-core"
-version = "0.10.0"
+version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [dependencies]
 blake2.workspace = true
-hex.workspace = true
-serde_json.workspace = true
-serde.workspace = true
-thiserror.workspace = true
-url.workspace = true
-schemars = { workspace = true, optional = true }
-tokio = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
-futures = { workspace = true, default-features = false, features = ["std", "async-await"], optional = true }
-tokio-util = { workspace = true, features = ["codec"], optional = true }
+futures = { workspace = true, features = ["std", "async-await"], optional = true }
+hex.workspace = true
 libc.workspace = true
+schemars = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, optional = true }
+tokio-util = { workspace = true, features = ["codec"], optional = true }
+url.workspace = true
 
 [features]
 schema = ["dep:schemars"]

@@ -1,16 +1,13 @@
 [package]
 name = "leanckd"
-version = "0.16.0"
-edition = "2024"
-rust-version = "1.89"
-
-[lib]
-name = "leanckd"
-path = "src/lib.rs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-leanck-config = { workspace = true, default-features = true }
+leanck-config = { workspace = true, features = ["loader"] }
 leanck-core = { workspace = true, features = ["wire"] }
 leanck-lake.workspace = true
 lsp-server.workspace = true

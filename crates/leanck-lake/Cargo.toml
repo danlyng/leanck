@@ -1,8 +1,9 @@
 [package]
 name = "leanck-lake"
+version.workspace = true
 edition.workspace = true
-version = "0.5.0"
-rust-version = "1.89"
+rust-version.workspace = true
+publish.workspace = true
 
 [dependencies]
 libc.workspace = true

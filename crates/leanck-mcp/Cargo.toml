@@ -1,16 +1,18 @@
 [package]
 name = "leanck-mcp"
-version = "0.22.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [dependencies]
 anyhow.workspace = true
 leanck-client.workspace = true
-leanck-config = { workspace = true, default-features = true }
+leanck-config = { workspace = true, features = ["loader"] }
 leanck-core = { workspace = true, features = ["schema"] }
 leanck-lake.workspace = true
 leanck-loogle.workspace = true
-leanck-update = { version = "0.39.0", path = "../leanck-update" }
+leanck-update.workspace = true
 rmcp = { workspace = true, features = ["server", "transport-io", "macros", "schemars"] }
 serde.workspace = true
 serde_json.workspace = true
