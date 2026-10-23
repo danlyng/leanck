@@ -117,6 +117,7 @@ where
             "Diagnostics and builds",
             "Declaration search",
             "Daemon and cache",
+            "Agent hooks",
         ];
         if user {
             topics.push("Daemon limit and updates");
@@ -806,7 +807,16 @@ fn topic_steps(topic: usize) -> Vec<Step> {
                 )
             },
         ],
-        4 => vec![
+        4 => vec![|d, u| {
+            boolean(
+                d,
+                u,
+                "hooks.push_not",
+                "Rewrite push_neg to push Not after agent edits?",
+                "Applies to projects on Lean 4.29.0 or later, where Mathlib deprecates push_neg. Off by default.",
+            )
+        }],
+        5 => vec![
             |d, u| {
                 number(
                     d,

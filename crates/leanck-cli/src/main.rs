@@ -5,6 +5,7 @@ mod cli;
 mod commands;
 mod configuration;
 mod help;
+mod hook;
 mod logging;
 
 use clap::{CommandFactory, FromArgMatches};
@@ -59,6 +60,9 @@ fn main() {
         std::process::exit(leanck_update::installer::uninstall::main(
             argv[2..].to_vec(),
         ));
+    }
+    if argv.get(1).is_some_and(|arg| arg == "_hook") {
+        std::process::exit(hook::main(&argv[2..]));
     }
     let mut json = std::env::args_os().any(|arg| arg == "--json");
     if let Err(error) = run(&mut json) {

@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PLUGIN_ROOT/hooks/push_neg_to_push_not.py\""
+            "command": "\"$CLAUDE_PLUGIN_ROOT/bin/leanck\" _hook post-edit"
           }
         ]
       }

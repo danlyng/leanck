@@ -112,7 +112,7 @@ See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) and [`docs/leanck.example.t
 
 ## Claude Code and Codex plugin
 
-The plugin bundles the `leanck` binary, skills (`leanck`, `lean-proving`, `lean-style`), subagents (`lean-expert`, `lean-grind`, `lean-style-worker`), and a `PostToolUse` hook for `push_neg` migration hints. The `leanck` skill is a minimal tool reference without a prescribed proving workflow.
+The plugin bundles the `leanck` binary, skills (`leanck`, `lean-proving`, `lean-style`), subagents (`lean-expert`, `lean-grind`, `lean-style-worker`), and a `PostToolUse` hook that rewrites `push_neg` to `push Not` on Lean 4.29.0+ when `hooks.push_not` is enabled. The hook is off by default and needs no Python. The `leanck` skill is a minimal tool reference without a prescribed proving workflow.
 
 For a la carte installation, use `--standalone` to choose the CLI, individual skills, and custom agents without plugin registration or hooks. Interactive setup briefly describes each skill. For automation, `--skills both --skill leanck` selects only the minimal reference skill for both hosts; repeat `--skill` to include others.
 

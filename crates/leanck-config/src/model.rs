@@ -19,9 +19,10 @@ pub struct Settings {
     pub client: Client,
     pub daemon: Daemon,
     pub cache: Cache,
-    pub instances: Instances,
     pub diagnostics: Diagnostics,
     pub output: Output,
+    pub hooks: Hooks,
+    pub instances: Instances,
     pub updates: Updates,
 }
 impl Default for Settings {
@@ -34,9 +35,10 @@ impl Default for Settings {
             client: Client::default(),
             daemon: Daemon::default(),
             cache: Cache::default(),
-            instances: Instances::default(),
             diagnostics: Diagnostics::default(),
             output: Output::default(),
+            hooks: Hooks::default(),
+            instances: Instances::default(),
             updates: Updates::default(),
         }
     }
@@ -262,6 +264,13 @@ impl Default for Diagnostics {
 #[serde(default, deny_unknown_fields)]
 pub struct Output {
     pub json: bool,
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Hooks {
+    /// After agent edits to `.lean` files, rewrite deprecated `push_neg` to `push Not`;
+    /// applies only to projects on Lean 4.29.0 or later.
+    pub push_not: bool,
 }
 /// User-level release checking and installation policy.
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,6 +1,6 @@
 # leanck plugin
 
-Lean 4 proof tools for Claude Code and Codex: live diagnostics, proof goals, unfinished proofs, declaration lists, builds, Loogle search, and source normalization through the `leanck` CLI and the `leanck serve mcp` server, plus proof and style skills, subagents, and a `push_neg` migration hook.
+Lean 4 proof tools for Claude Code and Codex: live diagnostics, proof goals, unfinished proofs, declaration lists, builds, Loogle search, and source normalization through the `leanck` CLI and the `leanck serve mcp` server, plus proof and style skills, subagents, and a hook that rewrites `push_neg` to `push Not` on Lean 4.29.0+ when `hooks.push_not` is enabled. The hook is off by default and needs no Python.
 
 The `leanck` skill provides a minimal command reference. The `lean-proving` and `lean-style` skills provide opinionated workflows.
 

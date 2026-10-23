@@ -87,6 +87,16 @@ fn heading_layout_override_preserves_section_inheritance_and_provenance() {
 }
 
 #[test]
+fn project_hooks_load_and_default_to_off() {
+    assert!(!Settings::default().hooks.push_not);
+    let dir = Scratch::new();
+    dir.file("leanck.toml", "[hooks]\npush_not = true\n");
+    let loaded = ConfigArgs::default().load(&dir.0).unwrap();
+    assert!(loaded.settings.hooks.push_not);
+    assert!(loaded.warnings.is_empty());
+}
+
+#[test]
 fn discovered_project_update_policy_is_ignored_before_validation() {
     let dir = Scratch::new();
     let user = dir.file("user.toml", "[updates]\ncheck=false\n");

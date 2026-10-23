@@ -240,6 +240,10 @@ severity = ["error"] # Any of "error", "warning", "information", "hint"; [] sele
 [output]
 json = false # Prefer JSON output for supported commands
 
+[hooks]
+#! Plugin hooks that run after Claude Code or Codex edits a .lean file. All are off by default.
+push_not = false # Rewrite deprecated `push_neg` to `push Not` (projects on Lean 4.29.0 or later).
+
 #! The following options are user-scoped and are ignored in project configurations with a warning.
 
 [instances]

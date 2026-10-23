@@ -385,6 +385,24 @@ fn existing_hidden_file_preserves_comments_and_custom_settings() {
 }
 
 #[test]
+fn project_agent_hooks_topic_saves_enabled_setting() {
+    let case = Case::new();
+    let script = Script::new()
+        .answer("Where should these settings apply?", ENTER)
+        .expect("Agent hooks")
+        .answer(
+            "What would you like to customize?",
+            &format!("{CLEAR}{DOWN}{DOWN}{DOWN}{DOWN} {ENTER}"),
+        )
+        .answer("Rewrite push_neg to push Not after agent edits?", "y\r")
+        .answer("Save this configuration?", "s\r");
+    case.run(None, false, script).unwrap().unwrap();
+    let text = std::fs::read_to_string(case.project_file()).unwrap();
+    assert!(text.contains("[hooks]"));
+    assert!(text.contains("push_not = true"));
+}
+
+#[test]
 fn user_setup_all_topics_and_redirected_stdout() {
     let case = Case::new();
     let script = Script::new()
@@ -406,6 +424,7 @@ fn user_setup_all_topics_and_redirected_stdout() {
         .answer("Shut down idle daemons after (minutes)", "0\r")
         .answer("Concurrent elaboration requests per daemon", "4\r")
         .answer("Fetch the Mathlib cache before daemon startup?", "n\r")
+        .answer("Rewrite push_neg to push Not after agent edits?", "y\r")
         .answer("Maximum running daemons on this machine", "3\r")
         .answer("When the daemon limit is reached", &format!("r{ENTER}"))
         .answer("Check for new leanck releases?", "n\r")
@@ -419,6 +438,7 @@ fn user_setup_all_topics_and_redirected_stdout() {
         .unwrap()
         .settings;
     let value = toml::Value::try_from(&settings).unwrap();
+    assert!(settings.hooks.push_not);
     assert_eq!(value["instances"]["limit"].as_integer(), Some(3));
     assert_eq!(value["instances"]["on_limit"].as_str(), Some("refuse"));
     assert_eq!(value["build"]["timeout_ms"].as_integer(), Some(30000));

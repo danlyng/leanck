@@ -364,6 +364,12 @@ All durations range from 1 ms to one year. The memory limits are soft: idle file
 
 By default the CLI and MCP server start daemons from their own executable. A custom `client.daemon_bin` is invoked as `BIN serve daemon WORKSPACE ...`, so wrappers must accept that.
 
+## Agent hooks
+
+`[hooks]` configures plugin hooks that run after Claude Code or Codex edits a `.lean` file. All hooks are off by default, and both user and project configuration files may set them.
+
+Set `push_not = true` to rewrite deprecated `push_neg` to `push Not` after agent edits in projects on Lean 4.29.0 or later. Release candidates of 4.29.0 count as older; the hook never runs for nightlies or unrecognized toolchains.
+
 ## Machine-wide settings
 
 These belong in your user file. Project files can't set them.
