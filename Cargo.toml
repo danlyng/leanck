@@ -18,7 +18,7 @@ members = [
 # Bump this one value for a release; wire and installer protocol versions are
 # separate constants.
 [workspace.package]
-version = "0.51.0"
+version = "0.51.1"
 edition = "2024"
 rust-version = "1.89"
 publish = false

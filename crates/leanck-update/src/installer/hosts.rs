@@ -275,6 +275,23 @@ pub(crate) fn is_executable(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
+/// Spawn `command`, retrying briefly while Linux reports ETXTBSY. An executable
+/// we just wrote (the staged `leanck`) can still be open for writing in a
+/// child that another thread forked before it execs, even with O_CLOEXEC; the
+/// window closes on that child's exec. See rust-lang/rust#114554.
+fn spawn_retrying_busy(command: &mut Command) -> std::io::Result<std::process::Child> {
+    let mut attempt = 0;
+    loop {
+        match command.spawn() {
+            Err(error) if error.raw_os_error() == Some(libc::ETXTBSY) && attempt < 10 => {
+                attempt += 1;
+                std::thread::sleep(Duration::from_millis(10 * attempt));
+            }
+            result => return result,
+        }
+    }
+}
+
 /// Run `command` with stdin closed and output captured. After `timeout` the
 /// command's process group gets SIGTERM, then SIGKILL a second later.
 /// `display` names the command in the timeout message.
@@ -285,7 +302,7 @@ pub fn run_bounded(mut command: Command, timeout: Duration, display: &str) -> Ra
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0);
-    let mut child = match command.spawn() {
+    let mut child = match spawn_retrying_busy(&mut command) {
         Ok(child) => child,
         Err(error) => {
             return Ran {
