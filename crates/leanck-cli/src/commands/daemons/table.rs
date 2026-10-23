@@ -12,6 +12,21 @@ pub(super) fn render(daemons: &[DaemonInfo], verbose: bool, width: u16) -> Strin
     render_rows(&headers, &rows, width, if verbose { 120 } else { 72 })
 }
 
+/// Columns of the terminal on stdout. Comfy-table asks crossterm, which
+/// measures `/dev/tty`; that is a different terminal when stdout is a pty the
+/// process does not control.
+pub(super) fn stdout_columns() -> Option<u16> {
+    let mut size = libc::winsize {
+        ws_row: 0,
+        ws_col: 0,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // SAFETY: TIOCGWINSZ writes only into the valid winsize passed here.
+    let result = unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut size) };
+    (result == 0 && size.ws_col > 0).then_some(size.ws_col)
+}
+
 fn values(info: &DaemonInfo, verbose: bool) -> Vec<String> {
     let mut state = state_name(info.state).to_owned();
     if let Some(error) = &info.error {

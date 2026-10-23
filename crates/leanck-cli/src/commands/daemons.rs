@@ -167,7 +167,7 @@ async fn list(settings: &Settings, json: bool, verbose: bool) -> anyhow::Result<
         return Ok(());
     }
     if std::io::stdout().is_terminal() {
-        let width = comfy_table::Table::new().width().unwrap_or(80);
+        let width = table::stdout_columns().unwrap_or(80);
         println!("{}", table::render(&daemons, verbose, width));
         println!("{}", summary_line(&summary));
         if verbose {
